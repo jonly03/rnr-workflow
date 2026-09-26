@@ -1,6 +1,22 @@
 import { expect, test } from "@playwright/test";
 
 test("Case Core create → detail → activity → queue survives refresh", async ({ page }) => {
+  page.on("request", request => {
+    if (request.url().includes("/api/")) {
+      console.log("[browser request]", request.method(), request.url());
+    }
+  });
+  page.on("response", response => {
+    if (response.url().includes("/api/")) {
+      console.log("[browser response]", response.status(), response.url());
+    }
+  });
+  page.on("requestfailed", request => {
+    if (request.url().includes("/api/")) {
+      console.log("[browser request failed]", request.failure()?.errorText, request.url());
+    }
+  });
+
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "Case Queue" })).toBeVisible();
