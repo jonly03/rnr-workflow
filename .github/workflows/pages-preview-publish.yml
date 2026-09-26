@@ -46,7 +46,7 @@ jobs:
         shell: bash
         run: |
           test -f draft/index.html
-          preview_dir="pages-store/site/previews/${{ inputs.preview_slug }}"
+          preview_dir="pages-store/previews/${{ inputs.preview_slug }}"
           rm -rf "$preview_dir"
           mkdir -p "$preview_dir"
           cp draft/index.html "$preview_dir/index.html"
@@ -55,13 +55,15 @@ jobs:
             cp draft/workflow-explorer.html "$preview_dir/workflow-explorer.html"
           fi
 
+          touch pages-store/.nojekyll
+
       - name: Persist preview content
         working-directory: pages-store
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add site
+          git add previews .nojekyll
           if git diff --cached --quiet; then
             echo "No preview content changes to commit."
           else
@@ -75,7 +77,7 @@ jobs:
       - name: Upload combined Pages site
         uses: actions/upload-pages-artifact@v3
         with:
-          path: pages-store/site
+          path: pages-store
 
       - name: Deploy combined Pages site
         id: deploy
