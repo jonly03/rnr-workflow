@@ -73,8 +73,8 @@ jobs:
           ensure_field "Delivery Status" "SINGLE_SELECT" "Backlog,Ready,In Progress,In Review,Human Validation,Blocked,Done"
           ensure_field "Workflow" "SINGLE_SELECT" "Product,UX,Brand,Architecture,Frontend,Backend,Integration,Red Team,Platform"
           ensure_field "Milestone" "SINGLE_SELECT" "Case Core,Glass Identification,Sourcing + Pricing,Quote / Approval,Ordering,Installation + Closeout,End-to-End,Launch Readiness"
-          ensure_field "Priority" "SINGLE_SELECT" "P0,P1,P2"
-          ensure_field "Type" "SINGLE_SELECT" "Epic,Feature,Test,Validation"
+          ensure_field "Delivery Priority" "SINGLE_SELECT" "P0,P1,P2"
+          ensure_field "Work Type" "SINGLE_SELECT" "Epic,Feature,Test,Validation"
           ensure_field "Dependency" "TEXT"
           ensure_field "Client Validation" "SINGLE_SELECT" "Not Needed,Pending,Validated,Revised,Deferred"
           ensure_field "Human Gate" "SINGLE_SELECT" "None,Nelly,Client"
@@ -92,6 +92,110 @@ jobs:
             [ -z "$issue_url" ] && continue
             echo "Adding $issue_url"
             gh project item-add "$PROJECT_NUMBER" --owner "$OWNER" --url "$issue_url" >/dev/null || true
+          done
+
+      - name: Project label metadata into fields
+        env:
+          PROJECT_NUMBER: ${{ steps.project.outputs.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          project_id="$(gh project view "$PROJECT_NUMBER" --owner "$OWNER" --format json --jq '.id')"
+          gh project field-list "$PROJECT_NUMBER" --owner "$OWNER" --format json > /tmp/fields.json
+          gh project item-list "$PROJECT_NUMBER" --owner "$OWNER" --limit 200 --format json > /tmp/items.json
+
+          field_id() {
+            jq -r --arg n "$1" '.fields[] | select(.name == $n) | .id' /tmp/fields.json | head -n1
+          }
+
+          option_id() {
+            field="$1"
+            option="$2"
+            jq -r --arg f "$field" --arg o "$option" '.fields[] | select(.name == $f) | .options[]? | select(.name == $o) | .id' /tmp/fields.json | head -n1
+          }
+
+          set_select() {
+            item_id="$1"
+            field="$2"
+            value="$3"
+            fid="$(field_id "$field")"
+            oid="$(option_id "$field" "$value")"
+            if [ -n "$fid" ] && [ -n "$oid" ]; then
+              gh project item-edit --id "$item_id" --project-id "$project_id" --field-id "$fid" --single-select-option-id "$oid" >/dev/null
+            fi
+          }
+
+          gh issue list --repo "$GITHUB_REPOSITORY" --state all --limit 200 --json number,state,labels,url > /tmp/issues.json
+
+          jq -c '.[] | select(.number >= 14)' /tmp/issues.json |
+          while read -r issue; do
+            number="$(jq -r '.number' <<<"$issue")"
+            state="$(jq -r '.state' <<<"$issue")"
+            item_id="$(jq -r --argjson n "$number" '.items[] | select(.content.number == $n) | .id' /tmp/items.json | head -n1)"
+            [ -z "$item_id" ] && continue
+
+            labels="$(jq -r '.labels[].name' <<<"$issue")"
+
+            workflow=""
+            milestone=""
+            priority=""
+            work_type=""
+            client_validation="Not Needed"
+            human_gate="None"
+
+            while read -r label; do
+              case "$label" in
+                workflow:product) workflow="Product" ;;
+                workflow:ux) workflow="UX" ;;
+                workflow:brand) workflow="Brand" ;;
+                workflow:architecture) workflow="Architecture" ;;
+                workflow:frontend) workflow="Frontend" ;;
+                workflow:backend) workflow="Backend" ;;
+                workflow:integration) workflow="Integration" ;;
+                workflow:red-team) workflow="Red Team" ;;
+                workflow:platform) workflow="Platform" ;;
+
+                milestone:case-core) milestone="Case Core" ;;
+                milestone:glass-identification) milestone="Glass Identification" ;;
+                milestone:sourcing-pricing) milestone="Sourcing + Pricing" ;;
+                milestone:quote-approval) milestone="Quote / Approval" ;;
+                milestone:ordering) milestone="Ordering" ;;
+                milestone:installation-closeout) milestone="Installation + Closeout" ;;
+                milestone:end-to-end) milestone="End-to-End" ;;
+                milestone:launch-readiness) milestone="Launch Readiness" ;;
+
+                priority:p0) priority="P0" ;;
+                priority:p1) priority="P1" ;;
+                priority:p2) priority="P2" ;;
+
+                type:epic) work_type="Epic" ;;
+                type:feature) work_type="Feature" ;;
+                type:test) work_type="Test" ;;
+                type:validation)
+                  work_type="Validation"
+                  client_validation="Pending"
+                  ;;
+              esac
+            done <<<"$labels"
+
+            if [ "$number" = "79" ]; then
+              human_gate="Nelly"
+            fi
+
+            if [ "$state" = "CLOSED" ]; then
+              delivery_status="Done"
+            else
+              delivery_status="Backlog"
+            fi
+
+            set_select "$item_id" "Delivery Status" "$delivery_status"
+            [ -n "$workflow" ] && set_select "$item_id" "Workflow" "$workflow"
+            [ -n "$milestone" ] && set_select "$item_id" "Milestone" "$milestone"
+            [ -n "$priority" ] && set_select "$item_id" "Delivery Priority" "$priority"
+            [ -n "$work_type" ] && set_select "$item_id" "Work Type" "$work_type"
+            set_select "$item_id" "Client Validation" "$client_validation"
+            set_select "$item_id" "Human Gate" "$human_gate"
           done
 
       - name: Print project URL
