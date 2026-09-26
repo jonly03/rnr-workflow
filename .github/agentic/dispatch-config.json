@@ -1,9 +1,12 @@
 {
-  "version": 1,
+  "version": 2,
   "pilot": "case-core",
   "project_number": 10,
   "default_base_branch": "main",
-  "copilot_assignee": "copilot-swe-agent[bot]",
+  "runtime_mode": "vendor-neutral-work-packet",
+  "runtime_claim_command": "/agent start",
+  "runtime_release_command": "/agent ready",
+  "current_runtime": "ChatGPT via connected GitHub tools",
   "auto_dispatch_issue_numbers": [
     22,
     23,
