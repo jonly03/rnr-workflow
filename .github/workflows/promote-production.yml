@@ -103,10 +103,13 @@ jobs:
 
       - name: Production API health
         env:
-          API_URL: ${{ steps.api.outputs.url }}
+          API_URL: ${{ vars.PRODUCTION_API_URL }}
         shell: bash
         run: |
           set -euo pipefail
+          # Verify the production alias (the user-facing surface that --prod
+          # just pointed at the new deployment), not the raw deployment URL,
+          # which Vercel gates behind SSO and always fails this check.
           curl --fail --show-error --silent "$API_URL/health" | tee /tmp/production-health.json
           grep -q '"ok":true' /tmp/production-health.json
           grep -q '"storage":"postgres"' /tmp/production-health.json
@@ -114,7 +117,7 @@ jobs:
       - name: Production browser smoke
         working-directory: apps/e2e
         env:
-          WEB_BASE_URL: ${{ steps.web.outputs.url }}
+          WEB_BASE_URL: ${{ vars.PRODUCTION_WEB_URL }}
         run: |
           npm install
           npx playwright install --with-deps chromium
