@@ -1,0 +1,138 @@
+name: Promote Case Core Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Exact staging commit SHA that passed live smoke
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: case-core-production
+  cancel-in-progress: false
+
+jobs:
+  deploy-and-smoke:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      API_PROJECT_ID: ${{ vars.VERCEL_API_PROJECT_ID }}
+      WEB_PROJECT_ID: ${{ vars.VERCEL_WEB_PROJECT_ID }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: staging
+          fetch-depth: 0
+
+      - name: Verify immutable staging commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          requested="${{ inputs.release_sha }}"
+          if [ "$actual" != "$requested" ]; then
+            echo "Production promotion refused." >&2
+            echo "Current staging HEAD: $actual" >&2
+            echo "Requested release SHA: $requested" >&2
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Require deployment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in VERCEL_TOKEN VERCEL_ORG_ID API_PROJECT_ID WEB_PROJECT_ID DATABASE_URL; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing production deployment value: $name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Install deployment tooling
+        run: npm install --global vercel@latest
+
+      - name: Migrate production database
+        working-directory: apps/api
+        env:
+          DATABASE_SSL_MODE: require
+        run: |
+          npm install
+          npm run migrate
+
+      - name: Deploy production API from tested staging commit
+        id: api
+        working-directory: apps/api
+        env:
+          VERCEL_PROJECT_ID: ${{ env.API_PROJECT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          api_url="$(vercel deploy --prod --yes --token="$VERCEL_TOKEN" --env DATABASE_URL="$DATABASE_URL" --env PG_POOL_MAX=3 | tail -n1)"
+          echo "url=$api_url" >> "$GITHUB_OUTPUT"
+          echo "Production API: $api_url" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy production web from tested staging commit
+        id: web
+        working-directory: apps/web
+        env:
+          VERCEL_PROJECT_ID: ${{ env.WEB_PROJECT_ID }}
+          API_URL: ${{ steps.api.outputs.url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          printf 'VITE_API_BASE_URL=%s/api/v1\n' "$API_URL" > .env.production.local
+          web_url="$(vercel deploy --prod --yes --token="$VERCEL_TOKEN" | tail -n1)"
+          echo "url=$web_url" >> "$GITHUB_OUTPUT"
+          echo "Production Web: $web_url" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Production API health
+        env:
+          API_URL: ${{ steps.api.outputs.url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --show-error --silent "$API_URL/health" | tee /tmp/production-health.json
+          grep -q '"ok":true' /tmp/production-health.json
+          grep -q '"storage":"postgres"' /tmp/production-health.json
+
+      - name: Production browser smoke
+        working-directory: apps/e2e
+        env:
+          WEB_BASE_URL: ${{ steps.web.outputs.url }}
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+          npm test
+
+      - name: Record production evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          API_URL: ${{ steps.api.outputs.url }}
+          WEB_URL: ${{ steps.web.outputs.url }}
+        shell: bash
+        run: |
+          gh issue comment 93 --repo "$GITHUB_REPOSITORY" --body "### Production deployment passed
+
+          Commit: \`${{ inputs.release_sha }}\`
+          API: $API_URL
+          Web: $WEB_URL
+
+          Production API health: **PASS**
+          Production Playwright: **PASS**
+
+          Case Core deployment gate is complete and may proceed to Red Team."
