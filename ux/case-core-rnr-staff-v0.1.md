@@ -522,3 +522,43 @@ Acceptance also does not authorize implementation of product capabilities that r
 Human acceptance recorded on 2026-09-26.
 
 Accepted for progression to brand, design-system, architecture, and frontend planning. Open UX questions remain unresolved until explicitly decided.
+
+
+---
+
+## 16. Provisional UX Decisions Pending Client Validation
+
+These are working UX decisions so design and implementation can proceed. They remain subject to client validation.
+
+### UX-PD-001 — Default landing page
+**Working decision:** R&R Staff land on the **Case Queue** in v0.1.
+
+**Rationale:** It gets staff immediately to active work. A dashboard can be introduced later when there are meaningful cross-case metrics/actions to justify it.
+
+### UX-PD-002 — State presentation
+**Working decision:** Show a humanized state label as the primary UI text, with the canonical state ID available as secondary detail for staff/debugging.
+
+Example:
+
+`Request received`
+
+secondary: `REQUEST_RECEIVED`
+
+**Rationale:** Staff should not need to read machine identifiers to operate the product, but the canonical value remains useful for support and troubleshooting.
+
+### UX-PD-003 — Activity ordering
+**Working decision:** Show activity **newest first** by default.
+
+**Rationale:** Operational users usually need to know what just happened and what changed most recently. Ordering remains deterministic through timestamps plus a stable event sequence.
+
+### UX-PD-004 — VIN display
+**Working decision:** Authenticated R&R Staff see the **full VIN** with an easy copy affordance. External persona experiences should mask VIN unless a business need requires full visibility.
+
+**Rationale:** Staff regularly need VIN for vehicle/glass work; forcing reveal steps would slow operations. External exposure should be more conservative.
+
+### UX-PD-005 — Queue density
+**Working decision:** Use a responsive **desktop table that collapses into stacked cards on narrow screens**.
+
+**Rationale:** Staff benefit from scanning density on desktop while mobile users still need a touch-friendly readable layout.
+
+**Validation status:** CLIENT VALIDATION REQUIRED.
