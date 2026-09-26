@@ -1,6 +1,22 @@
 import { expect, test } from "@playwright/test";
 
 test("Case Core create → detail → activity → queue survives refresh", async ({ page }) => {
+  page.on("request", request => {
+    if (request.url().includes("/api/")) {
+      console.log("[browser request]", request.method(), request.url());
+    }
+  });
+  page.on("response", response => {
+    if (response.url().includes("/api/")) {
+      console.log("[browser response]", response.status(), response.url());
+    }
+  });
+  page.on("requestfailed", request => {
+    if (request.url().includes("/api/")) {
+      console.log("[browser request failed]", request.failure()?.errorText, request.url());
+    }
+  });
+
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "Case Queue" })).toBeVisible();
@@ -14,9 +30,23 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
   await page.getByLabel("VIN").fill("1C4HJXEG3JW224862");
   await page.getByLabel("Requested glass type").selectOption("WINDSHIELD");
 
+  const createResponsePromise = page.waitForResponse(
+    response =>
+      response.request().method() === "POST" &&
+      response.url().includes("/api/v1/cases")
+  );
+
   await page.getByRole("button", { name: "Create Case" }).click();
 
-  await expect(page.getByText("DIRECT")).toBeVisible();
+  const createResponse = await createResponsePromise;
+  const createBody = await createResponse.text();
+  expect(
+    createResponse.status(),
+    `Create Case request failed with ${createResponse.status()}: ${createBody}`
+  ).toBeGreaterThanOrEqual(200);
+  expect(createResponse.status()).toBeLessThan(300);
+
+  await expect(page.locator(".eyebrow", { hasText: "DIRECT" })).toBeVisible();
   await expect(page.getByText("2018 Jeep Wrangler")).toBeVisible();
   await expect(page.getByText("1C4HJXEG3JW224862")).toBeVisible();
   await expect(page.getByText("Request Received")).toBeVisible();
