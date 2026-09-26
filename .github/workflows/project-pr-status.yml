@@ -22,7 +22,8 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      PROJECT_GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
       PROJECT_OWNER: '@me'
       PROJECT_NUMBER: '10'
       PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -34,8 +35,8 @@ jobs:
       - name: Require Project token
         shell: bash
         run: |
-          if [ -z "${GH_TOKEN:-}" ]; then
-            echo "PROJECT_TOKEN is required." >&2
+          if [ -z "${PROJECT_GH_TOKEN:-}" ]; then
+            echo "PROJECT_TOKEN is required for Projects v2 synchronization." >&2
             exit 1
           fi
 
