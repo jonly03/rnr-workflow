@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>R&R Workflow Explorer</title>
+<style>
+:root{
+  --bg:#0b1020;--panel:#121933;--card:#18213f;--text:#eef2ff;--muted:#9aa6c5;
+  --line:#334064;--accent:#7c9cff;--good:#5fd0a5;--warn:#f0bd6b;--danger:#ef7d88;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+button{font:inherit}
+.app{max-width:1500px;margin:0 auto;padding:20px}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+.toolbar button,.stage-btn{border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:10px;padding:10px 12px;cursor:pointer}
+.toolbar button.active,.stage-btn.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:16px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px}
+.graph{padding:16px;overflow:auto;min-height:680px}
+.stage-row{display:grid;grid-template-columns:repeat(8,minmax(150px,1fr));gap:10px;min-width:1260px}
+.stage{display:flex;flex-direction:column;gap:8px}
+.stage h3{font-size:12px;color:var(--muted);margin:0 0 4px;text-transform:uppercase;letter-spacing:.08em}
+.node{width:100%;text-align:left;border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:10px;padding:10px;cursor:pointer;transition:.15s}
+.node:hover{border-color:var(--accent)}
+.node.selected{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.node.dim{opacity:.18}
+.node.terminal{border-style:double}
+.arrow{text-align:center;color:var(--muted)}
+.branches{display:grid;grid-template-columns:repeat(4,minmax(240px,1fr));gap:10px;min-width:1040px;margin-top:20px}
+.branch{border:1px dashed var(--line);border-radius:12px;padding:10px}
+.branch h4{margin:0 0 8px;font-size:12px;color:var(--muted)}
+.sidebar{padding:16px;position:sticky;top:16px;height:max-content}
+.kicker{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+.sidebar h2{margin:4px 0 10px;font-size:18px}
+.meta{display:grid;gap:8px;margin-top:14px}
+.meta div{padding:9px;border:1px solid var(--line);border-radius:9px;background:var(--card)}
+.legend{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;color:var(--muted);font-size:12px}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:4px}
+@media(max-width:900px){.layout{grid-template-columns:1fr}.sidebar{position:static}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="toolbar">
+    <button data-mode="happy" class="active">Happy path</button>
+    <button data-mode="all">All states</button>
+    <button data-mode="vin">VIN branch</button>
+    <button data-mode="exceptions">Exceptions</button>
+  </div>
+
+  <div class="layout">
+    <section class="panel graph">
+      <div class="stage-row">
+        <div class="stage"><h3>1. Intake</h3><button class="node happy all" data-state="REQUEST_RECEIVED" data-detail="New request enters the system." data-driver="Human/System">REQUEST_RECEIVED</button><div class="arrow">↓</div><button class="node happy all" data-state="REQUEST_VALIDATION_IN_PROGRESS" data-detail="System validates Year, Make, Model, VIN, Glass Type." data-driver="Automatic">REQUEST_VALIDATION_IN_PROGRESS</button><div class="arrow">↓</div><button class="node exceptions all" data-state="REQUEST_VALIDATION_REQUIRED" data-detail="Blocked because required intake data is missing or invalid." data-driver="Automatic">REQUEST_VALIDATION_REQUIRED</button><div class="arrow">↓</div><button class="node happy all" data-state="READY_FOR_YMM_SEARCH" data-detail="Required intake data is complete enough to continue." data-driver="Automatic">READY_FOR_YMM_SEARCH</button></div><div class="stage"><h3>2. Identify</h3><button class="node happy all" data-state="YMM_SEARCH_IN_PROGRESS" data-detail="Year/Make/Model search is running." data-driver="Automatic">YMM_SEARCH_IN_PROGRESS</button><div class="arrow">↓</div><button class="node happy all" data-state="YMM_RESULTS_FOUND" data-detail="Candidate glass results returned." data-driver="Automatic">YMM_RESULTS_FOUND</button><div class="arrow">↓</div><button class="node happy all vin" data-state="GLASS_MATCH_EVALUATION" data-detail="System compares candidates, fit, and options." data-driver="Automatic">GLASS_MATCH_EVALUATION</button><div class="arrow">↓</div><button class="node vin all" data-state="VIN_LOOKUP_REQUIRED" data-detail="Ambiguous Windshield/Back Glass requires VIN resolution." data-driver="Automatic decision">VIN_LOOKUP_REQUIRED</button><div class="arrow">↓</div><button class="node vin all" data-state="VIN_LOOKUP_IN_PROGRESS" data-detail="Paid VIN lookup is running and will be saved." data-driver="Automatic">VIN_LOOKUP_IN_PROGRESS</button><div class="arrow">↓</div><button class="node exceptions all" data-state="HUMAN_GLASS_REVIEW_REQUIRED" data-detail="System cannot safely determine glass automatically." data-driver="R&R">HUMAN_GLASS_REVIEW_REQUIRED</button><div class="arrow">↓</div><button class="node happy all" data-state="GLASS_IDENTIFIED" data-detail="One or more valid glass candidates established." data-driver="Automatic/Human">GLASS_IDENTIFIED</button><div class="arrow">↓</div><button class="node exceptions all" data-state="GLASS_NOT_IDENTIFIED" data-detail="No valid glass can currently be established." data-driver="R&R exception">GLASS_NOT_IDENTIFIED</button></div><div class="stage"><h3>3. Source</h3><button class="node happy all" data-state="SOURCING_IN_PROGRESS" data-detail="Primary candidates and interchangeables are being searched." data-driver="Automatic">SOURCING_IN_PROGRESS</button><div class="arrow">↓</div><button class="node happy all" data-state="OFFERS_FOUND" data-detail="Supplier/warehouse offers returned." data-driver="Automatic">OFFERS_FOUND</button><div class="arrow">↓</div><button class="node happy all" data-state="OFFER_EVALUATION" data-detail="Unavailable and Regional offers removed; eligible prices compared." data-driver="Automatic">OFFER_EVALUATION</button><div class="arrow">↓</div><button class="node happy all" data-state="GLASS_SELECTED" data-detail="Cheapest eligible available glass selected." data-driver="Automatic">GLASS_SELECTED</button><div class="arrow">↓</div><button class="node exceptions all" data-state="NO_ELIGIBLE_INVENTORY" data-detail="No valid available non-Regional offer exists." data-driver="R&R exception">NO_ELIGIBLE_INVENTORY</button></div><div class="stage"><h3>4. Price</h3><button class="node happy all" data-state="PRICING_IN_PROGRESS" data-detail="Glass cost, labor, target profit and tax are calculated." data-driver="Automatic">PRICING_IN_PROGRESS</button><div class="arrow">↓</div><button class="node exceptions all" data-state="PROFIT_REVIEW_REQUIRED" data-detail="Pricing exception requires R&R judgment." data-driver="R&R">PROFIT_REVIEW_REQUIRED</button><div class="arrow">↓</div><button class="node happy all" data-state="PRICE_APPROVED" data-detail="Customer-facing price established." data-driver="Automatic/Human">PRICE_APPROVED</button></div><div class="stage"><h3>5. Quote</h3><button class="node happy all" data-state="QUOTE_GENERATING" data-detail="Immutable quote snapshot is being created." data-driver="Automatic">QUOTE_GENERATING</button><div class="arrow">↓</div><button class="node happy all" data-state="QUOTE_READY" data-detail="Quote exists and is ready to send." data-driver="Automatic">QUOTE_READY</button><div class="arrow">↓</div><button class="node exceptions all" data-state="QUOTE_DELIVERY_FAILED" data-detail="Configured delivery failed." data-driver="R&R/System">QUOTE_DELIVERY_FAILED</button><div class="arrow">↓</div><button class="node happy all" data-state="AWAITING_APPROVAL" data-detail="Waiting for customer/partner approval." data-driver="Customer/Partner">AWAITING_APPROVAL</button><div class="arrow">↓</div><button class="node happy all" data-state="QUOTE_APPROVED" data-detail="Valid approval received." data-driver="Customer/Partner">QUOTE_APPROVED</button><div class="arrow">↓</div><button class="node exceptions all" data-state="QUOTE_DECLINED" data-detail="Quote explicitly rejected." data-driver="Customer/Partner">QUOTE_DECLINED</button><div class="arrow">↓</div><button class="node exceptions all" data-state="QUOTE_EXPIRED" data-detail="Approval window elapsed." data-driver="Automatic">QUOTE_EXPIRED</button><div class="arrow">↓</div><button class="node exceptions all" data-state="REQUOTE_REQUIRED" data-detail="Commercial inputs changed enough to require a new quote." data-driver="Automatic/R&R">REQUOTE_REQUIRED</button></div><div class="stage"><h3>6. Order</h3><button class="node happy all" data-state="INVENTORY_RECHECK_IN_PROGRESS" data-detail="Selected part is rechecked before purchase." data-driver="Automatic">INVENTORY_RECHECK_IN_PROGRESS</button><div class="arrow">↓</div><button class="node exceptions all" data-state="RESOURCING_REQUIRED" data-detail="Previously selected glass is no longer available." data-driver="Automatic">RESOURCING_REQUIRED</button><div class="arrow">↓</div><button class="node happy all" data-state="READY_TO_ORDER" data-detail="Approved quote and valid inventory are ready." data-driver="Automatic">READY_TO_ORDER</button><div class="arrow">↓</div><button class="node happy all" data-state="PURCHASE_CONFIRMATION_REQUIRED" data-detail="R&R must authorize spending." data-driver="R&R">PURCHASE_CONFIRMATION_REQUIRED</button><div class="arrow">↓</div><button class="node happy all" data-state="ORDER_IN_PROGRESS" data-detail="Supplier order is being placed." data-driver="Automatic">ORDER_IN_PROGRESS</button><div class="arrow">↓</div><button class="node exceptions all" data-state="ORDER_FAILED" data-detail="Supplier purchase did not complete." data-driver="R&R/System">ORDER_FAILED</button><div class="arrow">↓</div><button class="node happy all" data-state="GLASS_ORDERED" data-detail="Supplier order succeeded." data-driver="Automatic">GLASS_ORDERED</button></div><div class="stage"><h3>7. Install</h3><button class="node happy all" data-state="SCHEDULING_REQUIRED" data-detail="Job needs an installation appointment." data-driver="R&R/Customer">SCHEDULING_REQUIRED</button><div class="arrow">↓</div><button class="node happy all" data-state="INSTALLATION_SCHEDULED" data-detail="Appointment confirmed." data-driver="R&R">INSTALLATION_SCHEDULED</button><div class="arrow">↓</div><button class="node exceptions all" data-state="INSTALLATION_RESCHEDULE_REQUIRED" data-detail="Existing appointment cannot proceed." data-driver="R&R/Customer">INSTALLATION_RESCHEDULE_REQUIRED</button><div class="arrow">↓</div><button class="node happy all" data-state="INSTALLATION_IN_PROGRESS" data-detail="Technician started the job." data-driver="Technician">INSTALLATION_IN_PROGRESS</button><div class="arrow">↓</div><button class="node exceptions all" data-state="INSTALLATION_EXCEPTION" data-detail="Problem prevents normal completion." data-driver="Technician/R&R">INSTALLATION_EXCEPTION</button><div class="arrow">↓</div><button class="node happy all" data-state="INSTALLATION_COMPLETED" data-detail="Requested glass work is complete." data-driver="Technician">INSTALLATION_COMPLETED</button></div><div class="stage"><h3>8. Closeout</h3><button class="node happy all" data-state="FINAL_INVOICE_GENERATING" data-detail="Final financial/document record is being created." data-driver="Automatic">FINAL_INVOICE_GENERATING</button><div class="arrow">↓</div><button class="node happy all" data-state="FINAL_INVOICE_READY" data-detail="Final invoice exists." data-driver="Automatic">FINAL_INVOICE_READY</button><div class="arrow">↓</div><button class="node happy all" data-state="JOB_PROFIT_RECORDED" data-detail="Actual job economics are recorded." data-driver="Automatic">JOB_PROFIT_RECORDED</button><div class="arrow">↓</div><button class="node happy all terminal" data-state="COMPLETED" data-detail="Successful terminal state." data-driver="Automatic">COMPLETED</button></div>
+      </div>
+
+      <div class="branches">
+        <div class="branch"><h4>Global cancellation</h4>
+          <button class="node exceptions all" data-state="CANCELLATION_REQUESTED" data-detail="Cancellation has been requested and cleanup may be required." data-driver="Human">CANCELLATION_REQUESTED</button>
+          <div class="arrow">↓</div>
+          <button class="node exceptions all terminal" data-state="CANCELLED" data-detail="Case ended without completion." data-driver="R&R">CANCELLED</button>
+        </div>
+        <div class="branch"><h4>System recovery</h4>
+          <button class="node exceptions all" data-state="SYSTEM_ATTENTION_REQUIRED" data-detail="Automation cannot safely continue; recover_to_state is retained." data-driver="R&R/System">SYSTEM_ATTENTION_REQUIRED</button>
+        </div>
+        <div class="branch"><h4>VIN protection</h4>
+          <div style="color:var(--muted);font-size:12px">VIN is only eligible for ambiguous Windshield or Back Glass. Saved successful results are reused.</div>
+        </div>
+        <div class="branch"><h4>Quote safety</h4>
+          <div style="color:var(--muted);font-size:12px">Declined or expired quotes cannot reach procurement without a new valid approval.</div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="panel sidebar">
+      <div class="kicker">Selected state</div>
+      <h2 id="stateTitle">Click a state</h2>
+      <p id="stateDetail" style="color:var(--muted)">Select any node to inspect its meaning.</p>
+      <div class="meta">
+        <div><div class="kicker">Driver</div><strong id="stateDriver">—</strong></div>
+        <div><div class="kicker">Visibility</div><strong>Defined in Step 3</strong></div>
+        <div><div class="kicker">Notification</div><strong>Defined separately from visibility</strong></div>
+      </div>
+      <div class="legend">
+        <span><span class="dot" style="background:var(--good)"></span>happy path</span>
+        <span><span class="dot" style="background:var(--warn)"></span>review/loop</span>
+        <span><span class="dot" style="background:var(--danger)"></span>exception</span>
+      </div>
+    </aside>
+  </div>
+</div>
+<script>
+const nodes=[...document.querySelectorAll('.node')];
+const modeButtons=[...document.querySelectorAll('[data-mode]')];
+function setMode(mode){
+  modeButtons.forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));
+  nodes.forEach(n=>{
+    const show=mode==='all'||n.classList.contains(mode);
+    n.classList.toggle('dim',!show);
+  });
+}
+modeButtons.forEach(b=>b.addEventListener('click',()=>setMode(b.dataset.mode)));
+nodes.forEach(n=>n.addEventListener('click',()=>{
+  if(n.classList.contains('dim')) return;
+  nodes.forEach(x=>x.classList.remove('selected'));
+  n.classList.add('selected');
+  document.getElementById('stateTitle').textContent=n.dataset.state;
+  document.getElementById('stateDetail').textContent=n.dataset.detail;
+  document.getElementById('stateDriver').textContent=n.dataset.driver;
+}));
+</script>
+</body>
+</html>
