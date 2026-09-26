@@ -96,7 +96,8 @@ jobs:
           set -euo pipefail
           vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
           web_url="$(vercel deploy --prod --yes --token="$VERCEL_TOKEN" \
-            --build-env VITE_API_BASE_URL="$API_URL/api/v1" | tail -n1)"
+            --env UPSTREAM_API_URL="$API_URL" \
+            --build-env VITE_API_BASE_URL="/api/v1" | tail -n1)"
           echo "url=$web_url" >> "$GITHUB_OUTPUT"
           echo "Production Web: $web_url" >> "$GITHUB_STEP_SUMMARY"
 
