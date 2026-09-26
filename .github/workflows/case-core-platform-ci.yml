@@ -1,0 +1,81 @@
+name: Case Core Platform CI
+
+on:
+  pull_request:
+    paths:
+      - 'apps/api/**'
+      - 'apps/web/**'
+      - 'apps/e2e/**'
+      - '.github/workflows/case-core-platform-ci.yml'
+      - '.github/workflows/deploy-staging.yml'
+      - '.github/workflows/promote-production.yml'
+      - '.github/agentic/**'
+      - 'docs/platform/**'
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-api:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: rnr
+          POSTGRES_PASSWORD: rnr
+          POSTGRES_DB: rnr
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rnr -d rnr"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://rnr:rnr@127.0.0.1:5432/rnr
+      TEST_DATABASE_URL: postgresql://rnr:rnr@127.0.0.1:5432/rnr
+      DATABASE_SSL_MODE: disable
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install API dependencies
+        working-directory: apps/api
+        run: npm install
+      - name: Apply migrations
+        working-directory: apps/api
+        run: npm run migrate
+      - name: Run API tests against JSON and PostgreSQL
+        working-directory: apps/api
+        run: npm test
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install frontend
+        working-directory: apps/web
+        run: npm install
+      - name: Test frontend
+        working-directory: apps/web
+        run: npm test
+      - name: Build frontend
+        working-directory: apps/web
+        run: npm run build
+
+  control-plane:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Case Core deployment dependency
+        shell: bash
+        run: |
+          jq empty .github/agentic/case-core-dependencies.json
+          test "$(jq -c '."93"' .github/agentic/case-core-dependencies.json)" = '[27]'
+          test "$(jq -c '."28"' .github/agentic/case-core-dependencies.json)" = '[93]'
