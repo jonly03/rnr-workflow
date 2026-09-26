@@ -36,7 +36,7 @@ create table if not exists glass_requests (
   updated_at timestamptz not null
 );
 
-do $
+do $casecore$
 begin
   if not exists (
     select 1
@@ -51,7 +51,7 @@ begin
       deferrable initially deferred;
   end if;
 end
-$;
+$casecore$;
 
 create table if not exists case_events (
   id uuid primary key,
