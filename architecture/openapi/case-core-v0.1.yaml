@@ -1,0 +1,273 @@
+openapi: 3.0.3
+info:
+  title: R&R Case Core API
+  version: 0.1.0
+  description: >
+    Versioned Case Core contract for the R&R Finest Auto Glass Case Core slice.
+    This contract intentionally excludes MyGrant, VIN lookup execution, sourcing,
+    pricing, quote, purchasing, installation, invoice, and notification APIs.
+servers:
+  - url: /api/v1
+paths:
+  /cases:
+    post:
+      summary: Create a Case
+      operationId: createCase
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCaseRequest'
+      responses:
+        '201':
+          description: Case created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseDetail'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+    get:
+      summary: List Cases
+      operationId: listCases
+      responses:
+        '200':
+          description: Cases
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CaseSummary'
+  /cases/{caseId}:
+    get:
+      summary: Get a Case
+      operationId: getCase
+      parameters:
+        - $ref: '#/components/parameters/CaseId'
+      responses:
+        '200':
+          description: Case detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseDetail'
+        '404':
+          $ref: '#/components/responses/CaseNotFound'
+  /cases/{caseId}/events:
+    get:
+      summary: List durable Case events in deterministic sequence order
+      operationId: listCaseEvents
+      parameters:
+        - $ref: '#/components/parameters/CaseId'
+      responses:
+        '200':
+          description: Case events ordered by sequence ascending
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CaseEvent'
+        '404':
+          $ref: '#/components/responses/CaseNotFound'
+  /cases/{caseId}/actions:
+    post:
+      summary: Request a guarded business action
+      description: >
+        Reserved Case action boundary. Case Core v0.1 does not require the full
+        workflow action catalog. Clients must never use arbitrary state mutation.
+      operationId: requestCaseAction
+      parameters:
+        - $ref: '#/components/parameters/CaseId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaseActionRequest'
+      responses:
+        '200':
+          description: Action accepted and resulting Case returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseDetail'
+        '409':
+          description: Action not legal for current state/guard
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+components:
+  parameters:
+    CaseId:
+      name: caseId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    ValidationError:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    CaseNotFound:
+      description: Case not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    Channel:
+      type: string
+      enum: [DIRECT, AUCTION, INSURANCE]
+    GlassType:
+      type: string
+      enum: [WINDSHIELD, BACK_GLASS, DOOR_GLASS, QUARTER_GLASS, VENT_GLASS]
+    VehicleInput:
+      type: object
+      additionalProperties: false
+      required: [year, make, model, vin]
+      properties:
+        year:
+          type: integer
+        make:
+          type: string
+        model:
+          type: string
+        vin:
+          type: string
+    GlassRequestInput:
+      type: object
+      additionalProperties: false
+      required: [glass_type]
+      properties:
+        glass_type:
+          $ref: '#/components/schemas/GlassType'
+    CreateCaseRequest:
+      type: object
+      additionalProperties: false
+      required: [channel, vehicle, glass_request]
+      properties:
+        channel:
+          $ref: '#/components/schemas/Channel'
+        customer_id:
+          type: string
+          format: uuid
+          nullable: true
+        vehicle:
+          $ref: '#/components/schemas/VehicleInput'
+        glass_request:
+          $ref: '#/components/schemas/GlassRequestInput'
+    Vehicle:
+      allOf:
+        - $ref: '#/components/schemas/VehicleInput'
+        - type: object
+          required: [id]
+          properties:
+            id:
+              type: string
+              format: uuid
+    GlassRequest:
+      type: object
+      required: [id, glass_type]
+      properties:
+        id:
+          type: string
+          format: uuid
+        glass_type:
+          $ref: '#/components/schemas/GlassType'
+    CaseSummary:
+      type: object
+      required:
+        [id, reference, channel, current_state, vehicle, glass_request, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        reference:
+          type: string
+        channel:
+          $ref: '#/components/schemas/Channel'
+        current_state:
+          type: string
+        vehicle:
+          $ref: '#/components/schemas/Vehicle'
+        glass_request:
+          $ref: '#/components/schemas/GlassRequest'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    CaseDetail:
+      allOf:
+        - $ref: '#/components/schemas/CaseSummary'
+        - type: object
+          properties:
+            customer_id:
+              type: string
+              format: uuid
+              nullable: true
+    CaseEvent:
+      type: object
+      required: [id, case_id, sequence, event_type, occurred_at, actor_type, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+        case_id:
+          type: string
+          format: uuid
+        sequence:
+          type: integer
+          minimum: 1
+        event_type:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+        actor_type:
+          type: string
+        actor_id:
+          type: string
+          nullable: true
+        payload:
+          type: object
+          additionalProperties: true
+        corrects_event_id:
+          type: string
+          format: uuid
+          nullable: true
+    CaseActionRequest:
+      type: object
+      additionalProperties: false
+      required: [action]
+      properties:
+        action:
+          type: string
+        input:
+          type: object
+          additionalProperties: true
+          default: {}
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: true
