@@ -11,8 +11,7 @@ export default defineConfig({
     ...(bypassSecret
       ? {
           extraHTTPHeaders: {
-            "x-vercel-protection-bypass": bypassSecret,
-            "x-vercel-set-bypass-cookie": "true"
+            "x-vercel-protection-bypass": bypassSecret
           }
         }
       : {})
