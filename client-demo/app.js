@@ -27,8 +27,16 @@
     installScheduled: false,
     installCompleted: false,
     checks: JSON.parse(localStorage.getItem("rrLaunchChecks") || "{}"),
-    cases: JSON.parse(localStorage.getItem("rrDemoCases") || "[]")
+    cases: JSON.parse(localStorage.getItem("rrDemoCases") || "[]"),
+    theme: localStorage.getItem("rrTheme") || "dark"
   };
+
+  const applyTheme = () => {
+    document.documentElement.dataset.theme = state.theme;
+    document.documentElement.style.colorScheme = state.theme;
+    localStorage.setItem("rrTheme", state.theme);
+  };
+  applyTheme();
 
   const stageNames = ["Intake","Identify","Source","Price","Quote","Order","Install","Closeout"];
   const fmtMoney = n => new Intl.NumberFormat("en-US",{style:"currency",currency:"USD"}).format(n);
@@ -52,7 +60,7 @@
           <div class="nav-title">Milestones</div><nav class="nav">${nav()}</nav>
         </aside>
         <main class="main">
-          <div class="topbar"><div class="crumb">R&R / Client Demo / ${esc(title)}</div><div class="top-actions"><button class="btn small ghost" data-action="reset-demo">Reset demo</button><a class="btn small" href="#/overview">Milestone map</a></div></div>
+          <div class="topbar"><div class="crumb">R&R / Client Demo / ${esc(title)}</div><div class="top-actions"><button class="btn small ghost" data-action="toggle-theme" aria-label="Toggle color theme">${state.theme==="dark"?"☀ Light mode":"☾ Dark mode"}</button><button class="btn small ghost" data-action="reset-demo">Reset demo</button><a class="btn small" href="#/overview">Milestone map</a></div></div>
           <div class="content">${body}${footer()}</div>
         </main>
       </div>`;
@@ -240,6 +248,7 @@
     document.querySelectorAll("[data-check]").forEach(el=>el.onchange=()=>{state.checks[el.dataset.check]=el.checked;save();render()});
     document.querySelectorAll("[data-action]").forEach(el=>el.onclick=()=>{
       switch(el.dataset.action){
+        case "toggle-theme": state.theme=state.theme==="dark"?"light":"dark";applyTheme();render();break;
         case "reset-demo": state.persona="staff";state.caseStage=0;state.selectedOffer=1;state.quoteApproved=false;state.orderPlaced=false;state.installScheduled=false;state.installCompleted=false;state.cases=[];state.checks={};save();toast("Demo state reset.");render();break;
         case "approve-quote": state.quoteApproved=true;toast("Quote approved in local demo state.");render();break;
         case "place-order": state.orderPlaced=true;toast("Demo order placed.");render();break;
