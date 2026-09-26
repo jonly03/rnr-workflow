@@ -36,11 +36,22 @@ create table if not exists glass_requests (
   updated_at timestamptz not null
 );
 
-alter table cases
-  add constraint cases_glass_request_fk
-  foreign key (glass_request_id)
-  references glass_requests(id)
-  deferrable initially deferred;
+do $casecore$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'cases_glass_request_fk'
+      and conrelid = 'public.cases'::regclass
+  ) then
+    alter table public.cases
+      add constraint cases_glass_request_fk
+      foreign key (glass_request_id)
+      references public.glass_requests(id)
+      deferrable initially deferred;
+  end if;
+end
+$casecore$;
 
 create table if not exists case_events (
   id uuid primary key,
