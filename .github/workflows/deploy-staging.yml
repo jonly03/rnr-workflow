@@ -106,6 +106,25 @@ jobs:
           grep -q '"ok":true' /tmp/staging-health.json
           grep -q '"storage":"postgres"' /tmp/staging-health.json
 
+      - name: Live web API proxy check
+        env:
+          WEB_URL: ${{ steps.web.outputs.url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="$(curl --show-error --silent \
+            -o /tmp/staging-proxy.json \
+            -w '%{http_code}' \
+            -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
+            "$WEB_URL/api/v1/cases")"
+          echo "Proxy status: $status"
+          cat /tmp/staging-proxy.json || true
+          if [ "$status" != "200" ]; then
+            echo "Same-origin web API proxy failed." >&2
+            exit 1
+          fi
+          grep -q '^\[' /tmp/staging-proxy.json
+
       - name: Live browser smoke
         working-directory: apps/e2e
         env:
