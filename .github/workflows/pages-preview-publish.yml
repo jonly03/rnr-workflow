@@ -1,0 +1,87 @@
+name: Publish draft Pages preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Draft branch/ref to publish
+        required: true
+        type: string
+      preview_slug:
+        description: URL-safe preview slug
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: rnr-pages-site
+  cancel-in-progress: false
+
+jobs:
+  deploy-preview:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - name: Checkout draft source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: draft
+
+      - name: Checkout Pages content store
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: pages-store
+          fetch-depth: 0
+
+      - name: Build preview
+        shell: bash
+        run: |
+          test -f draft/index.html
+          preview_dir="pages-store/site/previews/${{ inputs.preview_slug }}"
+          rm -rf "$preview_dir"
+          mkdir -p "$preview_dir"
+          cp draft/index.html "$preview_dir/index.html"
+
+          if [ -f draft/workflow-explorer.html ]; then
+            cp draft/workflow-explorer.html "$preview_dir/workflow-explorer.html"
+          fi
+
+      - name: Persist preview content
+        working-directory: pages-store
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add site
+          if git diff --cached --quiet; then
+            echo "No preview content changes to commit."
+          else
+            git commit -m "preview: ${{ inputs.source_ref }}"
+            git push origin gh-pages
+          fi
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload combined Pages site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages-store/site
+
+      - name: Deploy combined Pages site
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+      - name: Print preview URL
+        shell: bash
+        run: |
+          echo "Preview: https://jonly03.github.io/rnr-workflow/previews/${{ inputs.preview_slug }}/"
