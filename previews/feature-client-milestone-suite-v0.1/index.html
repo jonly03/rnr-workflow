@@ -93,6 +93,44 @@ p{line-height:1.55;color:var(--text2)}
 .toast{position:fixed;right:24px;bottom:24px;background:#111827;border:1px solid var(--border);padding:13px 16px;border-radius:12px;box-shadow:var(--shadow);z-index:50}
 @media(max-width:1100px){.shell{grid-template-columns:1fr}.sidebar{position:relative;height:auto;border-right:0;border-bottom:1px solid var(--border)}.nav{display:flex;overflow:auto;gap:6px}.nav-title{display:none}.nav a{min-width:max-content}.hero{grid-template-columns:1fr}.grid.four{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:760px){.content{padding:18px}.topbar{padding:12px 18px}.grid.two,.grid.three,.grid.four{grid-template-columns:1fr}.metric-grid{grid-template-columns:1fr 1fr}.palette{grid-template-columns:repeat(2,1fr)}.status-map{grid-template-columns:1fr}.arch{grid-template-columns:1fr}.arrow{transform:rotate(90deg)}h2{font-size:28px}.hero-card{padding:22px}}
+
+/* Theme toggle */
+:root[data-theme="light"]{
+  --bg:#f8fafc;
+  --bg2:#f1f5f9;
+  --surface:#ffffff;
+  --surface2:#f1f5f9;
+  --border:#cbd5e1;
+  --text:#0f172a;
+  --text2:#334155;
+  --muted:#64748b;
+  --shadow:0 16px 40px rgba(15,23,42,.10);
+}
+:root[data-theme="light"] body{background:var(--bg);color:var(--text)}
+:root[data-theme="light"] .sidebar{background:linear-gradient(180deg,#ffffff,#f1f5f9)}
+:root[data-theme="light"] .topbar{background:#f8fafce8}
+:root[data-theme="light"] .hero-card,
+:root[data-theme="light"] .panel,
+:root[data-theme="light"] .card{background:linear-gradient(180deg,#ffffff,#f8fafc);box-shadow:0 10px 26px rgba(15,23,42,.06)}
+:root[data-theme="light"] .nav .num,
+:root[data-theme="light"] .table th,
+:root[data-theme="light"] .stage{background:#0f172a08}
+:root[data-theme="light"] .badge{background:#0f172a08;border-color:#0f172a12}
+:root[data-theme="light"] .field input,
+:root[data-theme="light"] .field select{background:#ffffff;color:#0f172a}
+:root[data-theme="light"] .arch-box{background:#0f172a06}
+:root[data-theme="light"] .progress{background:#0f172a12}
+:root[data-theme="light"] .toast{background:#ffffff;color:#0f172a}
+:root[data-theme="light"] .btn{background:#f1f5f9;color:#0f172a}
+:root[data-theme="light"] .btn.primary{background:var(--brand);color:#fff}
+:root[data-theme="light"] .btn.success{background:var(--success);color:#fff}
+:root[data-theme="light"] .btn.warn{background:var(--attention);color:#fff}
+:root[data-theme="light"] .btn.ghost{background:transparent}
+:root[data-theme="light"] .kicker{color:#4338ca}
+:root[data-theme="light"] .badge.success{color:#047857}
+:root[data-theme="light"] .badge.attn{color:#92400e}
+:root[data-theme="light"] .badge.critical{color:#b91c1c}
+:root[data-theme="light"] .badge.brand{color:#4338ca}
 </style>
 </head>
 <body>
@@ -126,8 +164,16 @@ p{line-height:1.55;color:var(--text2)}
     installScheduled: false,
     installCompleted: false,
     checks: JSON.parse(localStorage.getItem("rrLaunchChecks") || "{}"),
-    cases: JSON.parse(localStorage.getItem("rrDemoCases") || "[]")
+    cases: JSON.parse(localStorage.getItem("rrDemoCases") || "[]"),
+    theme: localStorage.getItem("rrTheme") || "dark"
   };
+
+  const applyTheme = () => {
+    document.documentElement.dataset.theme = state.theme;
+    document.documentElement.style.colorScheme = state.theme;
+    localStorage.setItem("rrTheme", state.theme);
+  };
+  applyTheme();
 
   const stageNames = ["Intake","Identify","Source","Price","Quote","Order","Install","Closeout"];
   const fmtMoney = n => new Intl.NumberFormat("en-US",{style:"currency",currency:"USD"}).format(n);
@@ -151,7 +197,7 @@ p{line-height:1.55;color:var(--text2)}
           <div class="nav-title">Milestones</div><nav class="nav">${nav()}</nav>
         </aside>
         <main class="main">
-          <div class="topbar"><div class="crumb">R&R / Client Demo / ${esc(title)}</div><div class="top-actions"><button class="btn small ghost" data-action="reset-demo">Reset demo</button><a class="btn small" href="#/overview">Milestone map</a></div></div>
+          <div class="topbar"><div class="crumb">R&R / Client Demo / ${esc(title)}</div><div class="top-actions"><button class="btn small ghost" data-action="toggle-theme" aria-label="Toggle color theme">${state.theme==="dark"?"☀ Light mode":"☾ Dark mode"}</button><button class="btn small ghost" data-action="reset-demo">Reset demo</button><a class="btn small" href="#/overview">Milestone map</a></div></div>
           <div class="content">${body}${footer()}</div>
         </main>
       </div>`;
@@ -339,6 +385,7 @@ p{line-height:1.55;color:var(--text2)}
     document.querySelectorAll("[data-check]").forEach(el=>el.onchange=()=>{state.checks[el.dataset.check]=el.checked;save();render()});
     document.querySelectorAll("[data-action]").forEach(el=>el.onclick=()=>{
       switch(el.dataset.action){
+        case "toggle-theme": state.theme=state.theme==="dark"?"light":"dark";applyTheme();render();break;
         case "reset-demo": state.persona="staff";state.caseStage=0;state.selectedOffer=1;state.quoteApproved=false;state.orderPlaced=false;state.installScheduled=false;state.installCompleted=false;state.cases=[];state.checks={};save();toast("Demo state reset.");render();break;
         case "approve-quote": state.quoteApproved=true;toast("Quote approved in local demo state.");render();break;
         case "place-order": state.orderPlaced=true;toast("Demo order placed.");render();break;
