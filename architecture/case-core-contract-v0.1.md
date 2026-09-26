@@ -422,8 +422,13 @@ Implementation may use the working defaults but must not encode them as irrevers
 - [x] State changes occur through business actions, not arbitrary patches.
 - [x] Append-only event correction semantics are defined.
 - [x] Contract is sufficient for frontend/backend parallel work.
-- [ ] Human acceptance recorded before #25/#26 treat this contract as frozen.
+- [x] Human acceptance recorded before #25/#26 treat this contract as frozen.
 
 ## 17. Acceptance record
 
-Pending human review.
+Human acceptance recorded on 2026-09-26.
+
+- Accepted for parallel Backend (#25) and Frontend (#26) implementation.
+- No revisions requested at acceptance.
+- Acceptance reference: PR #87 / human approval in the project conversation.
+- Deferred client assumptions remain provisional and must remain reversible.
