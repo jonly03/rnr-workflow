@@ -7,7 +7,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 STATUS_WRITER="$ROOT/.github/scripts/project-status.sh"
 LANES="$ROOT/.github/agentic/lane-instructions.json"
 DEPS="$ROOT/.github/agentic/case-core-dependencies.json"
-CONFIG="$ROOT/.github/agentic/dispatch-config.json"
 
 comment_once() {
   local marker="$1"
@@ -19,7 +18,7 @@ comment_once() {
   fi
 }
 
-issue_json="$(gh issue view "$ISSUE_NUMBER" --repo "$REPO" --json number,title,body,state,labels,assignees,url)"
+issue_json="$(gh issue view "$ISSUE_NUMBER" --repo "$REPO" --json number,title,body,state,labels,url)"
 state="$(jq -r '.state' <<<"$issue_json")"
 
 if [ "$state" = "CLOSED" ]; then
@@ -34,7 +33,7 @@ if [ "${#workflow_labels[@]}" -ne 1 ]; then
   comment_once "<!-- rnr-dispatch-routing-error -->"     "<!-- rnr-dispatch-routing-error -->
 **Dispatcher blocked this issue.**
 
-Expected exactly one \`workflow:*\` label; found ${#workflow_labels[@]}.
+Expected exactly one `workflow:*` label; found ${#workflow_labels[@]}.
 
 The PM must correct workflow ownership before this issue can be dispatched."
   exit 0
@@ -48,11 +47,10 @@ if ! jq -e --arg lane "$lane" 'has($lane)' "$LANES" >/dev/null; then
   comment_once "<!-- rnr-dispatch-unknown-lane -->"     "<!-- rnr-dispatch-unknown-lane -->
 **Dispatcher blocked this issue.**
 
-No agent lane instructions exist for \`$workflow_label\`."
+No agent lane instructions exist for `$workflow_label`."
   exit 0
 fi
 
-# Dependency gate. Issues not present in the pilot manifest have no encoded prerequisites yet.
 deps_json="$(jq -c --arg n "$ISSUE_NUMBER" '.[$n] // []' "$DEPS")"
 unresolved=()
 
@@ -67,8 +65,9 @@ done < <(jq -r '.[]' <<<"$deps_json")
 if [ "${#unresolved[@]}" -gt 0 ]; then
   "$STATUS_WRITER" "$ISSUE_NUMBER" "Backlog"
   joined="$(IFS=', '; echo "${unresolved[*]}")"
+  if [ "${#unresolved[@]}" -eq 1 ]; then verb="is"; else verb="are"; fi
   comment_once "<!-- rnr-dispatch-dependency-wait -->"     "<!-- rnr-dispatch-dependency-wait -->
-**Dependency gate:** this issue remains in **Backlog** until $joined $( [ ${#unresolved[@]} -eq 1 ] && echo 'is' || echo 'are' ) closed."
+**Dependency gate:** this issue remains in **Backlog** until $joined $verb closed."
   exit 0
 fi
 
@@ -79,35 +78,9 @@ if grep -qx "type:validation" <<<"$labels"; then
   comment_once "<!-- rnr-dispatch-human-validation -->"     "<!-- rnr-dispatch-human-validation -->
 **Dispatcher: Human Validation gate**
 
-This issue is ready, but it requires a real client/human decision. No coding agent was assigned.
+This issue requires a real client/human decision. No execution runtime may synthesize that decision.
 
-1. Perform and record the validation required by the acceptance criteria.
-2. Update canonical artifacts for any revisions.
-3. Close this issue only when its acceptance criteria are actually satisfied.
-
-Closing this issue automatically releases any Case Core work that depends on it."
-  exit 0
-fi
-
-assignee="$(jq -r '.copilot_assignee' "$CONFIG")"
-already_assigned="$(jq -r --arg a "$assignee" '.assignees[].login | select(. == $a or . == "copilot-swe-agent")' <<<"$issue_json" | head -n1 || true)"
-
-if [ -n "$already_assigned" ]; then
-  "$STATUS_WRITER" "$ISSUE_NUMBER" "In Progress"
-  exit 0
-fi
-
-# Verify Copilot cloud agent is available before attempting assignment.
-owner="${REPO%%/*}"
-name="${REPO#*/}"
-copilot_id="$(gh api graphql   -f query='query($owner:String!,$name:String!){repository(owner:$owner,name:$name){suggestedActors(capabilities:[CAN_BE_ASSIGNED],first:100){nodes{login __typename ... on Bot{id} ... on User{id}}}}}'   -f owner="$owner" -f name="$name"   --jq '.data.repository.suggestedActors.nodes[] | select(.login == "copilot-swe-agent") | .id' | head -n1 || true)"
-
-if [ -z "$copilot_id" ]; then
-  "$STATUS_WRITER" "$ISSUE_NUMBER" "Blocked"
-  comment_once "<!-- rnr-dispatch-agent-unavailable -->"     "<!-- rnr-dispatch-agent-unavailable -->
-**Dispatcher blocked this issue.**
-
-GitHub Copilot cloud agent is not currently available as an assignable actor for this repository/account. The workflow label was recognized as \`$workflow_label\`, but no real agent was dispatched."
+Close the issue only after the validation is completed or deliberately deferred."
   exit 0
 fi
 
@@ -115,28 +88,36 @@ fi
 
 lane_instruction="$(jq -r --arg lane "$lane" '.[$lane]' "$LANES")"
 title="$(jq -r '.title' <<<"$issue_json")"
-custom_instructions="$lane_instruction
 
-Orchestration context: You were dispatched by the R&R label router because this issue has $workflow_label. Work only on issue #$ISSUE_NUMBER: $title. Read the parent epic and linked canonical artifacts first. Follow Red → Green → Refactor → Integrate. Keep the change focused. Your pull request must reference issue #$ISSUE_NUMBER and use a closing keyword only when the issue acceptance criteria are genuinely satisfied."
+comment_once "<!-- rnr-agent-work-packet -->"   "<!-- rnr-agent-work-packet -->
+## Agent work packet
 
-payload="$(jq -n   --arg assignee "$assignee"   --arg repo "$REPO"   --arg instructions "$custom_instructions"   '{
-    assignees: [$assignee],
-    agent_assignment: {
-      target_repo: $repo,
-      base_branch: "main",
-      custom_instructions: $instructions
-    }
-  }')"
+**Issue:** #$ISSUE_NUMBER — $title  
+**Lane:** `$workflow_label`  
+**Delivery status:** **Ready**  
+**Base branch:** `main`
 
-gh api   --method POST   -H "Accept: application/vnd.github+json"   -H "X-GitHub-Api-Version: 2022-11-28"   "/repos/$REPO/issues/$ISSUE_NUMBER/assignees"   --input - <<<"$payload" >/dev/null
+### Lane contract
 
-"$STATUS_WRITER" "$ISSUE_NUMBER" "In Progress"
+$lane_instruction
 
-comment_once "<!-- rnr-dispatch-agent -->"   "<!-- rnr-dispatch-agent -->
-**Dispatcher → $workflow_label**
+### Execution contract
 
-Dependencies are satisfied. GitHub Copilot cloud agent has been assigned using the **$lane** lane instructions.
+- Work only on this issue and its acceptance criteria.
+- Read the parent epic and relevant canonical artifacts first.
+- Follow **Red → Green → Refactor → Integrate**.
+- Preserve provisional business decisions as provisional.
+- Do not create paid VIN lookups, purchases, or other live side effects unless explicitly authorized.
+- Create a focused branch and pull request.
+- Reference #$ISSUE_NUMBER in the pull request.
+- Do not close the issue until its acceptance criteria are genuinely satisfied.
 
-Project status: **In Progress**.
+### Runtime claim
 
-The next automatic state transition is **In Review** when a linked pull request is opened."
+Any approved execution runtime may claim this packet by posting:
+
+`/agent start`
+
+The runtime-state workflow will move this issue to **In Progress**. A linked pull request moves it to **In Review**."
+
+echo "Issue #$ISSUE_NUMBER is ready for an execution runtime in lane $workflow_label."
