@@ -1,0 +1,75 @@
+name: Agentic control plane CI
+
+on:
+  push:
+    branches:
+      - feature/agentic-dispatch-v0.1
+  pull_request:
+    paths:
+      - '.github/agentic/**'
+      - '.github/scripts/**'
+      - '.github/workflows/agent-dispatch.yml'
+      - '.github/workflows/project-pr-status.yml'
+      - 'docs/project/agentic-delivery-control-plane-v0.1.md'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate JSON
+        shell: bash
+        run: |
+          jq empty .github/agentic/lane-instructions.json
+          jq empty .github/agentic/case-core-dependencies.json
+          jq empty .github/agentic/dispatch-config.json
+
+      - name: Validate shell syntax
+        shell: bash
+        run: |
+          bash -n .github/scripts/project-status.sh
+          bash -n .github/scripts/dispatch-issue.sh
+
+      - name: Validate lane contract
+        shell: bash
+        run: |
+          expected='["architecture","backend","brand","frontend","integration","platform","product","red-team","ux"]'
+          actual="$(jq -c 'keys | sort' .github/agentic/lane-instructions.json)"
+          test "$actual" = "$expected"
+
+      - name: Validate Case Core dependency graph
+        shell: bash
+        run: |
+          test "$(jq -r 'keys | length' .github/agentic/case-core-dependencies.json)" -eq 7
+          test "$(jq -c '."22"' .github/agentic/case-core-dependencies.json)" = '[]'
+          test "$(jq -c '."23"' .github/agentic/case-core-dependencies.json)" = '[22]'
+          test "$(jq -c '."24"' .github/agentic/case-core-dependencies.json)" = '[23]'
+          test "$(jq -c '."25"' .github/agentic/case-core-dependencies.json)" = '[24]'
+          test "$(jq -c '."26"' .github/agentic/case-core-dependencies.json)" = '[24]'
+          test "$(jq -c '."27"' .github/agentic/case-core-dependencies.json)" = '[25,26]'
+          test "$(jq -c '."28"' .github/agentic/case-core-dependencies.json)" = '[27]'
+
+      - name: Verify live Project and Copilot agent capability
+        if: env.GH_TOKEN != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh project view 10 --owner @me --format json >/dev/null
+
+          owner="${GITHUB_REPOSITORY%%/*}"
+          name="${GITHUB_REPOSITORY#*/}"
+          copilot="$(
+            gh api graphql               -f query='query($owner:String!,$name:String!){repository(owner:$owner,name:$name){suggestedActors(capabilities:[CAN_BE_ASSIGNED],first:100){nodes{login}}}}'               -f owner="$owner" -f name="$name"               --jq '.data.repository.suggestedActors.nodes[].login | select(. == "copilot-swe-agent")'               | head -n1
+          )"
+
+          if [ "$copilot" != "copilot-swe-agent" ]; then
+            echo "Copilot cloud agent is not available as an assignable actor." >&2
+            exit 1
+          fi
