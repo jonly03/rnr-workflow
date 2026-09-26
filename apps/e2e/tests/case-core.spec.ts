@@ -65,14 +65,15 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
   await page.getByRole("button", { name: /Case Queue/i }).click();
 
   await expect(page.getByRole("heading", { name: "Case Queue" })).toBeVisible();
-  await expect(page.getByText(reference!)).toBeVisible();
-  await expect(page.getByText("2018 Jeep Wrangler")).toBeVisible();
+  const caseCard = page.locator(".case-card", { hasText: reference! });
+  await expect(caseCard).toBeVisible();
+  await expect(caseCard.getByText("2018 Jeep Wrangler")).toBeVisible();
 
   await page.reload();
 
   await expect(page.getByRole("heading", { name: "Case Queue" })).toBeVisible();
-  await expect(page.getByText(reference!)).toBeVisible();
-  await expect(page.getByText("2018 Jeep Wrangler")).toBeVisible();
+  await expect(caseCard).toBeVisible();
+  await expect(caseCard.getByText("2018 Jeep Wrangler")).toBeVisible();
 });
 
 test("Case Core browser path does not expose paid VIN lookup action", async ({ page }) => {
