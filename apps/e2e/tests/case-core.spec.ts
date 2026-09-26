@@ -33,7 +33,9 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
   const createResponsePromise = page.waitForResponse(
     response =>
       response.request().method() === "POST" &&
-      response.url().includes("/api/v1/cases")
+      response.url().includes("/api/v1/cases") &&
+      response.status() >= 200 &&
+      response.status() < 300
   );
 
   await page.getByRole("button", { name: "Create Case" }).click();
