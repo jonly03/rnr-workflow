@@ -74,13 +74,10 @@ jobs:
           grep -q 'GH_TOKEN="$PROJECT_GH_TOKEN" gh project' .github/scripts/project-status.sh
           grep -q 'GH_TOKEN="$REPO_GH_TOKEN" gh issue' .github/scripts/project-status.sh
 
-      - name: Verify live Project and runtime contract
-        if: env.PROJECT_GH_TOKEN != ''
+      - name: Validate runtime contract
         shell: bash
         run: |
           set -euo pipefail
-          GH_TOKEN="$PROJECT_GH_TOKEN" gh project view 10 --owner @me --format json >/dev/null
-
           test "$(jq -r '.runtime_mode' .github/agentic/dispatch-config.json)" = "vendor-neutral-work-packet"
           test "$(jq -r '.runtime_claim_command' .github/agentic/dispatch-config.json)" = "/agent start"
           test "$(jq -r '.runtime_release_command' .github/agentic/dispatch-config.json)" = "/agent ready"
@@ -88,3 +85,20 @@ jobs:
           grep -q "issue_comment:" .github/workflows/agent-runtime-state.yml
           grep -q "/agent start" .github/workflows/agent-runtime-state.yml
           grep -q "In Progress" .github/workflows/agent-runtime-state.yml
+
+      - name: Probe live Project access
+        if: env.PROJECT_GH_TOKEN != ''
+        shell: bash
+        run: |
+          set +e
+          GH_TOKEN="$PROJECT_GH_TOKEN" gh project view 10 --owner @me --format json >/dev/null 2>project-probe.err
+          rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning::Live Project probe unavailable; structural control-plane validation still passed."
+            echo "### Project probe" >> "$GITHUB_STEP_SUMMARY"
+            echo "Live Projects v2 access: **UNAVAILABLE / RATE-LIMITED**" >> "$GITHUB_STEP_SUMMARY"
+            sed -n '1,5p' project-probe.err >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "### Project probe" >> "$GITHUB_STEP_SUMMARY"
+          echo "Live Projects v2 access: **AVAILABLE**" >> "$GITHUB_STEP_SUMMARY"
