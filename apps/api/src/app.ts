@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import { z } from "zod";
 import type { CaseRecord } from "./types.js";
-import { JsonCaseStore } from "./store.js";
+import type { CaseStore } from "./store.js";
 
 const createCaseSchema = z.object({
   channel: z.enum(["DIRECT", "AUCTION", "INSURANCE"]),
@@ -18,20 +18,28 @@ const createCaseSchema = z.object({
   })
 });
 
-export function createApp(store: JsonCaseStore) {
+export function createApp(store: CaseStore) {
   const app = express();
   app.use(cors());
   app.use(express.json());
 
-  const detail = (c: CaseRecord) => {
-    const vehicle = store.getVehicle(c.vehicle_id);
-    const glass_request = store.getGlassRequest(c.glass_request_id);
+  const detail = async (c: CaseRecord) => {
+    const [vehicle, glass_request] = await Promise.all([
+      store.getVehicle(c.vehicle_id),
+      store.getGlassRequest(c.glass_request_id)
+    ]);
     return { ...c, vehicle, glass_request };
   };
 
-  app.get("/health", (_req, res) => res.json({ ok: true }));
+  app.get("/health", async (_req, res) => {
+    await store.health();
+    res.json({
+      ok: true,
+      storage: process.env.DATABASE_URL ? "postgres" : "json"
+    });
+  });
 
-  app.post("/api/v1/cases", (req, res) => {
+  app.post("/api/v1/cases", async (req, res) => {
     const parsed = createCaseSchema.safeParse(req.body);
     if (!parsed.success) {
       const first = parsed.error.issues[0];
@@ -45,7 +53,7 @@ export function createApp(store: JsonCaseStore) {
     }
 
     const idempotencyKey = req.header("Idempotency-Key") || undefined;
-    const result = store.createCase({
+    const result = await store.createCase({
       channel: parsed.data.channel,
       customer_id: parsed.data.customer_id,
       vehicle: parsed.data.vehicle,
@@ -53,35 +61,36 @@ export function createApp(store: JsonCaseStore) {
       idempotencyKey
     });
 
-    return res.status(result.reused ? 200 : 201).json(detail(result.caseRecord));
+    return res.status(result.reused ? 200 : 201).json(await detail(result.caseRecord));
   });
 
-  app.get("/api/v1/cases", (_req, res) => {
-    res.json(store.listCases().map(detail));
+  app.get("/api/v1/cases", async (_req, res) => {
+    const cases = await store.listCases();
+    res.json(await Promise.all(cases.map(detail)));
   });
 
-  app.get("/api/v1/cases/:caseId", (req, res) => {
-    const c = store.getCase(req.params.caseId);
+  app.get("/api/v1/cases/:caseId", async (req, res) => {
+    const c = await store.getCase(req.params.caseId);
     if (!c) {
       return res.status(404).json({
         error: { code: "CASE_NOT_FOUND", message: "Case not found." }
       });
     }
-    res.json(detail(c));
+    res.json(await detail(c));
   });
 
-  app.get("/api/v1/cases/:caseId/events", (req, res) => {
-    const c = store.getCase(req.params.caseId);
+  app.get("/api/v1/cases/:caseId/events", async (req, res) => {
+    const c = await store.getCase(req.params.caseId);
     if (!c) {
       return res.status(404).json({
         error: { code: "CASE_NOT_FOUND", message: "Case not found." }
       });
     }
-    res.json(store.getEvents(c.id));
+    res.json(await store.getEvents(c.id));
   });
 
-  app.post("/api/v1/cases/:caseId/actions", (req, res) => {
-    const c = store.getCase(req.params.caseId);
+  app.post("/api/v1/cases/:caseId/actions", async (req, res) => {
+    const c = await store.getCase(req.params.caseId);
     if (!c) {
       return res.status(404).json({
         error: { code: "CASE_NOT_FOUND", message: "Case not found." }
@@ -92,6 +101,16 @@ export function createApp(store: JsonCaseStore) {
       error: {
         code: "ACTION_NOT_ALLOWED",
         message: `Action ${String(req.body?.action ?? "") || "(missing)"} is not implemented in Case Core v0.1.`
+      }
+    });
+  });
+
+  app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error(error);
+    res.status(500).json({
+      error: {
+        code: "INTERNAL_ERROR",
+        message: "The request could not be completed."
       }
     });
   });
