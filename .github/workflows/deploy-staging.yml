@@ -125,6 +125,30 @@ jobs:
           fi
           grep -q '^\[' /tmp/staging-proxy.json
 
+      - name: Live web API create check
+        env:
+          WEB_URL: ${{ steps.web.outputs.url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload='{"channel":"DIRECT","vehicle":{"year":2018,"make":"Jeep","model":"Wrangler","vin":"1C4HJXEG3JW224862"},"glass_request":{"glass_type":"WINDSHIELD"}}'
+          status="$(curl --show-error --silent \
+            -o /tmp/staging-create.json \
+            -w '%{http_code}' \
+            -X POST \
+            -H "content-type: application/json" \
+            -H "idempotency-key: staging-smoke-${GITHUB_SHA}" \
+            -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
+            --data "$payload" \
+            "$WEB_URL/api/v1/cases")"
+          echo "Create status: $status"
+          cat /tmp/staging-create.json || true
+          if [ "$status" != "201" ] && [ "$status" != "200" ]; then
+            echo "Same-origin web API create failed." >&2
+            exit 1
+          fi
+          grep -q '"reference":"RRA-' /tmp/staging-create.json
+
       - name: Live browser smoke
         working-directory: apps/e2e
         env:
