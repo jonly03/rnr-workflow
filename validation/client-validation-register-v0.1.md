@@ -1,6 +1,6 @@
 # R&R Client Validation Register v0.1
 
-Status: PROVISIONAL — CLIENT VALIDATION REQUIRED
+Status: ACCEPTED WORKING REGISTER — CLIENT VALIDATION REQUIRED
 
 Purpose: collect all current educated assumptions that replaced previously open questions so the team can continue building without silently inventing product, UX, brand, or design decisions.
 
@@ -48,3 +48,10 @@ Until client validation occurs:
 > Provisional decisions may be used for reversible implementation work, but they must not be described as client-approved facts.
 
 Architecture and frontend should prefer configurations, tokens, mappings, and replaceable abstractions where a provisional decision is likely to change.
+
+
+## Acceptance Record
+
+Human acceptance recorded on 2026-09-26.
+
+This register is accepted as the current working assumption set for reversible implementation work pending client validation.
