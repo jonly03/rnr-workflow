@@ -1,6 +1,6 @@
 # R&R Finest Auto Glass Design Guide v0.1
 
-Status: DRAFT FOR HUMAN ACCEPTANCE
+Status: ACCEPTED
 
 Sources:
 - `brand/brand-book-v0.1.md` (ACCEPTED)
@@ -849,3 +849,12 @@ For Direct Customer light surfaces, invert the background/surface family to ligh
 **Rationale:** Internal operations need speed and accuracy; external experiences should expose less vehicle identity data by default.
 
 **Validation status:** CLIENT VALIDATION REQUIRED.
+
+
+---
+
+## 25. Acceptance Record
+
+Human acceptance recorded on 2026-09-26.
+
+Accepted for progression to architecture and implementation planning. Provisional decisions remain subject to later client validation and must not be represented as client-approved facts.
