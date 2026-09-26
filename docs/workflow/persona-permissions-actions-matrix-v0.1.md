@@ -237,15 +237,13 @@ Architecture must not infer additional permissions from UI visibility alone.
 - [x] Forbidden persona actions are explicit.
 - [x] Direct, Auction, and Insurance approval semantics are distinct.
 - [x] Deferred client assumptions remain explicitly provisional.
-- [ ] Human acceptance recorded before Architecture treats this matrix as frozen.
+- [x] Human acceptance recorded before Architecture treats this matrix as frozen.
 
 ## 11. Acceptance record
 
-Pending human review.
+Human acceptance recorded on 2026-09-26.
 
-When accepted, record:
-
-- accepted by;
-- date;
-- any revisions;
-- reference to the accepting PR/review.
+- Accepted for progression to Case Core Architecture.
+- No revisions requested at acceptance.
+- Acceptance reference: PR #86 / human approval in the project conversation.
+- Deferred client assumptions remain provisional and must not be described as client-approved facts.
