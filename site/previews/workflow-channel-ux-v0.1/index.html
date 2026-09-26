@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>R&R Channel UX Prototype</title>
+<style>
+:root{
+  --bg:#09111f;--panel:#111b2e;--card:#162238;--line:#2e3e5c;--text:#eef4ff;--muted:#9eb0cc;
+  --accent:#7aa2ff;--accent-soft:#1a2a4c;--good:#63d3aa;--warn:#f4bd68;--bad:#ef7f8c;--white:#fff;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+button,input,select{font:inherit}
+button{cursor:pointer}
+a{color:inherit}
+.app{max-width:1480px;margin:0 auto;padding:18px}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
+.brand{display:flex;align-items:center;gap:10px}
+.mark{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--accent),#9a7cff);display:grid;place-items:center;font-weight:800;color:#08111f}
+.brand h1{font-size:18px;margin:0}.brand p{margin:1px 0 0;color:var(--muted);font-size:12px}
+.spec-link{border:1px solid var(--line);background:var(--panel);padding:9px 11px;border-radius:9px;text-decoration:none}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+.tab{border:1px solid var(--line);background:var(--panel);color:var(--text);padding:10px 13px;border-radius:10px}
+.tab.active{border-color:var(--accent);background:var(--accent-soft)}
+.channel{display:none}.channel.active{display:block}
+.shell{display:grid;grid-template-columns:260px minmax(0,1fr);gap:14px}
+.sidebar,.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px}
+.sidebar{padding:14px;height:max-content}
+.nav-title,.eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:700}
+.nav-list{display:grid;gap:6px;margin-top:10px}
+.nav-item{padding:10px;border-radius:9px;color:var(--muted)}
+.nav-item.active{background:var(--accent-soft);color:var(--text)}
+.main{display:grid;gap:14px}
+.panel{padding:15px}
+.header-row{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+h2,h3,p{margin-top:0}h2{font-size:22px;margin-bottom:4px}h3{font-size:15px;margin-bottom:10px}
+.muted{color:var(--muted)}
+.badge{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:5px 9px;font-size:12px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--good)}
+.grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:11px;padding:12px}
+.stat strong{font-size:20px;display:block;margin-top:3px}
+.workflow{display:grid;grid-template-columns:repeat(8,minmax(110px,1fr));gap:6px;overflow:auto;padding-bottom:2px}
+.step{min-width:110px;border:1px solid var(--line);background:var(--card);border-radius:10px;padding:10px}
+.step.complete{border-color:rgba(99,211,170,.5)}
+.step.current{border-color:var(--accent);background:var(--accent-soft)}
+.step .n{font-size:10px;color:var(--muted);text-transform:uppercase}
+.step b{display:block;margin-top:3px;font-size:12px}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+.btn{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:9px;padding:9px 11px}
+.btn.primary{background:var(--accent);color:#07101e;border-color:var(--accent);font-weight:700}
+.btn.warn{border-color:var(--warn);color:#ffe1a9}
+.list{display:grid;gap:8px}
+.row{display:grid;grid-template-columns:1.2fr 1fr 1fr 1fr auto;gap:10px;align-items:center;border:1px solid var(--line);background:var(--card);padding:10px;border-radius:10px}
+.row.header{background:transparent;border:none;color:var(--muted);font-size:11px;text-transform:uppercase}
+.progress{height:8px;background:#0b1426;border-radius:999px;overflow:hidden}
+.progress span{display:block;height:100%;background:var(--accent)}
+.customer-shell{max-width:840px;margin:0 auto;display:grid;gap:14px}
+.customer-card{background:#fff;color:#182033;border-radius:16px;padding:18px}
+.customer-card .muted{color:#64748b}
+.customer-progress{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+.customer-step{padding:10px;border-radius:10px;background:#f1f5f9;font-size:12px}
+.customer-step.current{background:#dbe8ff;border:1px solid #7aa2ff}
+.customer-step.done{background:#e8f8f1}
+.quote-box{border:1px solid #d8e1ef;border-radius:12px;padding:14px}
+.quote-total{font-size:28px;font-weight:800}
+.auction-top{display:flex;gap:8px;flex-wrap:wrap}
+.input{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:9px;padding:9px 10px}
+.claim-grid{display:grid;grid-template-columns:1.2fr .8fr;gap:14px}
+.doc-list{display:grid;gap:8px}.doc{display:flex;justify-content:space-between;gap:10px;padding:10px;border:1px solid var(--line);border-radius:9px;background:var(--card)}
+.timeline{display:grid;gap:10px}.event{display:grid;grid-template-columns:18px 1fr;gap:9px}.event i{width:10px;height:10px;border-radius:50%;background:var(--accent);margin-top:5px}
+@media(max-width:1000px){.shell{grid-template-columns:1fr}.sidebar{display:none}.grid-4{grid-template-columns:repeat(2,1fr)}.claim-grid{grid-template-columns:1fr}}
+@media(max-width:700px){.app{padding:12px}.topbar{align-items:flex-start}.spec-link{display:none}.grid-4,.grid-3{grid-template-columns:1fr}.row{grid-template-columns:1fr 1fr}.row.header{display:none}.workflow{grid-template-columns:repeat(8,120px)}.customer-progress{grid-template-columns:1fr}.tabs{display:grid;grid-template-columns:1fr 1fr}.tab{width:100%}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <div class="brand"><div class="mark">R&R</div><div><h1>R&R Finest Auto Glass</h1><p>Channel UX prototype • one case engine, four experiences</p></div></div>
+    <a class="spec-link" href="workflow-explorer.html">Open workflow spec</a>
+  </div>
+
+  <div class="tabs" role="tablist" aria-label="Channel prototypes">
+    <button class="tab active" data-target="staff">R&R Staff</button>
+    <button class="tab" data-target="direct">Direct Customer</button>
+    <button class="tab" data-target="auction">Auction</button>
+    <button class="tab" data-target="insurance">Insurance</button>
+  </div>
+
+  <section id="staff" class="channel active">
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="nav-title">Operations</div>
+        <div class="nav-list">
+          <div class="nav-item active">Case queue</div><div class="nav-item">Needs attention</div><div class="nav-item">Quotes</div>
+          <div class="nav-item">Orders</div><div class="nav-item">Installations</div><div class="nav-item">Invoices</div>
+        </div>
+      </aside>
+      <main class="main">
+        <div class="panel">
+          <div class="header-row">
+            <div><div class="eyebrow">Case RRA-000123</div><h2>2018 Jeep Wrangler • Windshield</h2><p class="muted">Direct • VIN ending 4862 • Randolph, MA</p></div>
+            <span class="badge"><span class="dot"></span>Quote approval</span>
+          </div>
+          <div class="workflow">
+            <div class="step complete"><span class="n">1</span><b>Intake</b></div><div class="step complete"><span class="n">2</span><b>Identify</b></div>
+            <div class="step complete"><span class="n">3</span><b>Source</b></div><div class="step complete"><span class="n">4</span><b>Price</b></div>
+            <div class="step current"><span class="n">5</span><b>Quote</b></div><div class="step"><span class="n">6</span><b>Order</b></div>
+            <div class="step"><span class="n">7</span><b>Install</b></div><div class="step"><span class="n">8</span><b>Complete</b></div>
+          </div>
+        </div>
+
+        <div class="grid-4">
+          <div class="stat"><span class="muted">Selected part</span><strong>DW02416 GTY</strong><small class="muted">FYG interchangeable</small></div>
+          <div class="stat"><span class="muted">Acquisition</span><strong>$92.25</strong><small class="muted">Randolph • In stock</small></div>
+          <div class="stat"><span class="muted">Sell price</span><strong>$467.25</strong><small class="muted">Before tax</small></div>
+          <div class="stat"><span class="muted">Projected profit</span><strong>$250.00</strong><small class="muted">Target met</small></div>
+        </div>
+
+        <div class="grid-3">
+          <div class="panel"><h3>Current action</h3><p>Quote v1 is ready. Customer needs to approve before procurement.</p><div class="actions"><button class="btn primary">Send quote</button><button class="btn">Preview quote</button></div></div>
+          <div class="panel"><h3>Glass evidence</h3><p><b>YMM:</b> 2 candidates<br><b>VIN:</b> used once<br><b>Result saved:</b> yes</p><span class="badge">No repeat VIN charge</span></div>
+          <div class="panel"><h3>Supplier decision</h3><p><b>Primary:</b> $274.50<br><b>Interchangeable:</b> $92.25<br><b>Regional:</b> excluded</p><span class="badge">Cheapest eligible selected</span></div>
+        </div>
+
+        <div class="panel"><h3>Case activity</h3><div class="timeline">
+          <div class="event"><i></i><div><b>Quote v1 created</b><div class="muted">Price snapshot locked</div></div></div>
+          <div class="event"><i></i><div><b>DW02416 GTY selected</b><div class="muted">Lowest eligible stocked offer</div></div></div>
+          <div class="event"><i></i><div><b>VIN lookup resolved ambiguity</b><div class="muted">Result persisted to case</div></div></div>
+        </div></div>
+      </main>
+    </div>
+  </section>
+
+  <section id="direct" class="channel">
+    <div class="customer-shell">
+      <div class="customer-card">
+        <div class="eyebrow" style="color:#64748b">Your auto glass service</div>
+        <h2 style="color:#182033">2018 Jeep Wrangler</h2>
+        <p class="muted">Windshield replacement • Request #RRA-000123</p>
+        <div class="customer-progress">
+          <div class="customer-step done">✓ Request received</div><div class="customer-step done">✓ Glass identified</div>
+          <div class="customer-step current">3. Quote ready</div><div class="customer-step">4. Appointment</div><div class="customer-step">5. Completed</div>
+        </div>
+      </div>
+      <div class="customer-card">
+        <div class="header-row"><div><h3 style="color:#182033">Your quote is ready</h3><p class="muted">Includes glass, installation and applicable tax.</p></div><div class="quote-total">$389.69</div></div>
+        <div class="quote-box"><b>Windshield replacement</b><p class="muted">Correct glass confirmed for your vehicle. Quote valid through Sep 29.</p><div class="actions"><button class="btn primary">Approve quote</button><button class="btn" style="color:#182033;background:#fff">Decline</button></div></div>
+      </div>
+      <div class="customer-card"><h3 style="color:#182033">What happens next?</h3><p class="muted">Once you approve, R&R will verify the glass is still available, place the order, and contact you to schedule installation. You will not be asked to repeat vehicle information we already confirmed.</p></div>
+    </div>
+  </section>
+
+  <section id="auction" class="channel">
+    <div class="shell">
+      <aside class="sidebar"><div class="nav-title">Auction workspace</div><div class="nav-list"><div class="nav-item active">Open jobs</div><div class="nav-item">Needs approval</div><div class="nav-item">Scheduled</div><div class="nav-item">Completed</div><div class="nav-item">Invoices</div></div></aside>
+      <main class="main">
+        <div class="panel"><div class="header-row"><div><div class="eyebrow">America's Auto Auction</div><h2>Open glass jobs</h2><p class="muted">Fleet-style view optimized for volume, stock numbers, approvals, and installation dates.</p></div><button class="btn primary">+ New vehicle</button></div>
+          <div class="auction-top"><input class="input" placeholder="Search stock #, VIN, vehicle"><select class="input"><option>All statuses</option><option>Needs approval</option><option>Scheduled</option></select><button class="btn">Upload CSV</button></div>
+        </div>
+        <div class="panel">
+          <div class="row header"><span>Vehicle</span><span>Stock #</span><span>Glass</span><span>Status</span><span>Action</span></div>
+          <div class="list">
+            <div class="row"><div><b>2019 Chevy Silverado</b><div class="muted">VIN …2184</div></div><span>AA-49182</span><span>Windshield</span><span class="badge">Needs approval</span><button class="btn primary">Review $374.69</button></div>
+            <div class="row"><div><b>2021 Toyota Camry</b><div class="muted">VIN …9301</div></div><span>AA-49197</span><span>Door glass</span><span class="badge">Scheduled</span><button class="btn">Sep 28</button></div>
+            <div class="row"><div><b>2017 Ford Escape</b><div class="muted">VIN …7744</div></div><span>AA-49204</span><span>Back glass</span><span class="badge">Sourcing</span><button class="btn">View</button></div>
+          </div>
+        </div>
+        <div class="grid-3"><div class="stat"><span class="muted">Open jobs</span><strong>14</strong></div><div class="stat"><span class="muted">Need approval</span><strong>4</strong></div><div class="stat"><span class="muted">Scheduled this week</span><strong>7</strong></div></div>
+      </main>
+    </div>
+  </section>
+
+  <section id="insurance" class="channel">
+    <div class="shell">
+      <aside class="sidebar"><div class="nav-title">Insurance assignments</div><div class="nav-list"><div class="nav-item active">Assignments</div><div class="nav-item">Awaiting authorization</div><div class="nav-item">Scheduled</div><div class="nav-item">Completed</div><div class="nav-item">Documents</div></div></aside>
+      <main class="main">
+        <div class="panel"><div class="header-row"><div><div class="eyebrow">Assignment #SF-882701</div><h2>Jordan M. • 2020 Honda CR-V</h2><p class="muted">Claim #CLM-291844 • Windshield • Direct-bill insurance channel</p></div><span class="badge"><span class="dot" style="background:var(--warn)"></span>Awaiting authorization</span></div></div>
+
+        <div class="claim-grid">
+          <div class="main">
+            <div class="panel"><h3>Assignment progress</h3><div class="workflow" style="grid-template-columns:repeat(6,minmax(110px,1fr))">
+              <div class="step complete"><span class="n">1</span><b>Assignment received</b></div><div class="step complete"><span class="n">2</span><b>Vehicle validated</b></div>
+              <div class="step complete"><span class="n">3</span><b>Glass sourced</b></div><div class="step current"><span class="n">4</span><b>Authorization</b></div>
+              <div class="step"><span class="n">5</span><b>Scheduled</b></div><div class="step"><span class="n">6</span><b>Completed</b></div>
+            </div></div>
+            <div class="panel"><h3>Authorization</h3><p>Estimate is ready and waiting for carrier approval. Customer-facing quote language is suppressed for this channel.</p><div class="actions"><button class="btn primary">Submit estimate</button><button class="btn">View estimate</button></div></div>
+          </div>
+          <div class="main">
+            <div class="panel"><h3>Claim details</h3><p><b>Carrier:</b> Safelite-managed assignment<br><b>Claim:</b> CLM-291844<br><b>Work order:</b> WO-88431<br><b>Insured:</b> Jordan M.</p></div>
+            <div class="panel"><h3>Documents</h3><div class="doc-list"><div class="doc"><span>Estimate v1</span><b>Ready</b></div><div class="doc"><span>Work order</span><b>Received</b></div><div class="doc"><span>Final invoice</span><span class="muted">Later</span></div></div></div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </section>
+</div>
+
+<script>
+const tabs=[...document.querySelectorAll('.tab')];
+const channels=[...document.querySelectorAll('.channel')];
+tabs.forEach(tab=>tab.addEventListener('click',()=>{
+  const id=tab.dataset.target;
+  tabs.forEach(t=>t.classList.toggle('active',t===tab));
+  channels.forEach(c=>c.classList.toggle('active',c.id===id));
+}));
+</script>
+</body>
+</html>
