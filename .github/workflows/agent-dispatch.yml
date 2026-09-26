@@ -1,0 +1,80 @@
+name: Agentic issue dispatcher
+
+on:
+  issues:
+    types:
+      - labeled
+      - closed
+      - reopened
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue number to evaluate and dispatch
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: agent-dispatch-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+      PROJECT_OWNER: '@me'
+      PROJECT_NUMBER: '10'
+
+    steps:
+      - name: Checkout orchestration control plane
+        uses: actions/checkout@v4
+
+      - name: Require dispatcher token
+        shell: bash
+        run: |
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "PROJECT_TOKEN is required for Projects v2 and Copilot agent assignment." >&2
+            exit 1
+          fi
+
+      - name: Dispatch manual request
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          chmod +x .github/scripts/project-status.sh .github/scripts/dispatch-issue.sh
+          .github/scripts/dispatch-issue.sh "${{ inputs.issue_number }}"
+
+      - name: Handle workflow label
+        if: github.event_name == 'issues' && github.event.action == 'labeled' && startsWith(github.event.label.name, 'workflow:')
+        shell: bash
+        run: |
+          chmod +x .github/scripts/project-status.sh .github/scripts/dispatch-issue.sh
+          .github/scripts/dispatch-issue.sh "${{ github.event.issue.number }}"
+
+      - name: Handle reopened issue
+        if: github.event_name == 'issues' && github.event.action == 'reopened'
+        shell: bash
+        run: |
+          chmod +x .github/scripts/project-status.sh .github/scripts/dispatch-issue.sh
+          .github/scripts/project-status.sh "${{ github.event.issue.number }}" "Backlog"
+          .github/scripts/dispatch-issue.sh "${{ github.event.issue.number }}"
+
+      - name: Mark closed issue done and release dependents
+        if: github.event_name == 'issues' && github.event.action == 'closed'
+        shell: bash
+        run: |
+          chmod +x .github/scripts/project-status.sh .github/scripts/dispatch-issue.sh
+          .github/scripts/project-status.sh "${{ github.event.issue.number }}" "Done"
+
+          # Pilot dependency sweep: closing any Case Core issue re-evaluates the
+          # whole Case Core graph. Only issues whose prerequisites are closed
+          # can move forward.
+          jq -r '.auto_dispatch_issue_numbers[]' .github/agentic/dispatch-config.json |
+          while read -r issue_number; do
+            .github/scripts/dispatch-issue.sh "$issue_number"
+          done

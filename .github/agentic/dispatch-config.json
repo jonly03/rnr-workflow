@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "pilot": "case-core",
+  "project_number": 10,
+  "default_base_branch": "main",
+  "copilot_assignee": "copilot-swe-agent[bot]",
+  "auto_dispatch_issue_numbers": [
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28
+  ],
+  "validation_policy": {
+    "type:validation": {
+      "delivery_status": "Human Validation",
+      "human_gate": "Client",
+      "assign_agent": false
+    }
+  }
+}

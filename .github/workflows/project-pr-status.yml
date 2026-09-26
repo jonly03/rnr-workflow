@@ -1,0 +1,68 @@
+name: Project status from pull requests
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - ready_for_review
+      - synchronize
+      - closed
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: project-pr-status-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+      PROJECT_OWNER: '@me'
+      PROJECT_NUMBER: '10'
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+
+    steps:
+      - name: Checkout status writer
+        uses: actions/checkout@v4
+
+      - name: Require Project token
+        shell: bash
+        run: |
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "PROJECT_TOKEN is required." >&2
+            exit 1
+          fi
+
+      - name: Update linked issue status
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x .github/scripts/project-status.sh
+
+          mapfile -t issues < <(
+            gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"               --json closingIssuesReferences               --jq '.closingIssuesReferences[].number'
+          )
+
+          if [ "${#issues[@]}" -eq 0 ]; then
+            echo "PR #$PR_NUMBER has no closing issue references; nothing to synchronize."
+            exit 0
+          fi
+
+          action="${{ github.event.action }}"
+          merged="${{ github.event.pull_request.merged }}"
+
+          for issue_number in "${issues[@]}"; do
+            if [ "$action" = "closed" ] && [ "$merged" = "true" ]; then
+              .github/scripts/project-status.sh "$issue_number" "Done"
+            elif [ "$action" = "closed" ]; then
+              .github/scripts/project-status.sh "$issue_number" "In Progress"
+            else
+              .github/scripts/project-status.sh "$issue_number" "In Review"
+            fi
+          done
