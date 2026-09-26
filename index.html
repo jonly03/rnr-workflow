@@ -1,212 +1,410 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>R&R Channel UX Prototype</title>
-<style>
-:root{
-  --bg:#09111f;--panel:#111b2e;--card:#162238;--line:#2e3e5c;--text:#eef4ff;--muted:#9eb0cc;
-  --accent:#7aa2ff;--accent-soft:#1a2a4c;--good:#63d3aa;--warn:#f4bd68;--bad:#ef7f8c;--white:#fff;
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>R&R Client Milestone Demo Suite</title>
+  <style>:root{
+  --bg:#0b1220;
+  --bg2:#111827;
+  --surface:#172033;
+  --surface2:#1e293b;
+  --border:#334155;
+  --text:#f8fafc;
+  --text2:#cbd5e1;
+  --muted:#94a3b8;
+  --brand:#4f46e5;
+  --brand2:#4338ca;
+  --success:#059669;
+  --attention:#d97706;
+  --critical:#dc2626;
+  --cancelled:#6b7280;
+  --light:#f8fafc;
+  --light2:#eef2ff;
+  --ink:#111827;
+  --shadow:0 16px 40px rgba(0,0,0,.24);
+  --radius:16px;
+  --radius-sm:10px;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);min-height:100vh}
 button,input,select{font:inherit}
-button{cursor:pointer}
 a{color:inherit}
-.app{max-width:1480px;margin:0 auto;padding:18px}
-.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
-.brand{display:flex;align-items:center;gap:10px}
-.mark{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--accent),#9a7cff);display:grid;place-items:center;font-weight:800;color:#08111f}
-.brand h1{font-size:18px;margin:0}.brand p{margin:1px 0 0;color:var(--muted);font-size:12px}
-.spec-link{border:1px solid var(--line);background:var(--panel);padding:9px 11px;border-radius:9px;text-decoration:none}
-.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
-.tab{border:1px solid var(--line);background:var(--panel);color:var(--text);padding:10px 13px;border-radius:10px}
-.tab.active{border-color:var(--accent);background:var(--accent-soft)}
-.channel{display:none}.channel.active{display:block}
-.shell{display:grid;grid-template-columns:260px minmax(0,1fr);gap:14px}
-.sidebar,.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px}
-.sidebar{padding:14px;height:max-content}
-.nav-title,.eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:700}
-.nav-list{display:grid;gap:6px;margin-top:10px}
-.nav-item{padding:10px;border-radius:9px;color:var(--muted)}
-.nav-item.active{background:var(--accent-soft);color:var(--text)}
-.main{display:grid;gap:14px}
-.panel{padding:15px}
-.header-row{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
-h2,h3,p{margin-top:0}h2{font-size:22px;margin-bottom:4px}h3{font-size:15px;margin-bottom:10px}
-.muted{color:var(--muted)}
-.badge{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:5px 9px;font-size:12px}
-.dot{width:7px;height:7px;border-radius:50%;background:var(--good)}
-.grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
-.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
-.stat{background:var(--card);border:1px solid var(--line);border-radius:11px;padding:12px}
-.stat strong{font-size:20px;display:block;margin-top:3px}
-.workflow{display:grid;grid-template-columns:repeat(8,minmax(110px,1fr));gap:6px;overflow:auto;padding-bottom:2px}
-.step{min-width:110px;border:1px solid var(--line);background:var(--card);border-radius:10px;padding:10px}
-.step.complete{border-color:rgba(99,211,170,.5)}
-.step.current{border-color:var(--accent);background:var(--accent-soft)}
-.step .n{font-size:10px;color:var(--muted);text-transform:uppercase}
-.step b{display:block;margin-top:3px;font-size:12px}
-.actions{display:flex;gap:8px;flex-wrap:wrap}
-.btn{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:9px;padding:9px 11px}
-.btn.primary{background:var(--accent);color:#07101e;border-color:var(--accent);font-weight:700}
-.btn.warn{border-color:var(--warn);color:#ffe1a9}
-.list{display:grid;gap:8px}
-.row{display:grid;grid-template-columns:1.2fr 1fr 1fr 1fr auto;gap:10px;align-items:center;border:1px solid var(--line);background:var(--card);padding:10px;border-radius:10px}
-.row.header{background:transparent;border:none;color:var(--muted);font-size:11px;text-transform:uppercase}
-.progress{height:8px;background:#0b1426;border-radius:999px;overflow:hidden}
-.progress span{display:block;height:100%;background:var(--accent)}
-.customer-shell{max-width:840px;margin:0 auto;display:grid;gap:14px}
-.customer-card{background:#fff;color:#182033;border-radius:16px;padding:18px}
-.customer-card .muted{color:#64748b}
-.customer-progress{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
-.customer-step{padding:10px;border-radius:10px;background:#f1f5f9;font-size:12px}
-.customer-step.current{background:#dbe8ff;border:1px solid #7aa2ff}
-.customer-step.done{background:#e8f8f1}
-.quote-box{border:1px solid #d8e1ef;border-radius:12px;padding:14px}
-.quote-total{font-size:28px;font-weight:800}
-.auction-top{display:flex;gap:8px;flex-wrap:wrap}
-.input{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:9px;padding:9px 10px}
-.claim-grid{display:grid;grid-template-columns:1.2fr .8fr;gap:14px}
-.doc-list{display:grid;gap:8px}.doc{display:flex;justify-content:space-between;gap:10px;padding:10px;border:1px solid var(--line);border-radius:9px;background:var(--card)}
-.timeline{display:grid;gap:10px}.event{display:grid;grid-template-columns:18px 1fr;gap:9px}.event i{width:10px;height:10px;border-radius:50%;background:var(--accent);margin-top:5px}
-@media(max-width:1000px){.shell{grid-template-columns:1fr}.sidebar{display:none}.grid-4{grid-template-columns:repeat(2,1fr)}.claim-grid{grid-template-columns:1fr}}
-@media(max-width:700px){.app{padding:12px}.topbar{align-items:flex-start}.spec-link{display:none}.grid-4,.grid-3{grid-template-columns:1fr}.row{grid-template-columns:1fr 1fr}.row.header{display:none}.workflow{grid-template-columns:repeat(8,120px)}.customer-progress{grid-template-columns:1fr}.tabs{display:grid;grid-template-columns:1fr 1fr}.tab{width:100%}}
+button{cursor:pointer}
+.shell{min-height:100vh;display:grid;grid-template-columns:290px 1fr}
+.sidebar{background:linear-gradient(180deg,#0a1020,#111827);border-right:1px solid var(--border);padding:22px 18px;position:sticky;top:0;height:100vh;overflow:auto}
+.brand{display:flex;align-items:center;gap:12px;margin-bottom:22px}
+.mark{width:44px;height:44px;border-radius:14px;background:linear-gradient(135deg,var(--brand),#7c3aed);display:grid;place-items:center;font-weight:800;box-shadow:var(--shadow)}
+.brand h1{font-size:16px;margin:0}.brand p{margin:3px 0 0;color:var(--muted);font-size:12px}
+.nav-title{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);margin:18px 10px 8px}
+.nav a{display:flex;gap:10px;align-items:center;padding:10px 12px;border-radius:10px;color:var(--text2);text-decoration:none;margin:3px 0;font-size:14px}
+.nav a:hover,.nav a.active{background:var(--surface2);color:var(--text)}
+.nav a.active{outline:1px solid #4f46e577}
+.nav .num{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:999px;background:#ffffff0d;color:var(--muted);font-size:11px}
+.main{min-width:0}
+.topbar{position:sticky;top:0;z-index:20;background:#0b1220e8;backdrop-filter:blur(12px);border-bottom:1px solid var(--border);padding:15px 28px;display:flex;justify-content:space-between;align-items:center;gap:14px}
+.crumb{font-size:13px;color:var(--muted)}
+.top-actions{display:flex;gap:8px;flex-wrap:wrap}
+.content{padding:28px;max-width:1480px;margin:0 auto}
+.hero{display:grid;grid-template-columns:1.25fr .75fr;gap:22px;align-items:stretch;margin-bottom:26px}
+.hero-card,.panel,.card{background:linear-gradient(180deg,var(--surface),#121a2a);border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 10px 26px rgba(0,0,0,.12)}
+.hero-card{padding:30px}
+.kicker{font-size:12px;text-transform:uppercase;letter-spacing:.14em;color:#a5b4fc;margin-bottom:10px}
+h2{font-size:34px;line-height:1.05;margin:0 0 12px;letter-spacing:-.03em}
+h3{font-size:20px;margin:0 0 12px}
+h4{font-size:15px;margin:0 0 8px}
+p{line-height:1.55;color:var(--text2)}
+.lead{font-size:18px;max-width:850px}
+.meta{display:flex;gap:9px;flex-wrap:wrap;margin-top:18px}
+.badge{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:6px 10px;font-size:12px;background:#ffffff0b;border:1px solid #ffffff12;color:var(--text2)}
+.badge.success{background:#05966922;color:#a7f3d0;border-color:#05966955}
+.badge.attn{background:#d9770622;color:#fde68a;border-color:#d9770655}
+.badge.critical{background:#dc262622;color:#fecaca;border-color:#dc262655}
+.badge.brand{background:#4f46e522;color:#c7d2fe;border-color:#4f46e566}
+.metric-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;height:100%}
+.metric{padding:18px;background:var(--surface);border:1px solid var(--border);border-radius:14px}
+.metric strong{display:block;font-size:26px;margin-top:5px}.metric span{font-size:12px;color:var(--muted)}
+.grid{display:grid;gap:16px}.grid.two{grid-template-columns:repeat(2,minmax(0,1fr))}.grid.three{grid-template-columns:repeat(3,minmax(0,1fr))}.grid.four{grid-template-columns:repeat(4,minmax(0,1fr))}
+.panel,.card{padding:20px}
+.card.light{background:var(--light);color:var(--ink);border-color:#dbeafe}.card.light p,.card.light .muted{color:#475569}
+.section{margin:28px 0}.section-head{display:flex;align-items:end;justify-content:space-between;gap:14px;margin-bottom:14px}.section-head p{margin:0}
+.btn{border:1px solid var(--border);background:var(--surface2);color:var(--text);border-radius:10px;padding:10px 14px;font-weight:650}
+.btn:hover{filter:brightness(1.08)}.btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}.btn.success{background:var(--success);border-color:var(--success)}.btn.warn{background:var(--attention);border-color:var(--attention)}.btn.ghost{background:transparent}.btn.small{padding:7px 10px;font-size:12px}
+.btn-row{display:flex;gap:9px;flex-wrap:wrap}
+.field{display:grid;gap:6px;margin:10px 0}.field label{font-size:12px;color:var(--muted);font-weight:650}.field input,.field select{width:100%;background:#0f172a;border:1px solid var(--border);color:var(--text);padding:11px 12px;border-radius:10px}.field input:focus,.field select:focus{outline:2px solid #818cf8;outline-offset:1px}
+.table-wrap{overflow:auto;border:1px solid var(--border);border-radius:14px}.table{width:100%;border-collapse:collapse;min-width:720px}.table th,.table td{padding:13px 14px;border-bottom:1px solid var(--border);text-align:left}.table th{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);background:#ffffff05}.table td{font-size:14px}.table tr:last-child td{border-bottom:0}
+.timeline{display:grid;gap:0}.event{display:grid;grid-template-columns:18px 1fr;gap:12px}.dot-col{position:relative}.dot{width:10px;height:10px;border-radius:50%;background:var(--brand);margin-top:7px}.line{position:absolute;left:4px;top:20px;bottom:-10px;width:2px;background:var(--border)}.event:last-child .line{display:none}.event-body{padding-bottom:18px}.event-body strong{font-size:14px}.event-body small{display:block;color:var(--muted);margin-top:4px}
+.stage-strip{display:grid;grid-template-columns:repeat(8,minmax(110px,1fr));gap:8px;overflow:auto;padding-bottom:4px}.stage{padding:12px;border-radius:10px;background:#ffffff06;border:1px solid var(--border);font-size:12px;color:var(--muted)}.stage.done{border-color:#05966966;color:#a7f3d0;background:#05966914}.stage.current{border-color:#818cf8;color:white;background:#4f46e52a}
+.palette{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}.swatch{min-height:120px;border-radius:14px;padding:12px;display:flex;flex-direction:column;justify-content:end;border:1px solid #ffffff1a}.swatch span{font-size:11px;background:#0007;padding:4px 6px;border-radius:6px;align-self:flex-start}
+.type-sample{padding:14px 0;border-bottom:1px solid var(--border)}.type-sample:last-child{border-bottom:0}
+.persona-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+.persona-tabs button.active{background:var(--brand);border-color:var(--brand)}
+.customer-shell{background:#f8fafc;color:#111827;border-radius:18px;padding:24px}.customer-shell p{color:#475569}.customer-shell .btn.ghost{color:#111827;border-color:#cbd5e1}
+.arch{display:grid;grid-template-columns:1fr auto 1fr;gap:16px;align-items:center}.arch-box{padding:18px;border-radius:14px;background:#ffffff06;border:1px solid var(--border);text-align:center}.arrow{font-size:28px;color:#818cf8}
+.offer{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px;border:1px solid var(--border);border-radius:12px;margin:9px 0}.offer.selected{border-color:#818cf8;background:#4f46e51b}
+.price{font-size:26px;font-weight:800}
+.status-map{display:grid;grid-template-columns:180px repeat(4,1fr);gap:8px}.status-map>div{padding:10px;border:1px solid var(--border);border-radius:8px;font-size:12px}.status-map .head{background:#ffffff08;font-weight:700;color:var(--muted)}
+.checklist{display:grid;gap:8px}.check{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:10px}.check input{width:18px;height:18px}.progress{height:10px;background:#ffffff0b;border-radius:999px;overflow:hidden}.progress span{display:block;height:100%;background:linear-gradient(90deg,var(--brand),#8b5cf6)}
+.callout{border-left:4px solid var(--brand);background:#4f46e512;padding:14px 16px;border-radius:0 12px 12px 0}
+.muted{color:var(--muted)}.tiny{font-size:12px}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.spacer{height:8px}
+.route-footer{margin-top:34px;padding-top:20px;border-top:1px solid var(--border);display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap}
+.toast{position:fixed;right:24px;bottom:24px;background:#111827;border:1px solid var(--border);padding:13px 16px;border-radius:12px;box-shadow:var(--shadow);z-index:50}
+@media(max-width:1100px){.shell{grid-template-columns:1fr}.sidebar{position:relative;height:auto;border-right:0;border-bottom:1px solid var(--border)}.nav{display:flex;overflow:auto;gap:6px}.nav-title{display:none}.nav a{min-width:max-content}.hero{grid-template-columns:1fr}.grid.four{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:760px){.content{padding:18px}.topbar{padding:12px 18px}.grid.two,.grid.three,.grid.four{grid-template-columns:1fr}.metric-grid{grid-template-columns:1fr 1fr}.palette{grid-template-columns:repeat(2,1fr)}.status-map{grid-template-columns:1fr}.arch{grid-template-columns:1fr}.arrow{transform:rotate(90deg)}h2{font-size:28px}.hero-card{padding:22px}}
+
+/* Theme toggle */
+:root[data-theme="light"]{
+  --bg:#f8fafc;
+  --bg2:#f1f5f9;
+  --surface:#ffffff;
+  --surface2:#f1f5f9;
+  --border:#cbd5e1;
+  --text:#0f172a;
+  --text2:#334155;
+  --muted:#64748b;
+  --shadow:0 16px 40px rgba(15,23,42,.10);
+}
+:root[data-theme="light"] body{background:var(--bg);color:var(--text)}
+:root[data-theme="light"] .sidebar{background:linear-gradient(180deg,#ffffff,#f1f5f9)}
+:root[data-theme="light"] .topbar{background:#f8fafce8}
+:root[data-theme="light"] .hero-card,
+:root[data-theme="light"] .panel,
+:root[data-theme="light"] .card{background:linear-gradient(180deg,#ffffff,#f8fafc);box-shadow:0 10px 26px rgba(15,23,42,.06)}
+:root[data-theme="light"] .nav .num,
+:root[data-theme="light"] .table th,
+:root[data-theme="light"] .stage{background:#0f172a08}
+:root[data-theme="light"] .badge{background:#0f172a08;border-color:#0f172a12}
+:root[data-theme="light"] .field input,
+:root[data-theme="light"] .field select{background:#ffffff;color:#0f172a}
+:root[data-theme="light"] .arch-box{background:#0f172a06}
+:root[data-theme="light"] .progress{background:#0f172a12}
+:root[data-theme="light"] .toast{background:#ffffff;color:#0f172a}
+:root[data-theme="light"] .btn{background:#f1f5f9;color:#0f172a}
+:root[data-theme="light"] .btn.primary{background:var(--brand);color:#fff}
+:root[data-theme="light"] .btn.success{background:var(--success);color:#fff}
+:root[data-theme="light"] .btn.warn{background:var(--attention);color:#fff}
+:root[data-theme="light"] .btn.ghost{background:transparent}
+:root[data-theme="light"] .kicker{color:#4338ca}
+:root[data-theme="light"] .badge.success{color:#047857}
+:root[data-theme="light"] .badge.attn{color:#92400e}
+:root[data-theme="light"] .badge.critical{color:#b91c1c}
+:root[data-theme="light"] .badge.brand{color:#4338ca}
 </style>
 </head>
 <body>
-<div class="app">
-  <div class="topbar">
-    <div class="brand"><div class="mark">R&R</div><div><h1>R&R Finest Auto Glass</h1><p>Channel UX prototype • one case engine, four experiences</p></div></div>
-    <a class="spec-link" href="workflow-explorer.html">Open workflow spec</a>
-  </div>
+  <div id="app"></div>
+  <script>(() => {
+  const milestones = [
+    ["overview","Overview"],
+    ["product-definition","1. Product Definition"],
+    ["staff-ux","2. R&R Staff UX"],
+    ["brand-book","3. Brand Book"],
+    ["design-system","4. Design Guide"],
+    ["prototype","5. Interactive Prototype"],
+    ["architecture","6. Case Core Architecture"],
+    ["working-case-core","7. Working Case Core"],
+    ["glass-identification","8. Glass Identification"],
+    ["sourcing-pricing","9. Sourcing + Pricing"],
+    ["quote-approval","10. Quote / Approval"],
+    ["ordering","11. Ordering"],
+    ["installation-closeout","12. Installation + Closeout"],
+    ["end-to-end","13. Full End-to-End"],
+    ["launch-readiness","14. Launch Readiness"]
+  ];
 
-  <div class="tabs" role="tablist" aria-label="Channel prototypes">
-    <button class="tab active" data-target="staff">R&R Staff</button>
-    <button class="tab" data-target="direct">Direct Customer</button>
-    <button class="tab" data-target="auction">Auction</button>
-    <button class="tab" data-target="insurance">Insurance</button>
-  </div>
+  const state = {
+    persona: "staff",
+    caseStage: 0,
+    caseCreated: false,
+    selectedOffer: 1,
+    quoteApproved: false,
+    orderPlaced: false,
+    installScheduled: false,
+    installCompleted: false,
+    checks: JSON.parse(localStorage.getItem("rrLaunchChecks") || "{}"),
+    cases: JSON.parse(localStorage.getItem("rrDemoCases") || "[]"),
+    theme: localStorage.getItem("rrTheme") || "dark"
+  };
 
-  <section id="staff" class="channel active">
-    <div class="shell">
-      <aside class="sidebar">
-        <div class="nav-title">Operations</div>
-        <div class="nav-list">
-          <div class="nav-item active">Case queue</div><div class="nav-item">Needs attention</div><div class="nav-item">Quotes</div>
-          <div class="nav-item">Orders</div><div class="nav-item">Installations</div><div class="nav-item">Invoices</div>
-        </div>
-      </aside>
-      <main class="main">
-        <div class="panel">
-          <div class="header-row">
-            <div><div class="eyebrow">Case RRA-000123</div><h2>2018 Jeep Wrangler • Windshield</h2><p class="muted">Direct • VIN ending 4862 • Randolph, MA</p></div>
-            <span class="badge"><span class="dot"></span>Quote approval</span>
-          </div>
-          <div class="workflow">
-            <div class="step complete"><span class="n">1</span><b>Intake</b></div><div class="step complete"><span class="n">2</span><b>Identify</b></div>
-            <div class="step complete"><span class="n">3</span><b>Source</b></div><div class="step complete"><span class="n">4</span><b>Price</b></div>
-            <div class="step current"><span class="n">5</span><b>Quote</b></div><div class="step"><span class="n">6</span><b>Order</b></div>
-            <div class="step"><span class="n">7</span><b>Install</b></div><div class="step"><span class="n">8</span><b>Complete</b></div>
-          </div>
-        </div>
+  const applyTheme = () => {
+    document.documentElement.dataset.theme = state.theme;
+    document.documentElement.style.colorScheme = state.theme;
+    localStorage.setItem("rrTheme", state.theme);
+  };
+  applyTheme();
 
-        <div class="grid-4">
-          <div class="stat"><span class="muted">Selected part</span><strong>DW02416 GTY</strong><small class="muted">FYG interchangeable</small></div>
-          <div class="stat"><span class="muted">Acquisition</span><strong>$92.25</strong><small class="muted">Randolph • In stock</small></div>
-          <div class="stat"><span class="muted">Sell price</span><strong>$467.25</strong><small class="muted">Before tax</small></div>
-          <div class="stat"><span class="muted">Projected profit</span><strong>$250.00</strong><small class="muted">Target met</small></div>
-        </div>
+  const stageNames = ["Intake","Identify","Source","Price","Quote","Order","Install","Closeout"];
+  const fmtMoney = n => new Intl.NumberFormat("en-US",{style:"currency",currency:"USD"}).format(n);
+  const esc = s => String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
+  const save = () => {
+    localStorage.setItem("rrDemoCases", JSON.stringify(state.cases));
+    localStorage.setItem("rrLaunchChecks", JSON.stringify(state.checks));
+  };
 
-        <div class="grid-3">
-          <div class="panel"><h3>Current action</h3><p>Quote v1 is ready. Customer needs to approve before procurement.</p><div class="actions"><button class="btn primary">Send quote</button><button class="btn">Preview quote</button></div></div>
-          <div class="panel"><h3>Glass evidence</h3><p><b>YMM:</b> 2 candidates<br><b>VIN:</b> used once<br><b>Result saved:</b> yes</p><span class="badge">No repeat VIN charge</span></div>
-          <div class="panel"><h3>Supplier decision</h3><p><b>Primary:</b> $274.50<br><b>Interchangeable:</b> $92.25<br><b>Regional:</b> excluded</p><span class="badge">Cheapest eligible selected</span></div>
-        </div>
-
-        <div class="panel"><h3>Case activity</h3><div class="timeline">
-          <div class="event"><i></i><div><b>Quote v1 created</b><div class="muted">Price snapshot locked</div></div></div>
-          <div class="event"><i></i><div><b>DW02416 GTY selected</b><div class="muted">Lowest eligible stocked offer</div></div></div>
-          <div class="event"><i></i><div><b>VIN lookup resolved ambiguity</b><div class="muted">Result persisted to case</div></div></div>
+  function route(){
+    return location.hash.replace(/^#\/?/,"") || "overview";
+  }
+  function nav(){
+    return milestones.map(([id,label],i)=>`<a href="#/${id}" class="${route()===id?"active":""}"><span class="num">${id==="overview"?"•":i}</span><span>${label}</span></a>`).join("");
+  }
+  function shell(body,title){
+    return `
+      <div class="shell">
+        <aside class="sidebar">
+          <div class="brand"><div class="mark">R&R</div><div><h1>Finest Auto Glass</h1><p>Client milestone demo suite</p></div></div>
+          <div class="nav-title">Milestones</div><nav class="nav">${nav()}</nav>
+        </aside>
+        <main class="main">
+          <div class="topbar"><div class="crumb">R&R / Client Demo / ${esc(title)}</div><div class="top-actions"><button class="btn small ghost" data-action="toggle-theme" aria-label="Toggle color theme">${state.theme==="dark"?"☀ Light mode":"☾ Dark mode"}</button><button class="btn small ghost" data-action="reset-demo">Reset demo</button><a class="btn small" href="#/overview">Milestone map</a></div></div>
+          <div class="content">${body}${footer()}</div>
+        </main>
+      </div>`;
+  }
+  function footer(){
+    const idx = milestones.findIndex(([id])=>id===route());
+    const prev = idx>0?milestones[idx-1]:null;
+    const next = idx<milestones.length-1?milestones[idx+1]:null;
+    return `<div class="route-footer">
+      <div>${prev?`<a class="btn ghost" href="#/${prev[0]}">← ${prev[1]}</a>`:""}</div>
+      <div>${next?`<a class="btn primary" href="#/${next[0]}">${next[1]} →</a>`:""}</div>
+    </div>`;
+  }
+  function hero(kicker,title,lead,badges=""){
+    return `<section class="hero"><div class="hero-card"><div class="kicker">${kicker}</div><h2>${title}</h2><p class="lead">${lead}</p><div class="meta">${badges}</div></div><div class="metric-grid"><div class="metric"><span>Mode</span><strong>Demo</strong></div><div class="metric"><span>Backend</span><strong>None</strong></div><div class="metric"><span>Routing</span><strong>Client</strong></div><div class="metric"><span>State</span><strong>Local</strong></div></div></section>`;
+  }
+  function stages(current=state.caseStage){
+    return `<div class="stage-strip">${stageNames.map((s,i)=>`<div class="stage ${i<current?"done":i===current?"current":""}">${i+1}. ${s}</div>`).join("")}</div>`;
+  }
+  function overview(){
+    const cards = milestones.slice(1).map(([id,label],i)=>`<a class="card" href="#/${id}" style="text-decoration:none"><div class="kicker">Milestone ${i+1}</div><h3>${label.replace(/^\d+\. /,"")}</h3><p>${[
+      "Define what we are building and why.","Show how R&R staff work in the system.","Make the R&R identity visible and concrete.","Turn the brand into reusable interface rules.","Click through the channel experiences.","Show the technical shape behind the product.","Create and inspect simulated cases.","Demonstrate YMM-first glass identification.","Compare supplier offers and pricing.","Show channel-specific quote approval.","Simulate safe procurement.","Schedule, complete, and close the job.","Walk one case through the full lifecycle.","Show what production readiness means."
+    ][i]}</p><span class="badge brand">Open demo →</span></a>`).join("");
+    return shell(
+      hero("Client presentation","R&R Product Milestone Demo Suite","A single, no-backend, routed demo experience for walking the client from product definition through launch readiness.",'<span class="badge success">14 milestones</span><span class="badge brand">Interactive</span><span class="badge">Client-side only</span>')+
+      `<section class="section"><div class="section-head"><div><h3>Milestone map</h3><p>Use this as the presentation sequence with the client.</p></div></div><div class="grid three">${cards}</div></section>`,
+      "Overview"
+    );
+  }
+  function productDefinition(){
+    return shell(hero("Milestone 1","Product Definition v0.1","Show the client exactly what the team believes the first operational product must do.",'<span class="badge success">Internally accepted</span><span class="badge attn">Client validation pending</span>')+
+      `<div class="grid two">
+        <div class="panel"><h3>Desired outcome</h3><div class="callout">Every R&R glass job has one canonical Case with a current workflow state and a durable event history.</div><div class="section"><h4>Required inputs</h4><div class="meta"><span class="badge">Channel</span><span class="badge">Year</span><span class="badge">Make</span><span class="badge">Model</span><span class="badge">VIN</span><span class="badge">Glass type</span></div></div></div>
+        <div class="panel"><h3>Working assumptions to validate</h3><div class="checklist">
+          ${["RRA-000123 case format","REQUEST_RECEIVED initial state","Separate Customer entity","Separate Vehicle entity","Separate Glass Request","Append-only business events"].map(x=>`<div class="check"><span class="badge attn">Assumption</span><span>${x}</span></div>`).join("")}
         </div></div>
-      </main>
-    </div>
-  </section>
-
-  <section id="direct" class="channel">
-    <div class="customer-shell">
-      <div class="customer-card">
-        <div class="eyebrow" style="color:#64748b">Your auto glass service</div>
-        <h2 style="color:#182033">2018 Jeep Wrangler</h2>
-        <p class="muted">Windshield replacement • Request #RRA-000123</p>
-        <div class="customer-progress">
-          <div class="customer-step done">✓ Request received</div><div class="customer-step done">✓ Glass identified</div>
-          <div class="customer-step current">3. Quote ready</div><div class="customer-step">4. Appointment</div><div class="customer-step">5. Completed</div>
-        </div>
       </div>
-      <div class="customer-card">
-        <div class="header-row"><div><h3 style="color:#182033">Your quote is ready</h3><p class="muted">Includes glass, installation and applicable tax.</p></div><div class="quote-total">$389.69</div></div>
-        <div class="quote-box"><b>Windshield replacement</b><p class="muted">Correct glass confirmed for your vehicle. Quote valid through Sep 29.</p><div class="actions"><button class="btn primary">Approve quote</button><button class="btn" style="color:#182033;background:#fff">Decline</button></div></div>
-      </div>
-      <div class="customer-card"><h3 style="color:#182033">What happens next?</h3><p class="muted">Once you approve, R&R will verify the glass is still available, place the order, and contact you to schedule installation. You will not be asked to repeat vehicle information we already confirmed.</p></div>
-    </div>
-  </section>
+      <section class="section"><h3>Business boundaries</h3><div class="grid three"><div class="card"><h4>One operational truth</h4><p>One Case powers every channel experience.</p></div><div class="card"><h4>Actions drive state</h4><p>The UI never arbitrarily patches workflow state.</p></div><div class="card"><h4>No paid VIN lookup here</h4><p>Case Core is the spine, not the identification engine.</p></div></div></section>`,
+      "Product Definition"
+    );
+  }
+  function staffUX(){
+    return shell(hero("Milestone 2","R&R Staff UX v0.1","Show how an employee creates, finds, and follows a job without exposing implementation complexity.",'<span class="badge success">Internally accepted</span><span class="badge">Responsive</span>')+
+      `<section class="section"><div class="grid two">
+        <div class="panel"><h3>Case Queue</h3><div class="table-wrap"><table class="table"><thead><tr><th>Case</th><th>Vehicle</th><th>Glass</th><th>Status</th></tr></thead><tbody>
+          <tr><td>RRA-000123</td><td>2018 Jeep Wrangler</td><td>Windshield</td><td><span class="badge attn">Awaiting approval</span></td></tr>
+          <tr><td>RRA-000124</td><td>2021 Toyota Camry</td><td>Door Glass</td><td><span class="badge brand">Sourcing</span></td></tr>
+          <tr><td>RRA-000125</td><td>2020 Honda CR-V</td><td>Windshield</td><td><span class="badge success">Scheduled</span></td></tr>
+        </tbody></table></div></div>
+        <div class="panel"><h3>Case Detail</h3><div class="meta"><span class="badge">DIRECT</span><span class="badge brand">Request received</span><span class="badge mono">REQUEST_RECEIVED</span></div><h4 style="margin-top:18px">2018 Jeep Wrangler · Windshield</h4><p>VIN 1C4HJXEG3JW224862</p>${stages(0)}<div class="section"><h4>Current action</h4><div class="card"><p>No staff action required at this step.</p></div></div></div>
+      </div></section>
+      <section class="section"><div class="panel"><h3>Activity</h3><div class="timeline"><div class="event"><div class="dot-col"><div class="dot"></div></div><div class="event-body"><strong>Case created</strong><small>Today · Staff</small></div></div></div></div></section>`,
+      "R&R Staff UX"
+    );
+  }
+  function brandBook(){
+    const swatches=[["#0B1220","Primary dark"],["#4F46E5","Brand indigo"],["#059669","Success"],["#D97706","Attention"],["#DC2626","Critical"],["#64748B","Neutral"]];
+    return shell(hero("Milestone 3","Brand Book v0.1","Make R&R's identity tangible: dependable, direct, capable, responsive, and human.",'<span class="badge success">Internally accepted</span><span class="badge attn">Client brand validation pending</span>')+
+      `<section class="section"><div class="section-head"><div><h3>Brand personality</h3><p>What the product should feel like.</p></div></div><div class="grid four">${["Dependable","Direct","Capable","Responsive"].map((x,i)=>`<div class="card"><div class="kicker">0${i+1}</div><h3>${x}</h3><p>${["Steady, trustworthy and accountable.","Plain language, minimal jargon.","Operationally sharp and credible.","Work should feel like it is moving."][i]}</p></div>`).join("")}</div></section>
+      <section class="section"><h3>Color direction</h3><div class="palette">${swatches.map(([c,n])=>`<div class="swatch" style="background:${c}"><span>${n}<br>${c}</span></div>`).join("")}</div></section>
+      <section class="section"><div class="grid two"><div class="panel"><h3>Voice</h3><div class="callout">“We know the work, we keep the job moving, and we make the process easy to understand.”</div><p><strong>Prefer:</strong> Your quote is ready.</p><p><strong>Avoid:</strong> Your request has advanced into downstream procurement orchestration.</p></div><div class="panel"><h3>Channel expression</h3><div class="checklist"><div class="check"><span class="badge">Staff</span>Precise + operational</div><div class="check"><span class="badge">Direct</span>Simple + reassuring</div><div class="check"><span class="badge">Auction</span>Compact + batch-friendly</div><div class="check"><span class="badge">Insurance</span>Formal + authorization-aware</div></div></div></div></section>`,
+      "Brand Book"
+    );
+  }
+  function designSystem(){
+    return shell(hero("Milestone 4","Design Guide / Design System v0.1","Show the client how the brand becomes reusable components, states, layouts, and interaction patterns.",'<span class="badge success">Internally accepted</span><span class="badge">Token-driven</span>')+
+      `<section class="section"><div class="grid two">
+        <div class="panel"><h3>Component board</h3><div class="btn-row"><button class="btn primary">Primary action</button><button class="btn">Secondary</button><button class="btn ghost">Ghost</button></div><div class="spacer"></div><div class="meta"><span class="badge success">Completed</span><span class="badge brand">In progress</span><span class="badge attn">Needs approval</span><span class="badge critical">Blocked</span></div><div class="field"><label>VIN</label><input value="1C4HJXEG3JW224862" /></div><div class="field"><label>Glass type</label><select><option>Windshield</option><option>Back Glass</option><option>Door Glass</option></select></div></div>
+        <div class="panel"><h3>Typography</h3><div class="type-sample"><span class="tiny muted">2XL / Bold</span><div style="font-size:32px;font-weight:800">Case RRA-000123</div></div><div class="type-sample"><span class="tiny muted">LG / Semibold</span><div style="font-size:20px;font-weight:650">Current workflow state</div></div><div class="type-sample"><span class="tiny muted">MD / Regular</span><div>2018 Jeep Wrangler · Windshield</div></div><div class="type-sample"><span class="tiny muted">SM / Metadata</span><div class="muted">Updated 4 minutes ago</div></div></div>
+      </div></section>
+      <section class="section"><h3>Workflow stage pattern</h3><div class="panel">${stages(4)}</div></section>
+      <section class="section"><div class="grid two"><div class="card"><h3>R&R Staff</h3><p>Dark, dense, operational.</p></div><div class="card light"><h3>Direct Customer</h3><p>Light, simple, reassuring.</p><button class="btn primary">Approve quote</button></div></div></section>`,
+      "Design Guide"
+    );
+  }
+  function prototype(){
+    const tabs=["staff","direct","auction","insurance"];
+    const content = {
+      staff:`<div class="panel"><div class="kicker">R&R Staff</div><h3>Case RRA-000123</h3><p>2018 Jeep Wrangler · Windshield</p>${stages(4)}<div class="grid two section"><div class="card"><h4>Selected glass</h4><p>DW02416 GTY · FYG</p><div class="price">$92.25</div></div><div class="card"><h4>Current action</h4><p>Quote v1 ready for customer approval.</p><button class="btn primary">Send quote</button></div></div></div>`,
+      direct:`<div class="customer-shell"><div class="kicker">Your auto glass service</div><h2 style="color:#111827">Your quote is ready</h2><p>2018 Jeep Wrangler · Windshield replacement</p><div class="card light"><span class="muted tiny">Total</span><div class="price">$389.69</div><p>Includes glass, installation, and applicable tax.</p><div class="btn-row"><button class="btn primary">Approve quote</button><button class="btn ghost">Decline</button></div></div></div>`,
+      auction:`<div class="panel"><div class="kicker">America's Auto Auction</div><h3>Open vehicles</h3><div class="table-wrap"><table class="table"><thead><tr><th>Vehicle</th><th>Stock #</th><th>Glass</th><th>Status</th><th>Action</th></tr></thead><tbody><tr><td>2019 Chevy Silverado</td><td>AA-49182</td><td>Windshield</td><td>Needs approval</td><td><button class="btn small primary">Review $374.69</button></td></tr><tr><td>2021 Toyota Camry</td><td>AA-49197</td><td>Door Glass</td><td>Scheduled</td><td>Sep 28</td></tr></tbody></table></div></div>`,
+      insurance:`<div class="panel"><div class="kicker">Insurance Assignment</div><h3>Assignment #SF-882701</h3><p>Jordan M. · 2020 Honda CR-V · Windshield</p><div class="meta"><span class="badge attn">Awaiting authorization</span><span class="badge">Claim #CLM-291844</span></div><div class="card section"><h4>Estimate ready</h4><p>Waiting for carrier authorization before scheduling.</p><button class="btn primary">Submit estimate</button></div></div>`
+    };
+    return shell(hero("Milestone 5","Interactive Product Prototype","Switch personas to show how one underlying job becomes a different experience for each channel.",'<span class="badge success">Available for client review</span><span class="badge">No backend</span>')+
+      `<section class="section"><div class="persona-tabs">${tabs.map(t=>`<button class="btn ${state.persona===t?"active":""}" data-persona="${t}">${t[0].toUpperCase()+t.slice(1)}</button>`).join("")}</div><div id="persona-demo">${content[state.persona]}</div></section>`,
+      "Interactive Prototype"
+    );
+  }
+  function architecture(){
+    return shell(hero("Milestone 6","Case Core Architecture v0.1","Explain the technical foundation without requiring the client to read implementation details.",'<span class="badge attn">Next technical milestone</span>')+
+      `<section class="section"><div class="panel"><h3>One Case, many experiences</h3><div class="arch"><div class="arch-box"><strong>Channels</strong><p>Staff · Direct · Auction · Insurance</p></div><div class="arrow">→</div><div class="arch-box"><strong>Case Core</strong><p>Identity · State · Vehicle · Glass Request · Events</p></div></div></div></section>
+      <section class="section"><div class="grid three"><div class="card"><h4>Canonical Case</h4><p>One job record, regardless of channel.</p></div><div class="card"><h4>Append-only events</h4><p>History explains what happened without destructive rewrites.</p></div><div class="card"><h4>Action-driven state</h4><p>Business actions advance the workflow, not arbitrary UI patches.</p></div></div></section>
+      <section class="section"><div class="panel"><h3>Conceptual contract</h3><pre class="mono tiny">Case
+├─ id
+├─ reference
+├─ channel
+├─ currentState
+├─ customer
+├─ vehicle
+├─ glassRequest
+└─ events[]</pre></div></section>`,
+      "Case Core Architecture"
+    );
+  }
+  function workingCaseCore(){
+    const rows = state.cases.length ? state.cases.map(c=>`<tr><td>${esc(c.ref)}</td><td>${esc(c.year+" "+c.make+" "+c.model)}</td><td>${esc(c.glass)}</td><td><span class="badge brand">Request received</span></td></tr>`).join("") : '<tr><td colspan="4" class="muted">No locally-created demo cases yet.</td></tr>';
+    return shell(hero("Milestone 7","Working Case Core","Create a fake Case entirely in the browser and watch it appear in the queue.",'<span class="badge">Client-state simulation</span><span class="badge">localStorage</span>')+
+      `<section class="section"><div class="grid two"><form class="panel" id="case-form"><h3>Create demo Case</h3><div class="field"><label>Channel</label><select name="channel"><option>DIRECT</option><option>AUCTION</option><option>INSURANCE</option></select></div><div class="grid two"><div class="field"><label>Year</label><input name="year" value="2018" required></div><div class="field"><label>Make</label><input name="make" value="Jeep" required></div></div><div class="field"><label>Model</label><input name="model" value="Wrangler" required></div><div class="field"><label>VIN</label><input name="vin" value="1C4HJXEG3JW224862" required></div><div class="field"><label>Glass type</label><select name="glass"><option>Windshield</option><option>Back Glass</option><option>Door Glass</option></select></div><button class="btn primary" type="submit">Create Case</button></form>
+        <div class="panel"><h3>Case Queue</h3><div class="table-wrap"><table class="table"><thead><tr><th>Case</th><th>Vehicle</th><th>Glass</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div></div></div></section>`,
+      "Working Case Core"
+    );
+  }
+  function identification(){
+    return shell(hero("Milestone 8","Glass Identification","Demonstrate YMM-first lookup and show exactly when a paid VIN lookup is justified.",'<span class="badge">Simulated rules</span><span class="badge success">$0 paid lookups by default</span>')+
+      `<section class="section"><div class="grid two"><div class="panel"><h3>Request</h3><div class="field"><label>Vehicle</label><input value="2018 Jeep Wrangler"></div><div class="field"><label>Glass</label><select id="glass-choice"><option>Windshield</option><option>Door Glass</option><option>Back Glass</option></select></div><button class="btn primary" data-action="run-identification">Run identification</button><div id="ident-result" class="section"></div></div>
+      <div class="panel"><h3>Decision rules</h3><div class="timeline"><div class="event"><div class="dot-col"><div class="dot"></div><div class="line"></div></div><div class="event-body"><strong>1. Search YMM first</strong><small>No VIN cost.</small></div></div><div class="event"><div class="dot-col"><div class="dot"></div><div class="line"></div></div><div class="event-body"><strong>2. Evaluate ambiguity</strong><small>One match → use it. Multiple equivalent fits → source them.</small></div></div><div class="event"><div class="dot-col"><div class="dot"></div></div><div class="event-body"><strong>3. VIN only if required</strong><small>Windshield/back glass ambiguity only. Never Door/Quarter/Vent.</small></div></div></div></div></div></section>`,
+      "Glass Identification"
+    );
+  }
+  function sourcingPricing(){
+    const offers=[{name:"Primary supplier",part:"DW02415 GTY MOP",price:274.50,eligible:true},{name:"Interchangeable",part:"DW02416 GTY FYG",price:92.25,eligible:true},{name:"Regional",part:"DW02416 GTY",price:81.00,eligible:false}];
+    return shell(hero("Milestone 9","Sourcing + Pricing","Compare eligible offers, exclude Regional, and demonstrate the margin-driven selection.",'<span class="badge">Simulated supplier data</span><span class="badge">No live MyGrant</span>')+
+      `<section class="section"><div class="grid two"><div class="panel"><h3>Supplier offers</h3>${offers.map((o,i)=>`<div class="offer ${state.selectedOffer===i?"selected":""}" data-offer="${i}"><div><strong>${o.name}</strong><div class="tiny muted">${o.part} · ${o.eligible?"Eligible":"Excluded: Regional"}</div></div><div><strong>${fmtMoney(o.price)}</strong></div></div>`).join("")}</div>
+      <div class="panel"><h3>Pricing preview</h3>${(()=>{const o=offers[state.selectedOffer]; const labor=125, target=250; const subtotal=o.price+labor+target; return `<div class="grid two"><div class="card"><span class="tiny muted">Glass cost</span><div class="price">${fmtMoney(o.price)}</div></div><div class="card"><span class="tiny muted">Labor</span><div class="price">${fmtMoney(labor)}</div></div><div class="card"><span class="tiny muted">Target profit</span><div class="price">${fmtMoney(target)}</div></div><div class="card"><span class="tiny muted">Illustrative pre-tax sell</span><div class="price">${fmtMoney(subtotal)}</div></div></div>`})()}<p class="tiny muted">Illustrative only. Final pricing/tax rules remain client-validated business logic.</p></div></div></section>`,
+      "Sourcing + Pricing"
+    );
+  }
+  function quoteApproval(){
+    const status = state.quoteApproved ? '<span class="badge success">Approved</span>' : '<span class="badge attn">Awaiting approval</span>';
+    return shell(hero("Milestone 10","Quote / Approval","Show the same commercial decision using channel-appropriate language.",status)+
+      `<section class="section"><div class="status-map"><div class="head">Internal state</div><div class="head">Staff</div><div class="head">Direct</div><div class="head">Auction</div><div class="head">Insurance</div><div>AWAITING_APPROVAL</div><div>Awaiting Approval</div><div>Your quote is ready</div><div>Needs approval</div><div>Awaiting authorization</div></div></section>
+      <section class="section"><div class="customer-shell"><div class="kicker">Direct Customer</div><h2 style="color:#111827">Windshield replacement</h2><p>2018 Jeep Wrangler · Quote v1 · Valid for 72 hours</p><div class="card light"><span class="muted tiny">Total</span><div class="price">$389.69</div><p>Includes glass, installation, and applicable tax.</p><div class="btn-row"><button class="btn primary" data-action="approve-quote" ${state.quoteApproved?"disabled":""}>${state.quoteApproved?"Quote approved":"Approve quote"}</button><button class="btn ghost">Decline</button></div></div></div></section>`,
+      "Quote / Approval"
+    );
+  }
+  function ordering(){
+    return shell(hero("Milestone 11","Ordering","Demonstrate the safety gate between customer approval and a real purchase.",state.orderPlaced?'<span class="badge success">Demo order placed</span>':'<span class="badge attn">R&R confirmation required</span>')+
+      `<section class="section"><div class="grid two"><div class="panel"><h3>Procurement checklist</h3><div class="checklist"><div class="check"><span class="badge success">✓</span>Quote approved</div><div class="check"><span class="badge success">✓</span>Saved glass result reused</div><div class="check"><span class="badge success">✓</span>Inventory rechecked</div><div class="check"><span class="badge attn">!</span>Human purchase confirmation</div></div></div><div class="panel"><h3>Selected order</h3><p>DW02416 GTY · FYG</p><div class="price">$92.25</div><p>Randolph · In stock</p><button class="btn primary" data-action="place-order" ${state.orderPlaced?"disabled":""}>${state.orderPlaced?"Order placed":"Confirm & place order"}</button></div></div></section>`,
+      "Ordering"
+    );
+  }
+  function installation(){
+    return shell(hero("Milestone 12","Installation + Closeout","Simulate scheduling, completion, invoice readiness, and the final operational record.",state.installCompleted?'<span class="badge success">Completed</span>':state.installScheduled?'<span class="badge brand">Scheduled</span>':'<span class="badge attn">Scheduling required</span>')+
+      `<section class="section"><div class="grid two"><div class="panel"><h3>Installation</h3><p>Case RRA-000123 · 2018 Jeep Wrangler</p><div class="btn-row"><button class="btn primary" data-action="schedule-install" ${state.installScheduled?"disabled":""}>${state.installScheduled?"Scheduled Sep 28":"Schedule Sep 28"}</button><button class="btn success" data-action="complete-install" ${!state.installScheduled||state.installCompleted?"disabled":""}>${state.installCompleted?"Installation completed":"Mark completed"}</button></div></div><div class="panel"><h3>Closeout</h3><div class="checklist"><div class="check"><span class="badge ${state.installCompleted?"success":""}">${state.installCompleted?"✓":"…"}</span>Installation completed</div><div class="check"><span class="badge ${state.installCompleted?"success":""}">${state.installCompleted?"✓":"…"}</span>Final invoice ready</div><div class="check"><span class="badge ${state.installCompleted?"success":""}">${state.installCompleted?"✓":"…"}</span>Job profit recorded</div></div></div></div></section>`,
+      "Installation + Closeout"
+    );
+  }
+  function endToEnd(){
+    return shell(hero("Milestone 13","Full End-to-End Workflow","Walk one simulated case across all eight stages without any backend dependencies.",'<span class="badge">Client-side workflow simulator</span>')+
+      `<section class="section"><div class="panel">${stages(state.caseStage)}<div class="section"><div class="grid two"><div><div class="kicker">Current stage</div><h3>${stageNames[state.caseStage]}</h3><p>${["Request captured and validated.","Glass candidates identified.","Eligible supplier offers compared.","Price reviewed and approved.","Quote awaiting/receiving approval.","Inventory rechecked and order confirmed.","Appointment scheduled and installation performed.","Invoice/profit recorded and job completed."][state.caseStage]}</p></div><div class="card"><h4>Simulator controls</h4><div class="btn-row"><button class="btn ghost" data-action="prev-stage" ${state.caseStage===0?"disabled":""}>← Previous</button><button class="btn primary" data-action="next-stage" ${state.caseStage===7?"disabled":""}>Next stage →</button></div></div></div></div></div></section>
+      <section class="section"><div class="panel"><h3>What integration/E2E will prove later</h3><div class="grid three"><div class="card"><h4>Happy paths</h4><p>All allowed transitions succeed.</p></div><div class="card"><h4>Forbidden paths</h4><p>Illegal transitions stay blocked.</p></div><div class="card"><h4>Persona projections</h4><p>Each channel sees the right status and actions.</p></div></div></div></section>`,
+      "Full End-to-End Workflow"
+    );
+  }
+  function launchReadiness(){
+    const items=["Production environment","Managed PostgreSQL","Secrets management","Database migrations","CI/CD","Logging & monitoring","Backups","Rollback path","Security review","Launch checklist","Operational handoff"];
+    const done=items.filter(x=>state.checks[x]).length;
+    const pct=Math.round(done/items.length*100);
+    return shell(hero("Milestone 14","Production Deployment / Launch Readiness","Show the client what must be true before this moves from demo software into real operations.",`<span class="badge ${pct===100?"success":"attn"}">${pct}% ready</span>`)+
+      `<section class="section"><div class="grid two"><div class="panel"><h3>Readiness checklist</h3><div class="checklist">${items.map(x=>`<label class="check"><input type="checkbox" data-check="${x}" ${state.checks[x]?"checked":""}><span>${x}</span></label>`).join("")}</div></div><div class="panel"><h3>Readiness score</h3><div class="price">${pct}%</div><div class="progress"><span style="width:${pct}%"></span></div><p>${done} of ${items.length} launch concerns acknowledged in this demo.</p><div class="callout">This screen is illustrative. Real readiness requires evidence from CI, infrastructure, security, backup/restore, and operational testing.</div></div></div></section>`,
+      "Launch Readiness"
+    );
+  }
 
-  <section id="auction" class="channel">
-    <div class="shell">
-      <aside class="sidebar"><div class="nav-title">Auction workspace</div><div class="nav-list"><div class="nav-item active">Open jobs</div><div class="nav-item">Needs approval</div><div class="nav-item">Scheduled</div><div class="nav-item">Completed</div><div class="nav-item">Invoices</div></div></aside>
-      <main class="main">
-        <div class="panel"><div class="header-row"><div><div class="eyebrow">America's Auto Auction</div><h2>Open glass jobs</h2><p class="muted">Fleet-style view optimized for volume, stock numbers, approvals, and installation dates.</p></div><button class="btn primary">+ New vehicle</button></div>
-          <div class="auction-top"><input class="input" placeholder="Search stock #, VIN, vehicle"><select class="input"><option>All statuses</option><option>Needs approval</option><option>Scheduled</option></select><button class="btn">Upload CSV</button></div>
-        </div>
-        <div class="panel">
-          <div class="row header"><span>Vehicle</span><span>Stock #</span><span>Glass</span><span>Status</span><span>Action</span></div>
-          <div class="list">
-            <div class="row"><div><b>2019 Chevy Silverado</b><div class="muted">VIN …2184</div></div><span>AA-49182</span><span>Windshield</span><span class="badge">Needs approval</span><button class="btn primary">Review $374.69</button></div>
-            <div class="row"><div><b>2021 Toyota Camry</b><div class="muted">VIN …9301</div></div><span>AA-49197</span><span>Door glass</span><span class="badge">Scheduled</span><button class="btn">Sep 28</button></div>
-            <div class="row"><div><b>2017 Ford Escape</b><div class="muted">VIN …7744</div></div><span>AA-49204</span><span>Back glass</span><span class="badge">Sourcing</span><button class="btn">View</button></div>
-          </div>
-        </div>
-        <div class="grid-3"><div class="stat"><span class="muted">Open jobs</span><strong>14</strong></div><div class="stat"><span class="muted">Need approval</span><strong>4</strong></div><div class="stat"><span class="muted">Scheduled this week</span><strong>7</strong></div></div>
-      </main>
-    </div>
-  </section>
+  const renderers = {
+    overview, "product-definition":productDefinition, "staff-ux":staffUX, "brand-book":brandBook,
+    "design-system":designSystem, prototype, architecture, "working-case-core":workingCaseCore,
+    "glass-identification":identification, "sourcing-pricing":sourcingPricing, "quote-approval":quoteApproval,
+    ordering, "installation-closeout":installation, "end-to-end":endToEnd, "launch-readiness":launchReadiness
+  };
 
-  <section id="insurance" class="channel">
-    <div class="shell">
-      <aside class="sidebar"><div class="nav-title">Insurance assignments</div><div class="nav-list"><div class="nav-item active">Assignments</div><div class="nav-item">Awaiting authorization</div><div class="nav-item">Scheduled</div><div class="nav-item">Completed</div><div class="nav-item">Documents</div></div></aside>
-      <main class="main">
-        <div class="panel"><div class="header-row"><div><div class="eyebrow">Assignment #SF-882701</div><h2>Jordan M. • 2020 Honda CR-V</h2><p class="muted">Claim #CLM-291844 • Windshield • Direct-bill insurance channel</p></div><span class="badge"><span class="dot" style="background:var(--warn)"></span>Awaiting authorization</span></div></div>
-
-        <div class="claim-grid">
-          <div class="main">
-            <div class="panel"><h3>Assignment progress</h3><div class="workflow" style="grid-template-columns:repeat(6,minmax(110px,1fr))">
-              <div class="step complete"><span class="n">1</span><b>Assignment received</b></div><div class="step complete"><span class="n">2</span><b>Vehicle validated</b></div>
-              <div class="step complete"><span class="n">3</span><b>Glass sourced</b></div><div class="step current"><span class="n">4</span><b>Authorization</b></div>
-              <div class="step"><span class="n">5</span><b>Scheduled</b></div><div class="step"><span class="n">6</span><b>Completed</b></div>
-            </div></div>
-            <div class="panel"><h3>Authorization</h3><p>Estimate is ready and waiting for carrier approval. Customer-facing quote language is suppressed for this channel.</p><div class="actions"><button class="btn primary">Submit estimate</button><button class="btn">View estimate</button></div></div>
-          </div>
-          <div class="main">
-            <div class="panel"><h3>Claim details</h3><p><b>Carrier:</b> Safelite-managed assignment<br><b>Claim:</b> CLM-291844<br><b>Work order:</b> WO-88431<br><b>Insured:</b> Jordan M.</p></div>
-            <div class="panel"><h3>Documents</h3><div class="doc-list"><div class="doc"><span>Estimate v1</span><b>Ready</b></div><div class="doc"><span>Work order</span><b>Received</b></div><div class="doc"><span>Final invoice</span><span class="muted">Later</span></div></div></div>
-          </div>
-        </div>
-      </main>
-    </div>
-  </section>
-</div>
-
-<script>
-const tabs=[...document.querySelectorAll('.tab')];
-const channels=[...document.querySelectorAll('.channel')];
-tabs.forEach(tab=>tab.addEventListener('click',()=>{
-  const id=tab.dataset.target;
-  tabs.forEach(t=>t.classList.toggle('active',t===tab));
-  channels.forEach(c=>c.classList.toggle('active',c.id===id));
-}));
-</script>
-<!-- preview-redeploy -->
+  function render(){
+    const r=route();
+    document.getElementById("app").innerHTML=(renderers[r]||overview)();
+    bind();
+    window.scrollTo({top:0,behavior:"instant"});
+  }
+  function toast(msg){
+    const t=document.createElement("div"); t.className="toast"; t.textContent=msg; document.body.appendChild(t); setTimeout(()=>t.remove(),1800);
+  }
+  function bind(){
+    document.querySelectorAll("[data-persona]").forEach(el=>el.onclick=()=>{state.persona=el.dataset.persona;render()});
+    document.querySelectorAll("[data-offer]").forEach(el=>el.onclick=()=>{const i=Number(el.dataset.offer); if(i===2){toast("Regional is excluded by the working sourcing rule.");return;} state.selectedOffer=i;render()});
+    const form=document.getElementById("case-form"); if(form) form.onsubmit=e=>{e.preventDefault();const fd=new FormData(form); const ref="RRA-"+String(126+state.cases.length).padStart(6,"0"); state.cases.unshift({ref,channel:fd.get("channel"),year:fd.get("year"),make:fd.get("make"),model:fd.get("model"),vin:fd.get("vin"),glass:fd.get("glass")});save();toast("Demo Case created: "+ref);render()};
+    document.querySelectorAll("[data-check]").forEach(el=>el.onchange=()=>{state.checks[el.dataset.check]=el.checked;save();render()});
+    document.querySelectorAll("[data-action]").forEach(el=>el.onclick=()=>{
+      switch(el.dataset.action){
+        case "toggle-theme": state.theme=state.theme==="dark"?"light":"dark";applyTheme();render();break;
+        case "reset-demo": state.persona="staff";state.caseStage=0;state.selectedOffer=1;state.quoteApproved=false;state.orderPlaced=false;state.installScheduled=false;state.installCompleted=false;state.cases=[];state.checks={};save();toast("Demo state reset.");render();break;
+        case "approve-quote": state.quoteApproved=true;toast("Quote approved in local demo state.");render();break;
+        case "place-order": state.orderPlaced=true;toast("Demo order placed.");render();break;
+        case "schedule-install": state.installScheduled=true;toast("Installation scheduled.");render();break;
+        case "complete-install": state.installCompleted=true;toast("Installation completed.");render();break;
+        case "next-stage": state.caseStage=Math.min(7,state.caseStage+1);render();break;
+        case "prev-stage": state.caseStage=Math.max(0,state.caseStage-1);render();break;
+        case "run-identification": {
+          const glass=document.getElementById("glass-choice").value;
+          const box=document.getElementById("ident-result");
+          if(glass==="Door Glass") box.innerHTML='<div class="card"><span class="badge success">YMM only</span><h4>Door Glass never requires VIN</h4><p>Multiple results would route to human review if necessary.</p></div>';
+          else box.innerHTML='<div class="card"><span class="badge attn">Ambiguity found</span><h4>VIN lookup may be justified</h4><p>Because this is '+glass+', a saved paid VIN lookup may be used only if YMM/options remain ambiguous.</p></div>';
+          break;
+        }
+      }
+    });
+  }
+  addEventListener("hashchange",render);
+  render();
+})();</script>
 </body>
 </html>
