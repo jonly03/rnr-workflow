@@ -26,6 +26,9 @@ jobs:
       API_PROJECT_ID: ${{ vars.VERCEL_API_PROJECT_ID }}
       WEB_PROJECT_ID: ${{ vars.VERCEL_WEB_PROJECT_ID }}
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+      STAFF_ADMIN_EMAIL: ${{ secrets.STAFF_ADMIN_EMAIL }}
+      STAFF_ADMIN_PASSWORD: ${{ secrets.STAFF_ADMIN_PASSWORD }}
 
     steps:
       - uses: actions/checkout@v4
@@ -54,7 +57,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for name in VERCEL_TOKEN VERCEL_ORG_ID API_PROJECT_ID WEB_PROJECT_ID DATABASE_URL; do
+          for name in VERCEL_TOKEN VERCEL_ORG_ID API_PROJECT_ID WEB_PROJECT_ID DATABASE_URL AUTH_SECRET STAFF_ADMIN_EMAIL STAFF_ADMIN_PASSWORD; do
             if [ -z "${!name:-}" ]; then
               echo "Missing production deployment value: $name" >&2
               exit 1
@@ -81,7 +84,7 @@ jobs:
         run: |
           set -euo pipefail
           vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
-          api_url="$(vercel deploy --prod --yes --token="$VERCEL_TOKEN" --env DATABASE_URL="$DATABASE_URL" --env PG_POOL_MAX=3 | tail -n1)"
+          api_url="$(vercel deploy --prod --yes --token="$VERCEL_TOKEN" --env DATABASE_URL="$DATABASE_URL" --env PG_POOL_MAX=3 --env AUTH_SECRET="$AUTH_SECRET" --env STAFF_ADMIN_EMAIL="$STAFF_ADMIN_EMAIL" --env STAFF_ADMIN_PASSWORD="$STAFF_ADMIN_PASSWORD" | tail -n1)"
           echo "url=$api_url" >> "$GITHUB_OUTPUT"
           echo "Production API: $api_url" >> "$GITHUB_STEP_SUMMARY"
 
@@ -115,6 +118,8 @@ jobs:
         working-directory: apps/e2e
         env:
           WEB_BASE_URL: ${{ steps.web.outputs.url }}
+          E2E_STAFF_EMAIL: ${{ secrets.STAFF_ADMIN_EMAIL }}
+          E2E_STAFF_PASSWORD: ${{ secrets.STAFF_ADMIN_PASSWORD }}
         run: |
           npm install
           npx playwright install --with-deps chromium

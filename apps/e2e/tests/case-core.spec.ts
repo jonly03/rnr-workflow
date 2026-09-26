@@ -19,6 +19,20 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
 
   await page.goto("/");
 
+  // Staff auth gate: sign in when the login screen is shown.
+  if (await page.getByRole("heading", { name: "Sign in" }).isVisible()) {
+    const email = process.env.E2E_STAFF_EMAIL;
+    const password = process.env.E2E_STAFF_PASSWORD;
+    if (!email || !password) {
+      throw new Error(
+        "E2E_STAFF_EMAIL and E2E_STAFF_PASSWORD must be set for the authenticated smoke test."
+      );
+    }
+    await page.getByLabel(/email/i).fill(email);
+    await page.getByLabel(/password/i).fill(password);
+    await page.getByRole("button", { name: "Sign in" }).click();
+  }
+
   await expect(page.getByRole("heading", { name: "Case Queue" })).toBeVisible();
 
   await page.getByRole("button", { name: /New Case/i }).click();

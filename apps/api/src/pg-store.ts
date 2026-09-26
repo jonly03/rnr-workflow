@@ -1,7 +1,18 @@
 import { randomUUID } from "node:crypto";
 import type pg from "pg";
-import type { CaseEvent, CaseRecord, GlassRequest, Vehicle } from "./types.js";
-import type { CaseStore, CreateCaseStoreInput } from "./store.js";
+import type {
+  CaseEvent,
+  CaseRecord,
+  GlassRequest,
+  StaffUser,
+  StaffUserRecord,
+  Vehicle
+} from "./types.js";
+import type {
+  CaseStore,
+  CreateCaseStoreInput,
+  CreateStaffUserInput
+} from "./store.js";
 
 type Pool = pg.Pool;
 type PoolClient = pg.PoolClient;
@@ -57,6 +68,17 @@ function eventRow(row: any): CaseEvent {
     actor_id: row.actor_id,
     payload: row.payload ?? {},
     corrects_event_id: row.corrects_event_id
+  };
+}
+
+function staffRow(row: any): StaffUserRecord {
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    role: row.role,
+    password_hash: row.password_hash,
+    created_at: iso(row.created_at)
   };
 }
 
@@ -163,11 +185,13 @@ export class PgCaseStore implements CaseStore {
         `insert into case_events(
           id, case_id, sequence, event_type, occurred_at, actor_type,
           actor_id, payload, corrects_event_id
-        ) values ($1,$2,1,'CASE_CREATED',$3,'RNR_STAFF',null,$4::jsonb,null)`,
+        ) values ($1,$2,1,'CASE_CREATED',$3,$4,$5,$6::jsonb,null)`,
         [
           randomUUID(),
           caseId,
           now,
+          input.actor?.type ?? "RNR_STAFF",
+          input.actor?.id ?? null,
           JSON.stringify({
             channel: input.channel,
             vehicle_id: vehicleId,
@@ -195,5 +219,27 @@ export class PgCaseStore implements CaseStore {
     } finally {
       client.release();
     }
+  }
+
+  async findStaffByEmail(email: string): Promise<StaffUserRecord | null> {
+    const result = await this.pool.query(
+      "select * from staff_users where email = $1",
+      [email.trim().toLowerCase()]
+    );
+    return result.rowCount ? staffRow(result.rows[0]) : null;
+  }
+
+  async createStaffUser(input: CreateStaffUserInput): Promise<StaffUser> {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    await this.pool.query(
+      `insert into staff_users(id, email, name, role, password_hash, created_at)
+       values ($1,$2,$3,$4,$5,$6)`,
+      [id, input.email.trim().toLowerCase(), input.name, input.role, input.passwordHash, now]
+    );
+    const created = await this.findStaffByEmail(input.email);
+    if (!created) throw new Error("Staff user could not be reloaded after create.");
+    const { password_hash: _hash, ...user } = created;
+    return user;
   }
 }
