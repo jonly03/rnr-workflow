@@ -56,25 +56,17 @@ jobs:
           test "$(jq -c '."27"' .github/agentic/case-core-dependencies.json)" = '[25,26]'
           test "$(jq -c '."28"' .github/agentic/case-core-dependencies.json)" = '[27]'
 
-      - name: Verify live Project and Copilot agent capability
+      - name: Verify live Project and runtime contract
         if: env.GH_TOKEN != ''
         shell: bash
         run: |
           set -euo pipefail
           gh project view 10 --owner @me --format json >/dev/null
 
-          owner="${GITHUB_REPOSITORY%%/*}"
-          name="${GITHUB_REPOSITORY#*/}"
-          copilot="$(
-            gh api graphql               -f query='query($owner:String!,$name:String!){repository(owner:$owner,name:$name){suggestedActors(capabilities:[CAN_BE_ASSIGNED],first:100){nodes{login}}}}'               -f owner="$owner" -f name="$name"               --jq '.data.repository.suggestedActors.nodes[].login | select(. == "copilot-swe-agent")'               | head -n1
-          )"
+          test "$(jq -r '.runtime_mode' .github/agentic/dispatch-config.json)" = "vendor-neutral-work-packet"
+          test "$(jq -r '.runtime_claim_command' .github/agentic/dispatch-config.json)" = "/agent start"
+          test "$(jq -r '.runtime_release_command' .github/agentic/dispatch-config.json)" = "/agent ready"
 
-          if [ "$copilot" != "copilot-swe-agent" ]; then
-            echo "::warning::Copilot cloud agent is not currently available as an assignable actor. The dispatcher will safely mark executable agent work Blocked until an agent runtime is enabled."
-            echo "### Agent runtime capability" >> "$GITHUB_STEP_SUMMARY"
-            echo "Copilot cloud agent: **UNAVAILABLE**" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "Copilot cloud agent: available"
-            echo "### Agent runtime capability" >> "$GITHUB_STEP_SUMMARY"
-            echo "Copilot cloud agent: **AVAILABLE**" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          grep -q "issue_comment:" .github/workflows/agent-runtime-state.yml
+          grep -q "/agent start" .github/workflows/agent-runtime-state.yml
+          grep -q "In Progress" .github/workflows/agent-runtime-state.yml
