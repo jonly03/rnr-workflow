@@ -1,6 +1,6 @@
 # R&R Finest Auto Glass Brand Book v0.1
 
-Status: DRAFT FOR HUMAN ACCEPTANCE
+Status: ACCEPTED
 
 ## 1. Purpose
 
@@ -449,3 +449,9 @@ Acceptance of Brand Book v0.1 means:
 - the Design Guide may derive implementation-level tokens and patterns from this artifact.
 
 Acceptance does not resolve the listed open brand questions unless explicitly decided.
+
+## 21. Acceptance Record
+
+Human acceptance recorded on 2026-09-26.
+
+Accepted for progression to Design Guide v0.1. Open brand questions remain unresolved until explicitly decided.
