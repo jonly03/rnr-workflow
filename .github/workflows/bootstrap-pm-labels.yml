@@ -1,0 +1,63 @@
+name: Bootstrap PM backlog labels
+
+on:
+  push:
+    branches:
+      - chore/pm-backlog-bootstrap
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  labels:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create workflow, milestone, priority, and type labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          create_label() {
+            name="$1"
+            color="$2"
+            description="$3"
+
+            if gh api "repos/$REPO/labels/$name" >/dev/null 2>&1; then
+              echo "Exists: $name"
+            else
+              gh api --method POST "repos/$REPO/labels"                 -f name="$name"                 -f color="$color"                 -f description="$description"
+            fi
+          }
+
+          create_label "workflow:product" "0E8A16" "Product management, requirements, prioritization, validation"
+          create_label "workflow:ux" "6F42C1" "UX research, interaction design, usability"
+          create_label "workflow:brand" "B60205" "Brand identity and visual direction"
+          create_label "workflow:architecture" "1D76DB" "Domain, API, data, and software architecture"
+          create_label "workflow:frontend" "0052CC" "Frontend application implementation"
+          create_label "workflow:backend" "5319E7" "Backend services, domain logic, persistence"
+          create_label "workflow:integration" "FBCA04" "Integration, contract, and end-to-end testing"
+          create_label "workflow:red-team" "D93F0B" "Adversarial QA and failure-path review"
+          create_label "workflow:platform" "006B75" "Platform, infrastructure, cloud, deployment, reliability"
+
+          create_label "milestone:case-core" "C5DEF5" "Case Core architecture and working Case Core"
+          create_label "milestone:glass-identification" "BFD4F2" "Glass identification and VIN/YMM workflow"
+          create_label "milestone:sourcing-pricing" "D4C5F9" "Supplier sourcing and pricing workflow"
+          create_label "milestone:quote-approval" "F9D0C4" "Quote, estimate, approval, authorization workflow"
+          create_label "milestone:ordering" "FEE2E2" "Procurement and ordering workflow"
+          create_label "milestone:installation-closeout" "D7F5E8" "Scheduling, installation, invoice, closeout"
+          create_label "milestone:end-to-end" "E6E6E6" "Full multi-channel end-to-end workflow"
+          create_label "milestone:launch-readiness" "C2E0C6" "Production deployment and launch readiness"
+
+          create_label "priority:p0" "B60205" "Critical path / blocks downstream delivery"
+          create_label "priority:p1" "D93F0B" "High priority"
+          create_label "priority:p2" "FBCA04" "Normal priority"
+
+          create_label "type:epic" "3E4B9E" "Parent delivery epic"
+          create_label "type:feature" "A2EEEF" "Implementable product or engineering feature"
+          create_label "type:test" "D4C5F9" "Testing or verification work"
+          create_label "type:validation" "FEF2C0" "Human/client validation decision"
