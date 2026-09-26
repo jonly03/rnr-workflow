@@ -1,0 +1,48 @@
+import { expect, test } from "@playwright/test";
+
+test("Case Core create → detail → activity → queue survives refresh", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.getByRole("heading", { name: "Case Queue" })).toBeVisible();
+
+  await page.getByRole("button", { name: /New Case/i }).click();
+
+  await page.getByLabel("Channel").selectOption("DIRECT");
+  await page.getByLabel("Year").fill("2018");
+  await page.getByLabel("Make").fill("Jeep");
+  await page.getByLabel("Model").fill("Wrangler");
+  await page.getByLabel("VIN").fill("1C4HJXEG3JW224862");
+  await page.getByLabel("Requested glass type").selectOption("WINDSHIELD");
+
+  await page.getByRole("button", { name: "Create Case" }).click();
+
+  await expect(page.getByText("DIRECT")).toBeVisible();
+  await expect(page.getByText("2018 Jeep Wrangler")).toBeVisible();
+  await expect(page.getByText("1C4HJXEG3JW224862")).toBeVisible();
+  await expect(page.getByText("Request Received")).toBeVisible();
+  await expect(page.getByText("REQUEST_RECEIVED")).toBeVisible();
+
+  await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible();
+  await expect(page.getByText("CASE_CREATED")).toBeVisible();
+
+  const reference = await page.locator("h1").textContent();
+  expect(reference).toMatch(/^RRA-\d{6}$/);
+
+  await page.reload();
+
+  await expect(page.getByText("CASE_CREATED")).toBeVisible();
+  await expect(page.getByText("REQUEST_RECEIVED")).toBeVisible();
+
+  await page.getByRole("button", { name: /Case Queue/i }).click();
+
+  await expect(page.getByRole("heading", { name: "Case Queue" })).toBeVisible();
+  await expect(page.getByText(reference!)).toBeVisible();
+  await expect(page.getByText("2018 Jeep Wrangler")).toBeVisible();
+});
+
+test("Case Core browser path does not expose paid VIN lookup action", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: /New Case/i }).click();
+
+  await expect(page.getByRole("button", { name: /VIN lookup/i })).toHaveCount(0);
+});
