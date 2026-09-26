@@ -236,7 +236,7 @@ function CaseDetail({
       <button className="back" onClick={onBack}>← Case Queue</button>
       <section className="page-head">
         <div>
-          <p className="eyebrow">{item.channel}</p>
+          <p className="eyebrow" data-testid="case-channel">{item.channel}</p>
           <h1>{item.reference}</h1>
           <div className="state-line">
             <span className="state">{humanize(item.current_state)}</span>
