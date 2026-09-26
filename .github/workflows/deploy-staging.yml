@@ -24,6 +24,7 @@ jobs:
       API_PROJECT_ID: ${{ vars.VERCEL_API_PROJECT_ID }}
       WEB_PROJECT_ID: ${{ vars.VERCEL_WEB_PROJECT_ID }}
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
 
     steps:
       - uses: actions/checkout@v4
@@ -36,7 +37,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for name in VERCEL_TOKEN VERCEL_ORG_ID API_PROJECT_ID WEB_PROJECT_ID DATABASE_URL; do
+          for name in VERCEL_TOKEN VERCEL_ORG_ID API_PROJECT_ID WEB_PROJECT_ID DATABASE_URL VERCEL_AUTOMATION_BYPASS_SECRET; do
             if [ -z "${!name:-}" ]; then
               echo "Missing staging deployment value: $name" >&2
               exit 1
@@ -88,7 +89,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --show-error --silent "$API_URL/health" | tee /tmp/staging-health.json
+          curl --fail --show-error --silent \
+            -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
+            "$API_URL/health" | tee /tmp/staging-health.json
           grep -q '"ok":true' /tmp/staging-health.json
           grep -q '"storage":"postgres"' /tmp/staging-health.json
 
@@ -96,6 +99,7 @@ jobs:
         working-directory: apps/e2e
         env:
           WEB_BASE_URL: ${{ steps.web.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ env.VERCEL_AUTOMATION_BYPASS_SECRET }}
         run: |
           npm install
           npx playwright install --with-deps chromium
