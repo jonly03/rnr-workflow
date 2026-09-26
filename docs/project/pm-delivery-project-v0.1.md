@@ -66,14 +66,14 @@ Single select:
 - End-to-End
 - Launch Readiness
 
-### Priority
+### Delivery Priority
 Single select:
 
 - P0
 - P1
 - P2
 
-### Type
+### Work Type
 Single select:
 
 - Epic
@@ -119,13 +119,13 @@ Workflow labels:
 
 Milestone labels map directly to the Milestone field.
 
-Priority labels:
+Delivery Priority labels:
 
 - `priority:p0` → P0
 - `priority:p1` → P1
 - `priority:p2` → P2
 
-Type labels:
+Work Type labels:
 
 - `type:epic` → Epic
 - `type:feature` → Feature
