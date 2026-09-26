@@ -339,3 +339,42 @@ Approval does **not** authorize invention of unanswered business rules.
 Human acceptance recorded on 2026-09-26.
 
 Accepted for progression to UX and architecture. Open Questions remain unresolved until explicitly decided.
+
+
+---
+
+## 10. Provisional Decisions Pending Client Validation
+
+The following decisions are educated working assumptions so product and engineering can continue without blocking. They are **not yet client-validated**. If the client rejects one, the affected requirement/architecture must be revised explicitly.
+
+### PD-OQ-001 — Human-readable Case number format
+**Working decision:** Use `RRA-000123` as the v0.1 business-facing reference format.
+
+**Rationale:** It is short, recognizable, sortable, easy to communicate by phone/text, and separates the human reference from the internal database ID.
+
+### PD-OQ-002 — Initial state
+**Working decision:** Persist a newly created Case directly as `REQUEST_RECEIVED`.
+
+**Rationale:** The accepted workflow already begins there. A separate technical creation state would add complexity without a current business meaning.
+
+### PD-OQ-003 — Customer identity
+**Working decision:** Model customer identity as a separate referenced entity rather than duplicating customer/contact fields directly on the Case.
+
+**Rationale:** Customers may have multiple jobs, and channel-specific actors will eventually differ. A reference gives us room to evolve without bloating Case Core.
+
+### PD-OQ-004 — Vehicle representation
+**Working decision:** Introduce a separate Vehicle entity from the start and reference it from the Case.
+
+**Rationale:** VIN is durable vehicle identity, repeat jobs are plausible, and Auction/Fleet workflows benefit from separating vehicle identity from job lifecycle.
+
+### PD-OQ-005 — Glass request representation
+**Working decision:** Represent the requested glass as a separate Case-owned Glass Request record, with one request in v0.1.
+
+**Rationale:** This preserves the simple one-glass MVP while leaving room for multi-glass jobs later without redesigning Case Core.
+
+### PD-OQ-006 — Event immutability
+**Working decision:** Treat Case events as append-only application records. Do not edit or delete historical business events through normal application flows. Corrections should be represented by a later corrective/superseding event.
+
+**Rationale:** The event history exists to explain what happened. Destructive edits would weaken auditability and make timeline reconstruction unreliable.
+
+**Validation status:** CLIENT VALIDATION REQUIRED.
