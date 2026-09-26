@@ -2,7 +2,7 @@ export default async function handler(req, res) {
   const upstream = process.env.UPSTREAM_API_URL;
   const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
 
-  if (!upstream || !bypassSecret) {
+  if (!upstream) {
     return res.status(500).json({
       error: {
         code: "PROXY_CONFIGURATION_ERROR",
@@ -21,7 +21,9 @@ export default async function handler(req, res) {
     if (["host", "content-length", "connection", "cookie"].includes(lower)) continue;
     if (value !== undefined) headers[key] = Array.isArray(value) ? value.join(",") : String(value);
   }
-  headers["x-vercel-protection-bypass"] = bypassSecret;
+  if (bypassSecret) {
+    headers["x-vercel-protection-bypass"] = bypassSecret;
+  }
 
   let body;
   if (!["GET", "HEAD"].includes(String(req.method || "GET").toUpperCase())) {
