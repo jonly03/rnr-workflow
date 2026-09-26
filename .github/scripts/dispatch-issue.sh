@@ -93,9 +93,9 @@ comment_once "<!-- rnr-agent-work-packet -->"   "<!-- rnr-agent-work-packet -->
 ## Agent work packet
 
 **Issue:** #$ISSUE_NUMBER — $title  
-**Lane:** `$workflow_label`  
+**Lane:** \`$workflow_label\`  
 **Delivery status:** **Ready**  
-**Base branch:** `main`
+**Base branch:** \`main\`
 
 ### Lane contract
 
@@ -116,7 +116,7 @@ $lane_instruction
 
 Any approved execution runtime may claim this packet by posting:
 
-`/agent start`
+\`/agent start\`
 
 The runtime-state workflow will move this issue to **In Progress**. A linked pull request moves it to **In Review**."
 
