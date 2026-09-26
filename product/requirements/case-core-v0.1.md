@@ -1,6 +1,6 @@
 # Case Core Product Requirement v0.1
 
-Status: DRAFT FOR HUMAN ACCEPTANCE
+Status: ACCEPTED
 
 ## 1. Problem / Desired Outcome
 
@@ -333,3 +333,9 @@ Approval of this document means:
 - anything listed under Open Questions still requires an explicit decision before it can become an implementation assumption.
 
 Approval does **not** authorize invention of unanswered business rules.
+
+## 9. Acceptance Record
+
+Human acceptance recorded on 2026-09-26.
+
+Accepted for progression to UX and architecture. Open Questions remain unresolved until explicitly decided.
