@@ -10,6 +10,7 @@ on:
       - '.github/scripts/**'
       - '.github/workflows/agent-dispatch.yml'
       - '.github/workflows/project-pr-status.yml'
+      - '.github/workflows/agent-runtime-state.yml'
       - 'docs/project/agentic-delivery-control-plane-v0.1.md'
 
 permissions:
@@ -19,7 +20,8 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      PROJECT_GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
 
     steps:
       - uses: actions/checkout@v4
@@ -56,12 +58,24 @@ jobs:
           test "$(jq -c '."27"' .github/agentic/case-core-dependencies.json)" = '[25,26]'
           test "$(jq -c '."28"' .github/agentic/case-core-dependencies.json)" = '[27]'
 
+      - name: Validate token split contract
+        shell: bash
+        run: |
+          grep -q 'GH_TOKEN: ${{ github.token }}' .github/workflows/agent-dispatch.yml
+          grep -q 'PROJECT_GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}' .github/workflows/agent-dispatch.yml
+          grep -q 'GH_TOKEN: ${{ github.token }}' .github/workflows/project-pr-status.yml
+          grep -q 'PROJECT_GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}' .github/workflows/project-pr-status.yml
+          grep -q 'GH_TOKEN: ${{ github.token }}' .github/workflows/agent-runtime-state.yml
+          grep -q 'PROJECT_GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}' .github/workflows/agent-runtime-state.yml
+          grep -q 'GH_TOKEN="$PROJECT_GH_TOKEN" gh project' .github/scripts/project-status.sh
+          grep -q 'GH_TOKEN="$REPO_GH_TOKEN" gh issue' .github/scripts/project-status.sh
+
       - name: Verify live Project and runtime contract
-        if: env.GH_TOKEN != ''
+        if: env.PROJECT_GH_TOKEN != ''
         shell: bash
         run: |
           set -euo pipefail
-          gh project view 10 --owner @me --format json >/dev/null
+          GH_TOKEN="$PROJECT_GH_TOKEN" gh project view 10 --owner @me --format json >/dev/null
 
           test "$(jq -r '.runtime_mode' .github/agentic/dispatch-config.json)" = "vendor-neutral-work-packet"
           test "$(jq -r '.runtime_claim_command' .github/agentic/dispatch-config.json)" = "/agent start"
