@@ -1,0 +1,99 @@
+name: Bootstrap PM delivery project
+
+on:
+  push:
+    branches:
+      - chore/pm-project-board-v0.1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  bootstrap-project:
+    runs-on: ubuntu-latest
+    env:
+      OWNER: jonly03
+      PROJECT_TITLE: R&R Finest Auto Glass — Delivery
+      GH_TOKEN: ${{ secrets.PROJECT_TOKEN != '' && secrets.PROJECT_TOKEN || github.token }}
+
+    steps:
+      - name: Verify Projects access
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh auth status
+          gh project list --owner "$OWNER" --limit 100 >/dev/null
+
+      - name: Create or find project
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          number="$(gh project list --owner "$OWNER" --limit 100 --format json             --jq '.projects[] | select(.title == env.PROJECT_TITLE) | .number' | head -n1)"
+
+          if [ -z "$number" ]; then
+            number="$(gh project create --owner "$OWNER" --title "$PROJECT_TITLE" --format json --jq '.number')"
+            echo "Created project #$number"
+          else
+            echo "Found project #$number"
+          fi
+
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+      - name: Create project fields
+        env:
+          PROJECT_NUMBER: ${{ steps.project.outputs.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ensure_field() {
+            name="$1"
+            type="$2"
+            options="${3:-}"
+
+            if gh project field-list "$PROJECT_NUMBER" --owner "$OWNER" --format json               --jq --arg name "$name" '.fields[] | select(.name == $name) | .name' | grep -qx "$name"; then
+              echo "Exists: $name"
+              return
+            fi
+
+            if [ "$type" = "SINGLE_SELECT" ]; then
+              gh project field-create "$PROJECT_NUMBER" --owner "$OWNER"                 --name "$name" --data-type "$type" --single-select-options "$options"
+            else
+              gh project field-create "$PROJECT_NUMBER" --owner "$OWNER"                 --name "$name" --data-type "$type"
+            fi
+          }
+
+          ensure_field "Delivery Status" "SINGLE_SELECT" "Backlog,Ready,In Progress,In Review,Human Validation,Blocked,Done"
+          ensure_field "Workflow" "SINGLE_SELECT" "Product,UX,Brand,Architecture,Frontend,Backend,Integration,Red Team,Platform"
+          ensure_field "Milestone" "SINGLE_SELECT" "Case Core,Glass Identification,Sourcing + Pricing,Quote / Approval,Ordering,Installation + Closeout,End-to-End,Launch Readiness"
+          ensure_field "Priority" "SINGLE_SELECT" "P0,P1,P2"
+          ensure_field "Type" "SINGLE_SELECT" "Epic,Feature,Test,Validation"
+          ensure_field "Dependency" "TEXT"
+          ensure_field "Client Validation" "SINGLE_SELECT" "Not Needed,Pending,Validated,Revised,Deferred"
+          ensure_field "Human Gate" "SINGLE_SELECT" "None,Nelly,Client"
+          ensure_field "Target Slice" "TEXT"
+
+      - name: Add current backlog issues
+        env:
+          PROJECT_NUMBER: ${{ steps.project.outputs.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh issue list --repo "$GITHUB_REPOSITORY" --state all --limit 200             --json number,url             --jq '.[] | select(.number >= 14) | .url' |
+          while read -r issue_url; do
+            [ -z "$issue_url" ] && continue
+            echo "Adding $issue_url"
+            gh project item-add "$PROJECT_NUMBER" --owner "$OWNER" --url "$issue_url" >/dev/null || true
+          done
+
+      - name: Print project URL
+        env:
+          PROJECT_NUMBER: ${{ steps.project.outputs.number }}
+        shell: bash
+        run: |
+          echo "Project: https://github.com/users/$OWNER/projects/$PROJECT_NUMBER"
