@@ -33,7 +33,9 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
   const createResponsePromise = page.waitForResponse(
     response =>
       response.request().method() === "POST" &&
-      response.url().includes("/api/v1/cases")
+      response.url().includes("/api/v1/cases") &&
+      response.status() >= 200 &&
+      response.status() < 300
   );
 
   await page.getByRole("button", { name: "Create Case" }).click();
@@ -46,7 +48,9 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
   ).toBeGreaterThanOrEqual(200);
   expect(createResponse.status()).toBeLessThan(300);
 
-  await expect(page.locator(".eyebrow", { hasText: "DIRECT" })).toBeVisible();
+  await expect(page.locator("h1")).toHaveText(/^RRA-\d{6}$/);
+  await expect(page.getByRole("heading", { name: "Vehicle / Service" })).toBeVisible();
+  await expect(page.getByTestId("case-channel")).toHaveText("DIRECT");
   await expect(page.getByText("2018 Jeep Wrangler")).toBeVisible();
   await expect(page.getByText("1C4HJXEG3JW224862")).toBeVisible();
   await expect(page.getByText("Request Received")).toBeVisible();
