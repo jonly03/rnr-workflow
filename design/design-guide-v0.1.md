@@ -783,3 +783,69 @@ Acceptance of this guide means:
 - channel-specific components may extend, but should not contradict, these foundations.
 
 Acceptance does not resolve the Open Design Questions unless explicitly decided.
+
+
+---
+
+## 24. Provisional Design Decisions Pending Client Validation
+
+These working values allow frontend work to proceed consistently. They remain subject to client validation and can be changed centrally through tokens.
+
+### DG-PD-001 — Exact v0.1 palette
+**Working decision:** Use the following initial token values.
+
+```css
+--color-bg-primary: #0B1220;
+--color-bg-secondary: #111827;
+--color-surface: #172033;
+--color-surface-raised: #1E293B;
+--color-border: #334155;
+
+--color-text-primary: #F8FAFC;
+--color-text-secondary: #CBD5E1;
+--color-text-muted: #94A3B8;
+
+--color-brand-primary: #4F46E5;
+--color-brand-primary-hover: #4338CA;
+--color-brand-primary-active: #3730A3;
+
+--color-status-neutral: #64748B;
+--color-status-progress: #2563EB;
+--color-status-success: #059669;
+--color-status-attention: #D97706;
+--color-status-critical: #DC2626;
+--color-status-cancelled: #6B7280;
+```
+
+For Direct Customer light surfaces, invert the background/surface family to light neutrals while preserving brand and semantic status meaning.
+
+**Rationale:** This palette matches the accepted navy/slate + indigo direction and gives sufficient semantic separation without requiring per-screen color invention.
+
+### DG-PD-002 — Font family
+**Working decision:** Use a system-first sans-serif stack:
+
+`ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`
+
+**Rationale:** Fast, legible, broadly available, and avoids taking on a font-delivery dependency before a formal brand typeface exists.
+
+### DG-PD-003 — Direct Customer light mode
+**Working decision:** Treat light mode as the default Direct Customer visual treatment.
+
+**Rationale:** This follows the Brand Book working direction and separates customer simplicity from the denser internal operations workspace without creating a separate brand.
+
+### DG-PD-004 — Staff state labels
+**Working decision:** Humanized label primary; raw state ID secondary/diagnostic.
+
+**Rationale:** Optimize for human scanning while preserving traceability to the canonical workflow vocabulary.
+
+### DG-PD-005 — Timeline order
+**Working decision:** Newest-first by default.
+
+**Rationale:** Operational users usually care most about the most recent event; deterministic sequencing still preserves audit order.
+
+### DG-PD-006 — VIN treatment
+**Working decision:** Full VIN visible to authenticated R&R Staff with copy action. Mask VIN by default in external persona experiences unless explicitly required.
+
+**Rationale:** Internal operations need speed and accuracy; external experiences should expose less vehicle identity data by default.
+
+**Validation status:** CLIENT VALIDATION REQUIRED.
