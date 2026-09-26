@@ -3,6 +3,24 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { CaseEvent, CaseRecord, GlassRequest, StoreShape, Vehicle } from "./types.js";
 
+export interface CreateCaseStoreInput {
+  channel: CaseRecord["channel"];
+  customer_id?: string | null;
+  vehicle: Omit<Vehicle, "id" | "created_at" | "updated_at">;
+  glass_type: GlassRequest["glass_type"];
+  idempotencyKey?: string;
+}
+
+export interface CaseStore {
+  health(): Promise<void>;
+  listCases(): Promise<CaseRecord[]>;
+  getCase(id: string): Promise<CaseRecord | null>;
+  getVehicle(id: string): Promise<Vehicle | null>;
+  getGlassRequest(id: string): Promise<GlassRequest | null>;
+  getEvents(caseId: string): Promise<CaseEvent[]>;
+  createCase(input: CreateCaseStoreInput): Promise<{ caseRecord: CaseRecord; reused: boolean }>;
+}
+
 const emptyStore = (): StoreShape => ({
   cases: [],
   vehicles: [],
@@ -11,7 +29,7 @@ const emptyStore = (): StoreShape => ({
   idempotency: {}
 });
 
-export class JsonCaseStore {
+export class JsonCaseStore implements CaseStore {
   private data: StoreShape;
 
   constructor(private readonly filePath: string) {
@@ -31,44 +49,40 @@ export class JsonCaseStore {
     this.data = next;
   }
 
+  async health() {}
+
   snapshot(): StoreShape {
     return structuredClone(this.data);
   }
 
-  listCases() {
+  async listCases() {
     return [...this.data.cases].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
   }
 
-  getCase(id: string) {
+  async getCase(id: string) {
     return this.data.cases.find(c => c.id === id) ?? null;
   }
 
-  getVehicle(id: string) {
+  async getVehicle(id: string) {
     return this.data.vehicles.find(v => v.id === id) ?? null;
   }
 
-  getGlassRequest(id: string) {
+  async getGlassRequest(id: string) {
     return this.data.glass_requests.find(g => g.id === id) ?? null;
   }
 
-  getEvents(caseId: string) {
+  async getEvents(caseId: string) {
     return this.data.events
       .filter(e => e.case_id === caseId)
       .sort((a, b) => a.sequence - b.sequence);
   }
 
-  findIdempotentCase(key: string) {
+  private findIdempotentCase(key: string) {
     const id = this.data.idempotency[key];
-    return id ? this.getCase(id) : null;
+    return id ? this.data.cases.find(c => c.id === id) ?? null : null;
   }
 
-  createCase(input: {
-    channel: CaseRecord["channel"];
-    customer_id?: string | null;
-    vehicle: Omit<Vehicle, "id" | "created_at" | "updated_at">;
-    glass_type: GlassRequest["glass_type"];
-    idempotencyKey?: string;
-  }) {
+  async createCase(input: CreateCaseStoreInput) {
     if (input.idempotencyKey) {
       const existing = this.findIdempotentCase(input.idempotencyKey);
       if (existing) return { caseRecord: existing, reused: true };
