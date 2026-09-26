@@ -1,0 +1,86 @@
+name: Case Core E2E CI
+
+on:
+  pull_request:
+    paths:
+      - 'apps/api/**'
+      - 'apps/web/**'
+      - 'apps/e2e/**'
+      - 'architecture/**'
+      - '.github/workflows/case-core-e2e-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  playwright:
+    runs-on: ubuntu-latest
+    env:
+      CASE_STORE_FILE: /tmp/rnr-case-core-e2e.json
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install API dependencies
+        working-directory: apps/api
+        run: npm install
+
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: npm install
+
+      - name: Install E2E dependencies
+        working-directory: apps/e2e
+        run: npm install
+
+      - name: Install Chromium
+        working-directory: apps/e2e
+        run: npx playwright install --with-deps chromium
+
+      - name: Start API
+        working-directory: apps/api
+        run: |
+          npm run start > /tmp/rnr-api.log 2>&1 &
+          echo $! > /tmp/rnr-api.pid
+
+      - name: Start web
+        working-directory: apps/web
+        run: |
+          npm run dev -- --host 127.0.0.1 --port 5173 > /tmp/rnr-web.log 2>&1 &
+          echo $! > /tmp/rnr-web.pid
+
+      - name: Wait for services
+        shell: bash
+        run: |
+          for i in {1..60}; do
+            api_ok=0
+            web_ok=0
+            curl -fsS http://127.0.0.1:3001/health >/dev/null && api_ok=1 || true
+            curl -fsS http://127.0.0.1:5173 >/dev/null && web_ok=1 || true
+            if [ "$api_ok" -eq 1 ] && [ "$web_ok" -eq 1 ]; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "API log:"
+          cat /tmp/rnr-api.log || true
+          echo "Web log:"
+          cat /tmp/rnr-web.log || true
+          exit 1
+
+      - name: Run Playwright
+        working-directory: apps/e2e
+        run: npm test
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: case-core-playwright-report
+          path: apps/e2e/playwright-report
+          if-no-files-found: ignore
