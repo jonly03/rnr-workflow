@@ -61,12 +61,16 @@ jobs:
       - name: Validate token split contract
         shell: bash
         run: |
-          grep -q 'GH_TOKEN: ${{ github.token }}' .github/workflows/agent-dispatch.yml
-          grep -q 'PROJECT_GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}' .github/workflows/agent-dispatch.yml
-          grep -q 'GH_TOKEN: ${{ github.token }}' .github/workflows/project-pr-status.yml
-          grep -q 'PROJECT_GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}' .github/workflows/project-pr-status.yml
-          grep -q 'GH_TOKEN: ${{ github.token }}' .github/workflows/agent-runtime-state.yml
-          grep -q 'PROJECT_GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}' .github/workflows/agent-runtime-state.yml
+          for workflow in \
+            .github/workflows/agent-dispatch.yml \
+            .github/workflows/project-pr-status.yml \
+            .github/workflows/agent-runtime-state.yml; do
+            grep -q 'GH_TOKEN:' "$workflow"
+            grep -q 'github.token' "$workflow"
+            grep -q 'PROJECT_GH_TOKEN:' "$workflow"
+            grep -q 'secrets.PROJECT_TOKEN' "$workflow"
+          done
+
           grep -q 'GH_TOKEN="$PROJECT_GH_TOKEN" gh project' .github/scripts/project-status.sh
           grep -q 'GH_TOKEN="$REPO_GH_TOKEN" gh issue' .github/scripts/project-status.sh
 
