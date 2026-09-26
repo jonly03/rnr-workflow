@@ -89,9 +89,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --show-error --silent \
+          status="$(curl --show-error --silent \
+            -o /tmp/staging-health.json \
+            -w '%{http_code}' \
             -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
-            "$API_URL/health" | tee /tmp/staging-health.json
+            "$API_URL/health")"
+          echo "Health status: $status"
+          cat /tmp/staging-health.json || true
+          if [ "$status" != "200" ]; then
+            echo "API health failed; fetching recent Vercel runtime logs..." >&2
+            vercel logs "$API_URL" --token="$VERCEL_TOKEN" --since=10m --level=error || true
+            exit 1
+          fi
           grep -q '"ok":true' /tmp/staging-health.json
           grep -q '"storage":"postgres"' /tmp/staging-health.json
 
