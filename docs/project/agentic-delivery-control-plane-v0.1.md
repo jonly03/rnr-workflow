@@ -145,3 +145,17 @@ Do not auto-release the remaining milestones until this loop proves that:
 - PR status synchronization works;
 - dependency release works;
 - human gates stop automation correctly.
+
+
+## Token boundary
+
+The control plane uses two separate GitHub credentials with different responsibilities:
+
+- `GITHUB_TOKEN` / `github.token` — normal repository-scoped operations such as reading Issues, PRs, labels, comments, and repository metadata.
+- `PROJECT_GH_TOKEN` / secret `PROJECT_TOKEN` — GitHub Projects v2 reads and mutations only.
+
+`project-status.sh` enforces this split per command:
+- repository lookups use `GH_TOKEN`;
+- every `gh project ...` command is explicitly executed with `GH_TOKEN="$PROJECT_GH_TOKEN"`.
+
+This prevents ordinary orchestration traffic from unnecessarily consuming the personal PAT's Projects/GraphQL quota.

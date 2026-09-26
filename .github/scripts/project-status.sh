@@ -9,15 +9,17 @@ CLIENT_VALIDATION="${4:-}"
 OWNER="${PROJECT_OWNER:-@me}"
 PROJECT_NUMBER="${PROJECT_NUMBER:-10}"
 REPO="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}"
+REPO_GH_TOKEN="${GH_TOKEN:?GH_TOKEN required for repository operations}"
+PROJECT_GH_TOKEN="${PROJECT_GH_TOKEN:?PROJECT_GH_TOKEN required for Projects v2 operations}"
 
-project_id="$(gh project view "$PROJECT_NUMBER" --owner "$OWNER" --format json --jq '.id')"
+project_id="$(GH_TOKEN="$PROJECT_GH_TOKEN" gh project view "$PROJECT_NUMBER" --owner "$OWNER" --format json --jq '.id')"
 
-item_id="$(gh project item-list "$PROJECT_NUMBER" --owner "$OWNER" --limit 200 --format json   --jq ".items[] | select(.content.number == $ISSUE_NUMBER) | .id" | head -n1)"
+item_id="$(GH_TOKEN="$PROJECT_GH_TOKEN" gh project item-list "$PROJECT_NUMBER" --owner "$OWNER" --limit 200 --format json   --jq ".items[] | select(.content.number == $ISSUE_NUMBER) | .id" | head -n1)"
 
 if [ -z "$item_id" ]; then
-  issue_url="$(gh issue view "$ISSUE_NUMBER" --repo "$REPO" --json url --jq '.url')"
-  gh project item-add "$PROJECT_NUMBER" --owner "$OWNER" --url "$issue_url" >/dev/null
-  item_id="$(gh project item-list "$PROJECT_NUMBER" --owner "$OWNER" --limit 200 --format json     --jq ".items[] | select(.content.number == $ISSUE_NUMBER) | .id" | head -n1)"
+  issue_url="$(GH_TOKEN="$REPO_GH_TOKEN" gh issue view "$ISSUE_NUMBER" --repo "$REPO" --json url --jq '.url')"
+  GH_TOKEN="$PROJECT_GH_TOKEN" gh project item-add "$PROJECT_NUMBER" --owner "$OWNER" --url "$issue_url" >/dev/null
+  item_id="$(GH_TOKEN="$PROJECT_GH_TOKEN" gh project item-list "$PROJECT_NUMBER" --owner "$OWNER" --limit 200 --format json     --jq ".items[] | select(.content.number == $ISSUE_NUMBER) | .id" | head -n1)"
 fi
 
 if [ -z "$item_id" ]; then
@@ -27,7 +29,7 @@ fi
 
 fields_json="$(mktemp)"
 trap 'rm -f "$fields_json"' EXIT
-gh project field-list "$PROJECT_NUMBER" --owner "$OWNER" --format json > "$fields_json"
+GH_TOKEN="$PROJECT_GH_TOKEN" gh project field-list "$PROJECT_NUMBER" --owner "$OWNER" --format json > "$fields_json"
 
 field_id() {
   jq -r --arg n "$1" '.fields[] | select(.name == $n) | .id' "$fields_json" | head -n1
@@ -51,7 +53,7 @@ set_select() {
     exit 1
   fi
 
-  gh project item-edit     --id "$item_id"     --project-id "$project_id"     --field-id "$fid"     --single-select-option-id "$oid" >/dev/null
+  GH_TOKEN="$PROJECT_GH_TOKEN" gh project item-edit     --id "$item_id"     --project-id "$project_id"     --field-id "$fid"     --single-select-option-id "$oid" >/dev/null
 }
 
 set_select "Delivery Status" "$DELIVERY_STATUS"

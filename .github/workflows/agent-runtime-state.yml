@@ -14,7 +14,8 @@ jobs:
     if: github.event.issue.pull_request == null && contains(github.event.comment.body, '/agent start')
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      PROJECT_GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
       PROJECT_OWNER: '@me'
       PROJECT_NUMBER: '10'
       ISSUE_NUMBER: ${{ github.event.issue.number }}
@@ -33,7 +34,8 @@ jobs:
     if: github.event.issue.pull_request == null && contains(github.event.comment.body, '/agent ready')
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      PROJECT_GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
       PROJECT_OWNER: '@me'
       PROJECT_NUMBER: '10'
       ISSUE_NUMBER: ${{ github.event.issue.number }}
