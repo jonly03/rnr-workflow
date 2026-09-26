@@ -1,0 +1,143 @@
+name: Deploy Case Core Staging
+
+on:
+  push:
+    branches:
+      - staging
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: case-core-staging
+  cancel-in-progress: true
+
+jobs:
+  deploy-and-smoke:
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      API_PROJECT_ID: ${{ vars.VERCEL_API_PROJECT_ID }}
+      WEB_PROJECT_ID: ${{ vars.VERCEL_WEB_PROJECT_ID }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Require deployment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in VERCEL_TOKEN VERCEL_ORG_ID API_PROJECT_ID WEB_PROJECT_ID DATABASE_URL; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing staging deployment value: $name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Install deployment tooling
+        run: npm install --global vercel@latest
+
+      - name: Migrate staging database
+        working-directory: apps/api
+        env:
+          DATABASE_SSL_MODE: require
+        run: |
+          npm install
+          npm run migrate
+
+      - name: Deploy staging API
+        id: api
+        working-directory: apps/api
+        env:
+          VERCEL_PROJECT_ID: ${{ env.API_PROJECT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          vercel pull --yes --environment=preview --token="$VERCEL_TOKEN"
+          api_url="$(vercel deploy --yes --token="$VERCEL_TOKEN" --env DATABASE_URL="$DATABASE_URL" --env PG_POOL_MAX=3 | tail -n1)"
+          echo "url=$api_url" >> "$GITHUB_OUTPUT"
+          echo "API: $api_url" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy staging web
+        id: web
+        working-directory: apps/web
+        env:
+          VERCEL_PROJECT_ID: ${{ env.WEB_PROJECT_ID }}
+          API_URL: ${{ steps.api.outputs.url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          vercel pull --yes --environment=preview --token="$VERCEL_TOKEN"
+          printf 'VITE_API_BASE_URL=%s/api/v1\n' "$API_URL" > .env.production.local
+          web_url="$(vercel deploy --yes --token="$VERCEL_TOKEN" | tail -n1)"
+          echo "url=$web_url" >> "$GITHUB_OUTPUT"
+          echo "Web: $web_url" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Live API health check
+        env:
+          API_URL: ${{ steps.api.outputs.url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --show-error --silent "$API_URL/health" | tee /tmp/staging-health.json
+          grep -q '"ok":true' /tmp/staging-health.json
+          grep -q '"storage":"postgres"' /tmp/staging-health.json
+
+      - name: Live browser smoke
+        working-directory: apps/e2e
+        env:
+          WEB_BASE_URL: ${{ steps.web.outputs.url }}
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+          npm test
+
+      - name: Record staging evidence
+        env:
+          API_URL: ${{ steps.api.outputs.url }}
+          WEB_URL: ${{ steps.web.outputs.url }}
+        shell: bash
+        run: |
+          cat > /tmp/staging-evidence.json <<EOF
+          {
+            "commit": "${GITHUB_SHA}",
+            "api_url": "$API_URL",
+            "web_url": "$WEB_URL",
+            "health": "pass",
+            "playwright": "pass"
+          }
+          EOF
+          cat /tmp/staging-evidence.json
+          echo "Staging commit: ${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: case-core-staging-evidence
+          path: /tmp/staging-evidence.json
+
+      - name: Record evidence on deployment issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          API_URL: ${{ steps.api.outputs.url }}
+          WEB_URL: ${{ steps.web.outputs.url }}
+        shell: bash
+        run: |
+          gh issue comment 93 --repo "$GITHUB_REPOSITORY" --body "### Staging deployment passed
+
+          Commit: \`${GITHUB_SHA}\`
+          API: $API_URL
+          Web: $WEB_URL
+
+          Live API health: **PASS**
+          Live Playwright: **PASS**
+
+          This commit is eligible for production promotion."
