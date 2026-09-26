@@ -1,6 +1,6 @@
 # Case Core / R&R Staff UX Specification v0.1
 
-Status: DRAFT FOR HUMAN ACCEPTANCE
+Status: ACCEPTED
 
 Source: `product/requirements/case-core-v0.1.md` (ACCEPTED)
 
@@ -516,3 +516,9 @@ Acceptance of this document means:
 Acceptance does not resolve the listed open UX questions unless explicitly decided.
 
 Acceptance also does not authorize implementation of product capabilities that remain out of scope in the accepted Case Core Product Requirement.
+
+## 15. Acceptance Record
+
+Human acceptance recorded on 2026-09-26.
+
+Accepted for progression to brand, design-system, architecture, and frontend planning. Open UX questions remain unresolved until explicitly decided.
