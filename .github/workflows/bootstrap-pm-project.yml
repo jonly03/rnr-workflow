@@ -14,7 +14,8 @@ jobs:
   bootstrap-project:
     runs-on: ubuntu-latest
     env:
-      OWNER: jonly03
+      OWNER: '@me'
+      OWNER_LOGIN: jonly03
       PROJECT_TITLE: R&R Finest Auto Glass — Delivery
       GH_TOKEN: ${{ secrets.PROJECT_TOKEN != '' && secrets.PROJECT_TOKEN || github.token }}
 
@@ -96,4 +97,4 @@ jobs:
           PROJECT_NUMBER: ${{ steps.project.outputs.number }}
         shell: bash
         run: |
-          echo "Project: https://github.com/users/$OWNER/projects/$PROJECT_NUMBER"
+          echo "Project: https://github.com/users/$OWNER_LOGIN/projects/$PROJECT_NUMBER"
