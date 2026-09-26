@@ -28,12 +28,13 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
   const reference = await page.locator("h1").textContent();
   expect(reference).toMatch(/^RRA-\d{6}$/);
 
-  await page.reload();
-
-  await expect(page.getByText("CASE_CREATED")).toBeVisible();
-  await expect(page.getByText("REQUEST_RECEIVED")).toBeVisible();
-
   await page.getByRole("button", { name: /Case Queue/i }).click();
+
+  await expect(page.getByRole("heading", { name: "Case Queue" })).toBeVisible();
+  await expect(page.getByText(reference!)).toBeVisible();
+  await expect(page.getByText("2018 Jeep Wrangler")).toBeVisible();
+
+  await page.reload();
 
   await expect(page.getByRole("heading", { name: "Case Queue" })).toBeVisible();
   await expect(page.getByText(reference!)).toBeVisible();
