@@ -57,7 +57,8 @@ jobs:
             type="$2"
             options="${3:-}"
 
-            if gh project field-list "$PROJECT_NUMBER" --owner "$OWNER" --format json               --jq --arg name "$name" '.fields[] | select(.name == $name) | .name' | grep -qx "$name"; then
+            existing="$(gh project field-list "$PROJECT_NUMBER" --owner "$OWNER" --format json --jq ".fields[] | select(.name == \"$name\") | .name" | head -n1 || true)"
+            if [ "$existing" = "$name" ]; then
               echo "Exists: $name"
               return
             fi
