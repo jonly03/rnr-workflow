@@ -1,0 +1,32 @@
+# Environment / credentials
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Vercel local project metadata
+.vercel/
+**/.vercel/
+
+# Node
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+
+# Test artifacts
+playwright-report/
+**/playwright-report/
+test-results/
+**/test-results/
+coverage/
+**/coverage/
+
+# Local runtime data
+apps/api/data/
+*.log
+
+# macOS
+.DS_Store
