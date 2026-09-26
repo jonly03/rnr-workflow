@@ -38,7 +38,7 @@ jobs:
         shell: bash
         run: |
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "PROJECT_TOKEN is required for Projects v2 and Copilot agent assignment." >&2
+            echo "PROJECT_TOKEN is required for Projects v2 orchestration state." >&2
             exit 1
           fi
 
@@ -71,10 +71,17 @@ jobs:
           chmod +x .github/scripts/project-status.sh .github/scripts/dispatch-issue.sh
           .github/scripts/project-status.sh "${{ github.event.issue.number }}" "Done"
 
-          # Pilot dependency sweep: closing any Case Core issue re-evaluates the
-          # whole Case Core graph. Only issues whose prerequisites are closed
-          # can move forward.
-          jq -r '.auto_dispatch_issue_numbers[]' .github/agentic/dispatch-config.json |
+          # Re-evaluate only direct dependents of the issue that just closed.
+          # This keeps release work proportional to the graph edge that changed
+          # and avoids burning GitHub API rate limit across unrelated backlog items.
+          closed_issue="${{ github.event.issue.number }}"
+
+          jq -r --argjson closed "$closed_issue" '
+            to_entries[]
+            | select(.value | index($closed))
+            | .key
+          ' .github/agentic/case-core-dependencies.json |
           while read -r issue_number; do
+            [ -z "$issue_number" ] && continue
             .github/scripts/dispatch-issue.sh "$issue_number"
           done
