@@ -70,6 +70,11 @@ jobs:
           )"
 
           if [ "$copilot" != "copilot-swe-agent" ]; then
-            echo "Copilot cloud agent is not available as an assignable actor." >&2
-            exit 1
+            echo "::warning::Copilot cloud agent is not currently available as an assignable actor. The dispatcher will safely mark executable agent work Blocked until an agent runtime is enabled."
+            echo "### Agent runtime capability" >> "$GITHUB_STEP_SUMMARY"
+            echo "Copilot cloud agent: **UNAVAILABLE**" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Copilot cloud agent: available"
+            echo "### Agent runtime capability" >> "$GITHUB_STEP_SUMMARY"
+            echo "Copilot cloud agent: **AVAILABLE**" >> "$GITHUB_STEP_SUMMARY"
           fi
