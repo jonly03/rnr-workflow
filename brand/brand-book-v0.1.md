@@ -455,3 +455,37 @@ Acceptance does not resolve the listed open brand questions unless explicitly de
 Human acceptance recorded on 2026-09-26.
 
 Accepted for progression to Design Guide v0.1. Open brand questions remain unresolved until explicitly decided.
+
+
+---
+
+## 22. Provisional Brand Decisions Pending Client Validation
+
+These decisions are working brand assumptions for product implementation. They should be reviewed with the client before being treated as final brand standards.
+
+### BR-PD-001 — Logo
+**Working decision:** Treat the current simple `R&R` mark as the official **v0.1 product mark**, while leaving room for a future professional logo system.
+
+**Rationale:** It gives the product a consistent identity now without blocking delivery on a full identity redesign.
+
+### BR-PD-002 — Primary accent
+**Working decision:** Keep **blue/indigo** as the primary brand accent.
+
+**Rationale:** It works well across operational, customer, auction, and insurance contexts and supports the reliable/modern positioning already accepted.
+
+### BR-PD-003 — Customer visual mode
+**Working decision:** Direct Customer experiences use a **predominantly light visual system**; R&R internal operational tools remain predominantly dark.
+
+**Rationale:** Light customer surfaces feel simpler and more familiar for transactional consumer flows, while dark internal surfaces support the dense operational workspace already prototyped. Shared tokens keep both in the same family.
+
+### BR-PD-004 — Photography
+**Working decision:** Use authentic R&R photography selectively on public/marketing/customer entry surfaces, but keep transactional workflow screens primarily interface-driven.
+
+**Rationale:** Real photography can humanize and establish trust, while operational screens should prioritize task completion.
+
+### BR-PD-005 — Tagline
+**Working decision:** Do **not** force a public tagline in v0.1.
+
+**Rationale:** The current product has stronger need for clear service communication than a slogan. A tagline can be developed later with the client if it adds real brand value.
+
+**Validation status:** CLIENT VALIDATION REQUIRED.
