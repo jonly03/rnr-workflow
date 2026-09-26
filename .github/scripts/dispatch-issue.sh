@@ -34,7 +34,7 @@ if [ "${#workflow_labels[@]}" -ne 1 ]; then
   comment_once "<!-- rnr-dispatch-routing-error -->"     "<!-- rnr-dispatch-routing-error -->
 **Dispatcher blocked this issue.**
 
-Expected exactly one `workflow:*` label; found ${#workflow_labels[@]}.
+Expected exactly one \`workflow:*\` label; found ${#workflow_labels[@]}.
 
 The PM must correct workflow ownership before this issue can be dispatched."
   exit 0
@@ -48,7 +48,7 @@ if ! jq -e --arg lane "$lane" 'has($lane)' "$LANES" >/dev/null; then
   comment_once "<!-- rnr-dispatch-unknown-lane -->"     "<!-- rnr-dispatch-unknown-lane -->
 **Dispatcher blocked this issue.**
 
-No agent lane instructions exist for `$workflow_label`."
+No agent lane instructions exist for \`$workflow_label\`."
   exit 0
 fi
 
@@ -107,7 +107,7 @@ if [ -z "$copilot_id" ]; then
   comment_once "<!-- rnr-dispatch-agent-unavailable -->"     "<!-- rnr-dispatch-agent-unavailable -->
 **Dispatcher blocked this issue.**
 
-GitHub Copilot cloud agent is not currently available as an assignable actor for this repository/account. The workflow label was recognized as `$workflow_label`, but no real agent was dispatched."
+GitHub Copilot cloud agent is not currently available as an assignable actor for this repository/account. The workflow label was recognized as \`$workflow_label\`, but no real agent was dispatched."
   exit 0
 fi
 
