@@ -26,7 +26,8 @@ jobs:
   dispatch:
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      PROJECT_GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
       PROJECT_OWNER: '@me'
       PROJECT_NUMBER: '10'
 
@@ -34,10 +35,14 @@ jobs:
       - name: Checkout orchestration control plane
         uses: actions/checkout@v4
 
-      - name: Require dispatcher token
+      - name: Require orchestration tokens
         shell: bash
         run: |
           if [ -z "${GH_TOKEN:-}" ]; then
+            echo "GITHUB_TOKEN is required for repository orchestration." >&2
+            exit 1
+          fi
+          if [ -z "${PROJECT_GH_TOKEN:-}" ]; then
             echo "PROJECT_TOKEN is required for Projects v2 orchestration state." >&2
             exit 1
           fi
