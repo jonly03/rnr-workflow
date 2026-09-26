@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - chore/pm-project-board-v0.1
+      - fix/pm-project-personal-owner
   workflow_dispatch:
 
 permissions:
