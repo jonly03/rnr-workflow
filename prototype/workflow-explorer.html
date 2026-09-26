@@ -19,10 +19,10 @@ button{font:inherit}
 .layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:16px}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px}
 .graph{padding:16px;overflow:auto;min-height:680px}
-.stage-row{display:grid;grid-template-columns:repeat(8,minmax(150px,1fr));gap:10px;min-width:1260px}
+.stage-row{display:grid;grid-template-columns:repeat(8,minmax(clamp(118px,14vw,160px),1fr));gap:10px;min-width:max-content}
 .stage{display:flex;flex-direction:column;gap:8px}
-.stage h3{font-size:12px;color:var(--muted);margin:0 0 4px;text-transform:uppercase;letter-spacing:.08em}
-.node{width:100%;text-align:left;border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:10px;padding:10px;cursor:pointer;transition:.15s}
+.stage h3{font-size:clamp(10px,1vw,12px);line-height:1.2;color:var(--muted);margin:0 0 4px;text-transform:uppercase;letter-spacing:clamp(.03em,.35vw,.08em);white-space:normal;overflow-wrap:anywhere;min-height:2.4em}
+.node{width:100%;min-width:0;text-align:left;border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:10px;padding:clamp(8px,1vw,10px);cursor:pointer;transition:.15s;font-size:clamp(10px,.9vw,13px);line-height:1.25;white-space:normal;overflow-wrap:anywhere;word-break:break-word}
 .node:hover{border-color:var(--accent)}
 .node.selected{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
 .node.dim{opacity:.18}
@@ -38,7 +38,28 @@ button{font:inherit}
 .meta div{padding:9px;border:1px solid var(--line);border-radius:9px;background:var(--card)}
 .legend{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;color:var(--muted);font-size:12px}
 .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:4px}
-@media(max-width:900px){.layout{grid-template-columns:1fr}.sidebar{position:static}}
+.persona-policies{display:grid;gap:8px;margin-top:8px}
+.persona-card{display:grid;gap:4px;padding:10px;border:1px solid var(--line);border-radius:9px;background:var(--card)}
+.persona-card strong{font-size:12px}
+.persona-card .status{color:var(--text);font-size:12px}
+.persona-card .notify{color:var(--muted);font-size:11px}
+@media(max-width:900px){
+  .layout{grid-template-columns:1fr}
+  .sidebar{position:static}
+  .graph{padding:12px}
+  .stage-row{grid-template-columns:repeat(8,minmax(118px,128px));gap:8px}
+  .stage h3{font-size:10px;letter-spacing:.03em;text-align:center;min-height:2.5em}
+  .node{font-size:10px;padding:8px}
+}
+@media(max-width:520px){
+  .app{padding:12px}
+  .toolbar{gap:6px}
+  .toolbar button{flex:1 1 calc(50% - 6px);padding:9px 8px;font-size:12px}
+  .graph{padding:10px}
+  .stage-row{grid-template-columns:repeat(8,112px);gap:7px}
+  .stage h3{font-size:9px;line-height:1.15;min-height:2.3em}
+  .node{font-size:9px;line-height:1.2;padding:7px;min-height:44px}
+}
 </style>
 </head>
 <body>
@@ -80,8 +101,13 @@ button{font:inherit}
       <p id="stateDetail" style="color:var(--muted)">Select any node to inspect its meaning.</p>
       <div class="meta">
         <div><div class="kicker">Driver</div><strong id="stateDriver">—</strong></div>
-        <div><div class="kicker">Visibility</div><strong>Defined in Step 3</strong></div>
-        <div><div class="kicker">Notification</div><strong>Defined separately from visibility</strong></div>
+      </div>
+      <div class="kicker" style="margin-top:16px">Persona communication</div>
+      <div id="personaPolicies" class="persona-policies">
+        <div class="persona-card"><strong>R&R Staff</strong><span>Select a state</span></div>
+        <div class="persona-card"><strong>Direct Customer</strong><span>Select a state</span></div>
+        <div class="persona-card"><strong>Auction</strong><span>Select a state</span></div>
+        <div class="persona-card"><strong>Insurance</strong><span>Select a state</span></div>
       </div>
       <div class="legend">
         <span><span class="dot" style="background:var(--good)"></span>happy path</span>
@@ -94,6 +120,235 @@ button{font:inherit}
 <script>
 const nodes=[...document.querySelectorAll('.node')];
 const modeButtons=[...document.querySelectorAll('[data-mode]')];
+const personaNames={rnr:'R&R Staff',direct:'Direct Customer',auction:'Auction',insurance:'Insurance'};
+
+const defaults={
+  rnr:{status:'Visible — internal operational state',notify:'No notification'},
+  direct:{status:'Hidden',notify:'No notification'},
+  auction:{status:'Hidden',notify:'No notification'},
+  insurance:{status:'Hidden',notify:'No notification'}
+};
+
+const personaPolicy={
+  REQUEST_RECEIVED:{
+    rnr:{status:'Request received',notify:'No notification'},
+    direct:{status:'Request received',notify:'Yes — confirmation'},
+    auction:{status:'Vehicle request received',notify:'Yes — confirmation'},
+    insurance:{status:'Assignment received',notify:'Yes — confirmation'}
+  },
+  REQUEST_VALIDATION_REQUIRED:{
+    rnr:{status:'Intake blocked — required information missing or invalid',notify:'Yes — action required'},
+    direct:{status:'We need more vehicle/service information',notify:'Yes — if customer must supply it'},
+    auction:{status:'Request needs additional vehicle/service information',notify:'Yes — if auction must supply it'},
+    insurance:{status:'Assignment needs additional vehicle/service information',notify:'Yes — if carrier/adjuster must supply it'}
+  },
+  READY_FOR_YMM_SEARCH:{
+    rnr:{status:'Intake complete — ready to identify glass',notify:'No notification'},
+    direct:{status:'We have what we need to start',notify:'No notification'},
+    auction:{status:'Request validated',notify:'No notification'},
+    insurance:{status:'Assignment validated',notify:'No notification'}
+  },
+  YMM_SEARCH_IN_PROGRESS:{
+    rnr:{status:'Searching Year / Make / Model',notify:'No notification'},
+    direct:{status:'Identifying the correct glass',notify:'No notification'},
+    auction:{status:'Glass identification in progress',notify:'No notification'},
+    insurance:{status:'Replacement glass identification in progress',notify:'No notification'}
+  },
+  HUMAN_GLASS_REVIEW_REQUIRED:{
+    rnr:{status:'Glass identification needs review',notify:'Yes — action required'},
+    direct:{status:'We are verifying the correct glass',notify:'No notification'},
+    auction:{status:'Glass identification under review',notify:'No notification'},
+    insurance:{status:'Replacement glass identification under review',notify:'No notification'}
+  },
+  GLASS_NOT_IDENTIFIED:{
+    rnr:{status:'Unable to identify glass',notify:'Yes — action required'},
+    direct:{status:'We need help confirming the correct glass',notify:'Yes — only if customer input is needed'},
+    auction:{status:'Unable to confirm glass from current information',notify:'Yes — if partner input is needed'},
+    insurance:{status:'Unable to confirm replacement glass from current information',notify:'Yes — if carrier input is needed'}
+  },
+  GLASS_IDENTIFIED:{
+    rnr:{status:'Glass identified',notify:'No notification'},
+    direct:{status:'Correct glass identified',notify:'No notification'},
+    auction:{status:'Glass identified',notify:'No notification'},
+    insurance:{status:'Replacement glass identified',notify:'No notification'}
+  },
+  SOURCING_IN_PROGRESS:{
+    rnr:{status:'Comparing supplier inventory and interchangeables',notify:'No notification'},
+    direct:{status:'Finding the best available glass',notify:'No notification'},
+    auction:{status:'Glass sourcing in progress',notify:'No notification'},
+    insurance:{status:'Glass availability being verified',notify:'No notification'}
+  },
+  NO_ELIGIBLE_INVENTORY:{
+    rnr:{status:'No eligible inventory available',notify:'Yes — action required'},
+    direct:{status:'Your glass is not currently available through our normal suppliers',notify:'Yes — meaningful exception'},
+    auction:{status:'No eligible glass inventory currently available',notify:'Yes — meaningful exception'},
+    insurance:{status:'Replacement glass currently unavailable through eligible inventory',notify:'Yes — meaningful exception'}
+  },
+  PROFIT_REVIEW_REQUIRED:{
+    rnr:{status:'Pricing exception needs review',notify:'Yes — action required'},
+    direct:{status:'Preparing your quote',notify:'No notification'},
+    auction:{status:'Pricing review in progress',notify:'No notification'},
+    insurance:{status:'Estimate review in progress',notify:'No notification'}
+  },
+  QUOTE_READY:{
+    rnr:{status:'Quote ready to send',notify:'Yes — action required if manual delivery is needed'},
+    direct:{status:'Your quote is ready',notify:'Yes — action required'},
+    auction:{status:'Quote ready',notify:'Yes — action required'},
+    insurance:{status:'Estimate ready',notify:'Yes — action/authorization may be required'}
+  },
+  QUOTE_DELIVERY_FAILED:{
+    rnr:{status:'Quote delivery failed',notify:'Yes — action required'},
+    direct:{status:'Hidden',notify:'No notification'},
+    auction:{status:'Hidden',notify:'No notification'},
+    insurance:{status:'Hidden',notify:'No notification'}
+  },
+  AWAITING_APPROVAL:{
+    rnr:{status:'Quote sent — awaiting approval',notify:'No notification'},
+    direct:{status:'Your quote is ready for review',notify:'Yes — action required'},
+    auction:{status:'Awaiting quote approval',notify:'Yes — action required'},
+    insurance:{status:'Awaiting authorization',notify:'Yes — action required'}
+  },
+  QUOTE_APPROVED:{
+    rnr:{status:'Quote approved',notify:'Yes — meaningful change'},
+    direct:{status:'Approved — we are moving forward',notify:'Yes — confirmation'},
+    auction:{status:'Quote approved',notify:'Yes — confirmation'},
+    insurance:{status:'Authorization received',notify:'Yes — confirmation'}
+  },
+  QUOTE_DECLINED:{
+    rnr:{status:'Quote declined',notify:'Yes — attention required'},
+    direct:{status:'You declined the quote',notify:'Yes — confirmation'},
+    auction:{status:'Quote declined',notify:'Yes — confirmation'},
+    insurance:{status:'Authorization/estimate declined',notify:'Yes — confirmation'}
+  },
+  QUOTE_EXPIRED:{
+    rnr:{status:'Quote expired',notify:'Yes — attention required'},
+    direct:{status:'Your quote expired',notify:'Yes — meaningful change'},
+    auction:{status:'Quote expired',notify:'Yes — meaningful change'},
+    insurance:{status:'Estimate/authorization window expired',notify:'Yes — meaningful change'}
+  },
+  REQUOTE_REQUIRED:{
+    rnr:{status:'Requote required',notify:'Yes — action required'},
+    direct:{status:'We are updating your quote',notify:'No notification unless price/terms change'},
+    auction:{status:'Quote update in progress',notify:'No notification unless approval is needed again'},
+    insurance:{status:'Estimate update in progress',notify:'No notification unless reauthorization is needed'}
+  },
+  RESOURCING_REQUIRED:{
+    rnr:{status:'Selected glass unavailable — re-sourcing',notify:'Yes — attention required'},
+    direct:{status:'We are securing another valid glass option',notify:'No notification unless schedule/price changes'},
+    auction:{status:'Re-sourcing glass',notify:'No notification unless schedule/price changes'},
+    insurance:{status:'Replacement glass being re-sourced',notify:'No notification unless authorization changes'}
+  },
+  PURCHASE_CONFIRMATION_REQUIRED:{
+    rnr:{status:'Purchase confirmation required',notify:'Yes — action required'},
+    direct:{status:'Order preparation in progress',notify:'No notification'},
+    auction:{status:'Order preparation in progress',notify:'No notification'},
+    insurance:{status:'Procurement preparation in progress',notify:'No notification'}
+  },
+  ORDER_FAILED:{
+    rnr:{status:'Supplier order failed',notify:'Yes — action required'},
+    direct:{status:'We are resolving an ordering issue',notify:'Only if it affects price or appointment'},
+    auction:{status:'Ordering issue under review',notify:'Only if it affects price or schedule'},
+    insurance:{status:'Procurement issue under review',notify:'Only if it affects authorization or schedule'}
+  },
+  GLASS_ORDERED:{
+    rnr:{status:'Glass ordered',notify:'Yes — meaningful confirmation'},
+    direct:{status:'Your glass has been ordered',notify:'Yes — confirmation'},
+    auction:{status:'Glass ordered',notify:'Yes — confirmation'},
+    insurance:{status:'Replacement glass ordered',notify:'Visible; notify only if useful to carrier workflow'}
+  },
+  SCHEDULING_REQUIRED:{
+    rnr:{status:'Installation scheduling required',notify:'Yes — action required'},
+    direct:{status:'Ready to schedule installation',notify:'Yes — action required'},
+    auction:{status:'Ready to schedule installation',notify:'Yes — action required'},
+    insurance:{status:'Ready for installation scheduling',notify:'Visible; notify if carrier coordination is required'}
+  },
+  INSTALLATION_SCHEDULED:{
+    rnr:{status:'Installation scheduled',notify:'Yes — confirmation'},
+    direct:{status:'Installation scheduled',notify:'Yes — confirmation + appointment reminder'},
+    auction:{status:'Installation scheduled',notify:'Yes — confirmation'},
+    insurance:{status:'Installation scheduled',notify:'Visible; notify if required by carrier workflow'}
+  },
+  INSTALLATION_RESCHEDULE_REQUIRED:{
+    rnr:{status:'Installation needs rescheduling',notify:'Yes — action required'},
+    direct:{status:'Your appointment needs to be rescheduled',notify:'Yes — action required'},
+    auction:{status:'Installation reschedule required',notify:'Yes — action required'},
+    insurance:{status:'Installation schedule changed',notify:'Yes — if carrier needs schedule awareness'}
+  },
+  INSTALLATION_IN_PROGRESS:{
+    rnr:{status:'Installation in progress',notify:'No notification'},
+    direct:{status:'Installation in progress',notify:'No notification'},
+    auction:{status:'Installation in progress',notify:'No notification'},
+    insurance:{status:'Installation in progress',notify:'No notification'}
+  },
+  INSTALLATION_EXCEPTION:{
+    rnr:{status:'Installation exception',notify:'Yes — action required'},
+    direct:{status:'We encountered an issue during installation',notify:'Yes — if it changes completion, schedule, or price'},
+    auction:{status:'Installation exception under review',notify:'Yes — if it affects completion or schedule'},
+    insurance:{status:'Installation exception under review',notify:'Yes — if authorization/scope/schedule changes'}
+  },
+  INSTALLATION_COMPLETED:{
+    rnr:{status:'Installation completed',notify:'Yes — meaningful confirmation'},
+    direct:{status:'Installation complete',notify:'Yes — confirmation'},
+    auction:{status:'Installation complete',notify:'Yes — confirmation'},
+    insurance:{status:'Installation complete',notify:'Yes — completion notice if required'}
+  },
+  FINAL_INVOICE_READY:{
+    rnr:{status:'Final invoice ready',notify:'Yes — action required if submission/delivery is manual'},
+    direct:{status:'Your final invoice is ready',notify:'Yes — document available'},
+    auction:{status:'Final invoice ready',notify:'Yes — document available'},
+    insurance:{status:'Invoice ready for submission',notify:'Yes — action/document available'}
+  },
+  COMPLETED:{
+    rnr:{status:'Job completed and closed',notify:'No notification'},
+    direct:{status:'Service complete',notify:'Yes — final confirmation'},
+    auction:{status:'Job complete',notify:'Yes — final confirmation'},
+    insurance:{status:'Work completed',notify:'Yes — final completion notice if required'}
+  },
+  CANCELLATION_REQUESTED:{
+    rnr:{status:'Cancellation requested',notify:'Yes — action required'},
+    direct:{status:'Cancellation is being processed',notify:'Yes — confirmation'},
+    auction:{status:'Cancellation is being processed',notify:'Yes — confirmation'},
+    insurance:{status:'Cancellation is being processed',notify:'Yes — confirmation if externally initiated'}
+  },
+  CANCELLED:{
+    rnr:{status:'Case cancelled',notify:'Yes — meaningful confirmation'},
+    direct:{status:'Service request cancelled',notify:'Yes — final confirmation'},
+    auction:{status:'Job cancelled',notify:'Yes — final confirmation'},
+    insurance:{status:'Assignment closed/cancelled',notify:'Yes — final confirmation'}
+  },
+  SYSTEM_ATTENTION_REQUIRED:{
+    rnr:{status:'System attention required',notify:'Yes — action required'},
+    direct:{status:'Hidden',notify:'No notification unless service timing is affected'},
+    auction:{status:'Hidden',notify:'No notification unless service timing is affected'},
+    insurance:{status:'Hidden',notify:'No notification unless service/authorization timing is affected'}
+  }
+};
+
+function policyFor(state){
+  const specific=personaPolicy[state]||{};
+  return Object.fromEntries(Object.keys(defaults).map(k=>[k,specific[k]||defaults[k]]));
+}
+
+function renderPersonaPolicies(state){
+  const policy=policyFor(state);
+  const host=document.getElementById('personaPolicies');
+  host.innerHTML='';
+  Object.entries(policy).forEach(([key,value])=>{
+    const card=document.createElement('div');
+    card.className='persona-card';
+    const name=document.createElement('strong');
+    name.textContent=personaNames[key];
+    const status=document.createElement('span');
+    status.className='status';
+    status.textContent='Status: '+value.status;
+    const notify=document.createElement('span');
+    notify.className='notify';
+    notify.textContent='Notification: '+value.notify;
+    card.append(name,status,notify);
+    host.appendChild(card);
+  });
+}
+
 function setMode(mode){
   modeButtons.forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));
   nodes.forEach(n=>{
@@ -106,9 +361,11 @@ nodes.forEach(n=>n.addEventListener('click',()=>{
   if(n.classList.contains('dim')) return;
   nodes.forEach(x=>x.classList.remove('selected'));
   n.classList.add('selected');
-  document.getElementById('stateTitle').textContent=n.dataset.state;
+  const state=n.dataset.state;
+  document.getElementById('stateTitle').textContent=state;
   document.getElementById('stateDetail').textContent=n.dataset.detail;
   document.getElementById('stateDriver').textContent=n.dataset.driver;
+  renderPersonaPolicies(state);
 }));
 </script>
 </body>
