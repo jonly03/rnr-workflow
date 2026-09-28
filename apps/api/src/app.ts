@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { z } from "zod";
-import type { CaseRecord } from "./types.js";
+import type { CaseRecord, Channel, StaffUser } from "./types.js";
 import type { CaseStore } from "./store.js";
 import {
   ensureSeedAdmin,
@@ -152,6 +152,30 @@ export function createApp(
   // All case routes require staff authentication.
   app.use("/api/v1/cases", auth);
 
+  /**
+   * Channel isolation: staff whose token carries a `channels` claim may only
+   * touch cases in those channels. Staff without the claim (e.g. the admin)
+   * have full access. Denied single-case reads return 404, not 403, so case
+   * existence cannot be probed across channels.
+   */
+  const canAccessChannel = (staff: StaffUser | undefined, channel: Channel): boolean => {
+    if (!staff?.channels) return true;
+    return staff.channels.includes(channel);
+  };
+
+  const channelForbidden = (res: express.Response) =>
+    res.status(403).json({
+      error: {
+        code: "CHANNEL_FORBIDDEN",
+        message: "This case channel is outside your access."
+      }
+    });
+
+  const channelNotFound = (res: express.Response) =>
+    res.status(404).json({
+      error: { code: "CASE_NOT_FOUND", message: "Case not found." }
+    });
+
   app.post("/api/v1/cases", async (req, res) => {
     const parsed = createCaseSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -163,6 +187,10 @@ export function createApp(
           details: { field: first?.path.join(".") }
         }
       });
+    }
+
+    if (!canAccessChannel(req.staff, parsed.data.channel)) {
+      return channelForbidden(res);
     }
 
     const idempotencyKey = req.header("Idempotency-Key") || undefined;
@@ -178,37 +206,34 @@ export function createApp(
     return res.status(result.reused ? 200 : 201).json(await detail(result.caseRecord));
   });
 
-  app.get("/api/v1/cases", async (_req, res) => {
+  app.get("/api/v1/cases", async (req, res) => {
     const cases = await store.listCases();
-    res.json(await Promise.all(cases.map(detail)));
+    // Channel-scoped staff only see their channels.
+    const visible = cases.filter(c => canAccessChannel(req.staff, c.channel));
+    res.json(await Promise.all(visible.map(detail)));
   });
 
   app.get("/api/v1/cases/:caseId", async (req, res) => {
     const c = await store.getCase(req.params.caseId);
-    if (!c) {
-      return res.status(404).json({
-        error: { code: "CASE_NOT_FOUND", message: "Case not found." }
-      });
+    // 404 for cross-channel access: do not reveal case existence.
+    if (!c || !canAccessChannel(req.staff, c.channel)) {
+      return channelNotFound(res);
     }
     res.json(await detail(c));
   });
 
   app.get("/api/v1/cases/:caseId/events", async (req, res) => {
     const c = await store.getCase(req.params.caseId);
-    if (!c) {
-      return res.status(404).json({
-        error: { code: "CASE_NOT_FOUND", message: "Case not found." }
-      });
+    if (!c || !canAccessChannel(req.staff, c.channel)) {
+      return channelNotFound(res);
     }
     res.json(await store.getEvents(c.id));
   });
 
   app.post("/api/v1/cases/:caseId/actions", async (req, res) => {
     const c = await store.getCase(req.params.caseId);
-    if (!c) {
-      return res.status(404).json({
-        error: { code: "CASE_NOT_FOUND", message: "Case not found." }
-      });
+    if (!c || !canAccessChannel(req.staff, c.channel)) {
+      return channelNotFound(res);
     }
 
     return res.status(409).json({

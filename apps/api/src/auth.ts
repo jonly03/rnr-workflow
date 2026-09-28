@@ -6,7 +6,9 @@ import {
 } from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 import type { CaseStore } from "./store.js";
-import type { StaffUser } from "./types.js";
+import type { Channel, StaffUser } from "./types.js";
+
+const CHANNELS: Channel[] = ["DIRECT", "AUCTION", "INSURANCE"];
 
 declare global {
   namespace Express {
@@ -72,6 +74,8 @@ export interface StaffTokenPayload {
   email: string;
   name: string;
   role: string;
+  /** Channel codes this staff member may access. Absent = all channels. */
+  channels?: string[];
   iat: number;
   exp: number;
 }
@@ -87,6 +91,7 @@ export function signToken(
     email: staff.email,
     name: staff.name,
     role: staff.role,
+    ...(staff.channels ? { channels: staff.channels } : {}),
     iat: now,
     exp: now + ttlSeconds
   };
@@ -151,7 +156,11 @@ export function requireAuth(config: AuthConfig) {
       email: payload.email,
       name: payload.name,
       role: payload.role,
-      created_at: ""
+      created_at: "",
+      ...(Array.isArray(payload.channels) &&
+      payload.channels.every(c => CHANNELS.includes(c as Channel))
+        ? { channels: payload.channels as Channel[] }
+        : {})
     };
     return next();
   };
