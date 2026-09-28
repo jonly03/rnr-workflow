@@ -305,6 +305,13 @@ Legend: **ALLOW** = may perform/request when workflow guards allow · **CONDITIO
 - **Insurance:** the carrier authorizes/declines the current estimate/scope. Not modeled as a customer approval; reauthorization may be required after material changes. Does **not** authorize supplier purchase.
 - **R&R Staff** may receive and record evidence of a valid external approval and continue/requote/close accordingly, and must confirm supplier purchase separately. Staff must never fabricate an external approval, treat one channel's approval as another's, or use purchase confirmation as a substitute for customer/partner approval.
 
+### Channel data isolation (enforced)
+
+1. **Staff without a `channels` claim** (the admin and current staff) have full access to all channels. This is the v0.1 default and is unchanged.
+2. **Staff with a `channels` claim** (channel-scoped staff, stored on `staff_users.channels` and embedded in the session token) may only create, list, read, and act on cases in those channels. Cross-channel reads return 404 (not 403) so case existence cannot be probed across channels; cross-channel creation returns 403 `CHANNEL_FORBIDDEN`. The claim is backend-enforced on every `/api/v1/cases*` route.
+3. **External approvers** never get a staff session. They receive an opaque, single-use, expiring approval token (`approval_tokens`: `rnappr_…`, only the sha256 hash stored) minted by staff for one case + one purpose (`quote-approval`). The token grants access to that case's approval action only — never channel-wide access, never internal workflow state, supplier offers, or margin data. Verification never consumes; the caller consumes after the approved action succeeds so a failed attempt can retry.
+4. **Database:** RLS is enabled on `approval_tokens` (and all Case Core tables) with no anon/authenticated client policies — all access goes through the Express API. Direct Data API access is denied by default.
+
 ## 7. Forbidden boundaries
 
 External personas (Direct Customer, Auction, Insurance) must never be offered controls to: directly set internal workflow state; choose glass candidates; run paid VIN lookup on demand; choose supplier offers; override Regional exclusion; approve internal profit exceptions; confirm supplier purchase; retry supplier orders directly; rewrite historical quote versions; edit/delete case events; record internal job profit; mark a case `COMPLETED`/`CANCELLED` directly.

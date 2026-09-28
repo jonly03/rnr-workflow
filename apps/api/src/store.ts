@@ -2,8 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
+  ApprovalTokenRecord,
   CaseEvent,
   CaseRecord,
+  Channel,
   GlassRequest,
   StaffUser,
   StaffUserRecord,
@@ -25,6 +27,15 @@ export interface CreateStaffUserInput {
   name: string;
   role: string;
   passwordHash: string;
+  channels?: Channel[];
+}
+
+export interface CreateApprovalTokenInput {
+  caseId: string;
+  channel: Channel;
+  purpose: string;
+  tokenHash: string;
+  expiresAt: string;
 }
 
 export interface CaseStore {
@@ -37,6 +48,9 @@ export interface CaseStore {
   createCase(input: CreateCaseStoreInput): Promise<{ caseRecord: CaseRecord; reused: boolean }>;
   findStaffByEmail(email: string): Promise<StaffUserRecord | null>;
   createStaffUser(input: CreateStaffUserInput): Promise<StaffUser>;
+  createApprovalToken(input: CreateApprovalTokenInput): Promise<{ jti: string }>;
+  findApprovalTokenByHash(tokenHash: string): Promise<ApprovalTokenRecord | null>;
+  consumeApprovalToken(jti: string): Promise<void>;
 }
 
 const emptyStore = (): StoreShape => ({
@@ -45,7 +59,8 @@ const emptyStore = (): StoreShape => ({
   glass_requests: [],
   events: [],
   idempotency: {},
-  staff_users: []
+  staff_users: [],
+  approval_tokens: []
 });
 
 export class JsonCaseStore implements CaseStore {
@@ -190,12 +205,43 @@ export class JsonCaseStore implements CaseStore {
       name: input.name,
       role: input.role,
       password_hash: input.passwordHash,
-      created_at: now
+      created_at: now,
+      ...(input.channels ? { channels: [...input.channels] } : {})
     };
     const next = structuredClone(this.data);
     next.staff_users.push(record);
     this.persist(next);
     const { password_hash: _hash, ...user } = record;
     return user;
+  }
+
+  async createApprovalToken(input: CreateApprovalTokenInput): Promise<{ jti: string }> {
+    const now = new Date().toISOString();
+    const record: ApprovalTokenRecord = {
+      jti: randomUUID(),
+      case_id: input.caseId,
+      channel: input.channel,
+      purpose: input.purpose as ApprovalTokenRecord["purpose"],
+      token_hash: input.tokenHash,
+      expires_at: input.expiresAt,
+      consumed_at: null,
+      created_at: now
+    };
+    const next = structuredClone(this.data);
+    next.approval_tokens.push(record);
+    this.persist(next);
+    return { jti: record.jti };
+  }
+
+  async findApprovalTokenByHash(tokenHash: string): Promise<ApprovalTokenRecord | null> {
+    return this.data.approval_tokens.find(t => t.token_hash === tokenHash) ?? null;
+  }
+
+  async consumeApprovalToken(jti: string): Promise<void> {
+    const next = structuredClone(this.data);
+    const record = next.approval_tokens.find(t => t.jti === jti);
+    if (!record || record.consumed_at) return;
+    record.consumed_at = new Date().toISOString();
+    this.persist(next);
   }
 }

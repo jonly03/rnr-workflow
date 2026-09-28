@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type pg from "pg";
 import type {
+  ApprovalTokenRecord,
   CaseEvent,
   CaseRecord,
   GlassRequest,
@@ -10,6 +11,7 @@ import type {
 } from "./types.js";
 import type {
   CaseStore,
+  CreateApprovalTokenInput,
   CreateCaseStoreInput,
   CreateStaffUserInput
 } from "./store.js";
@@ -72,12 +74,31 @@ function eventRow(row: any): CaseEvent {
 }
 
 function staffRow(row: any): StaffUserRecord {
+  const channels = Array.isArray(row.channels)
+    ? row.channels
+    : typeof row.channels === "string"
+      ? JSON.parse(row.channels)
+      : undefined;
   return {
     id: row.id,
     email: row.email,
     name: row.name,
     role: row.role,
     password_hash: row.password_hash,
+    created_at: iso(row.created_at),
+    ...(channels ? { channels } : {})
+  };
+}
+
+function approvalTokenRow(row: any): ApprovalTokenRecord {
+  return {
+    jti: row.jti,
+    case_id: row.case_id,
+    channel: row.channel,
+    purpose: row.purpose,
+    token_hash: row.token_hash,
+    expires_at: iso(row.expires_at),
+    consumed_at: row.consumed_at ? iso(row.consumed_at) : null,
     created_at: iso(row.created_at)
   };
 }
@@ -233,13 +254,48 @@ export class PgCaseStore implements CaseStore {
     const id = randomUUID();
     const now = new Date().toISOString();
     await this.pool.query(
-      `insert into staff_users(id, email, name, role, password_hash, created_at)
-       values ($1,$2,$3,$4,$5,$6)`,
-      [id, input.email.trim().toLowerCase(), input.name, input.role, input.passwordHash, now]
+      `insert into staff_users(id, email, name, role, password_hash, channels, created_at)
+       values ($1,$2,$3,$4,$5,$6,$7)`,
+      [
+        id,
+        input.email.trim().toLowerCase(),
+        input.name,
+        input.role,
+        input.passwordHash,
+        input.channels ? JSON.stringify(input.channels) : null,
+        now
+      ]
     );
     const created = await this.findStaffByEmail(input.email);
     if (!created) throw new Error("Staff user could not be reloaded after create.");
     const { password_hash: _hash, ...user } = created;
     return user;
+  }
+
+  async createApprovalToken(input: CreateApprovalTokenInput): Promise<{ jti: string }> {
+    const jti = randomUUID();
+    const now = new Date().toISOString();
+    await this.pool.query(
+      `insert into approval_tokens(jti, case_id, channel, purpose, token_hash, expires_at, consumed_at, created_at)
+       values ($1,$2,$3,$4,$5,$6,null,$7)`,
+      [jti, input.caseId, input.channel, input.purpose, input.tokenHash, input.expiresAt, now]
+    );
+    return { jti };
+  }
+
+  async findApprovalTokenByHash(tokenHash: string): Promise<ApprovalTokenRecord | null> {
+    const result = await this.pool.query(
+      "select * from approval_tokens where token_hash = $1",
+      [tokenHash]
+    );
+    return result.rowCount ? approvalTokenRow(result.rows[0]) : null;
+  }
+
+  async consumeApprovalToken(jti: string): Promise<void> {
+    await this.pool.query(
+      `update approval_tokens set consumed_at = now()
+       where jti = $1 and consumed_at is null`,
+      [jti]
+    );
   }
 }
