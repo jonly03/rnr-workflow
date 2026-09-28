@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import {
   createCase,
+  decodeVin,
   getCase,
   getCaseEvents,
   getMe,
@@ -10,6 +11,7 @@ import {
   logout,
   performAction,
   UnauthorizedError,
+  type DecodedVehicle,
   type StaffUser
 } from "./api";
 import type { CaseEvent, CaseRecord, Channel, GlassCandidate, GlassType } from "./types";
@@ -266,12 +268,182 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (s: StaffUser) => void }) {
   );
 }
 
+const GLASS_TYPE_OPTIONS: { value: GlassType; label: string }[] = [
+  { value: "WINDSHIELD", label: "Windshield" },
+  { value: "BACK_GLASS", label: "Back Glass" },
+  { value: "DOOR_GLASS", label: "Door Glass" },
+  { value: "QUARTER_GLASS", label: "Quarter Glass" },
+  { value: "VENT_GLASS", label: "Vent Glass" }
+];
+
+function VinFirstCase({
+  onCancel,
+  onCreated,
+  onManual
+}: {
+  onCancel: () => void;
+  onCreated: (c: CaseRecord) => Promise<void>;
+  onManual: () => void;
+}) {
+  const [vinInput, setVinInput] = useState("");
+  const [decoding, setDecoding] = useState(false);
+  const [decoded, setDecoded] = useState<DecodedVehicle | null>(null);
+  const [glassType, setGlassType] = useState<GlassType>("WINDSHIELD");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleDecode = async (e: FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setDecoded(null);
+    if (vinInput.trim().length !== 17) {
+      setError("Enter a 17-character VIN.");
+      return;
+    }
+    setDecoding(true);
+    try {
+      const result = await decodeVin(vinInput.trim());
+      setDecoded(result.vehicle);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not decode VIN.");
+    } finally {
+      setDecoding(false);
+    }
+  };
+
+  const handleCreate = async () => {
+    if (!decoded) return;
+    setError("");
+    setSaving(true);
+    try {
+      const c = await createCase({
+        channel: "DIRECT",
+        vehicle: {
+          year: decoded.year,
+          make: decoded.make,
+          model: decoded.model,
+          vin: decoded.vin
+        },
+        glass_request: { glass_type: glassType }
+      });
+      await onCreated(c);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create case.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="form card">
+      <div className="page-head">
+        <div>
+          <p className="eyebrow">Case Core</p>
+          <h1>New Case</h1>
+        </div>
+      </div>
+
+      {error && <div className="alert" role="alert">{error}</div>}
+
+      {!decoded ? (
+        <form onSubmit={handleDecode}>
+          <label>
+            VIN
+            <div style={{ display: "flex", gap: "0.5rem" }}>
+              <input
+                value={vinInput}
+                onChange={e => setVinInput(e.target.value.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/gi, ""))}
+                placeholder="17-character VIN"
+                maxLength={17}
+                style={{ textTransform: "uppercase", flex: 1 }}
+                autoFocus
+              />
+              <button className="primary" type="submit" disabled={decoding || vinInput.trim().length !== 17}>
+                {decoding ? "Decoding…" : "Decode"}
+              </button>
+            </div>
+          </label>
+          <p className="muted" style={{ marginTop: "0.5rem" }}>
+            Paste or type the 17-character VIN. Vehicle details are decoded automatically.
+          </p>
+        </form>
+      ) : (
+        <div>
+          <div className="card" style={{ marginBottom: "1rem", padding: "1rem" }}>
+            <h3 style={{ margin: "0 0 0.5rem" }}>
+              {decoded.year} {decoded.make} {decoded.model}
+            </h3>
+            <p className="muted" style={{ margin: 0 }}>
+              {decoded.trim ? `${decoded.trim} · ` : ""}
+              {decoded.bodyClass ? `${decoded.bodyClass} · ` : ""}
+              VIN {decoded.vin}
+            </p>
+            <button
+              type="button"
+              onClick={() => { setDecoded(null); setVinInput(""); }}
+              style={{ marginTop: "0.5rem" }}
+            >
+              Use a different VIN
+            </button>
+          </div>
+
+          <div style={{ marginBottom: "1rem" }}>
+            <p style={{ margin: "0 0 0.5rem", fontWeight: 600 }}>Which glass is damaged?</p>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+              {GLASS_TYPE_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setGlassType(opt.value)}
+                  className={glassType === opt.value ? "primary" : ""}
+                  aria-pressed={glassType === opt.value}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="actions">
+            <button type="button" onClick={onCancel}>Cancel</button>
+            <button className="primary" onClick={handleCreate} disabled={saving}>
+              {saving ? "Creating Case…" : "Create Case"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginTop: "1.5rem", borderTop: "1px solid #e5e7eb", paddingTop: "1rem" }}>
+        <button type="button" className="link" onClick={onManual}>
+          No VIN? Enter vehicle details manually →
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function NewCase({
   onCancel,
   onCreated
 }: {
   onCancel: () => void;
   onCreated: (c: CaseRecord) => Promise<void>;
+}) {
+  const [manual, setManual] = useState(false);
+  if (manual) {
+    return <ManualCaseForm onCancel={onCancel} onCreated={onCreated} onVinFirst={() => setManual(false)} />;
+  }
+  return <VinFirstCase onCancel={onCancel} onCreated={onCreated} onManual={() => setManual(true)} />;
+}
+
+function ManualCaseForm({
+  onCancel,
+  onCreated,
+  onVinFirst
+}: {
+  onCancel: () => void;
+  onCreated: (c: CaseRecord) => Promise<void>;
+  onVinFirst: () => void;
 }) {
   const [channel, setChannel] = useState<Channel>("DIRECT");
   const [year, setYear] = useState("2018");
@@ -353,6 +525,12 @@ function NewCase({
       <div className="actions">
         <button type="button" onClick={onCancel}>Cancel</button>
         <button className="primary" disabled={saving}>{saving ? "Creating Case…" : "Create Case"}</button>
+      </div>
+
+      <div style={{ marginTop: "1.5rem", borderTop: "1px solid #e5e7eb", paddingTop: "1rem" }}>
+        <button type="button" className="link" onClick={onVinFirst}>
+          ← Have a VIN? Decode it automatically
+        </button>
       </div>
     </form>
   );
