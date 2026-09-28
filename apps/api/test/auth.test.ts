@@ -142,4 +142,45 @@ describe("Staff auth", () => {
     const { app } = await fixture();
     await request(app).get("/health").expect(200);
   });
+
+  it("seeds the staff admin on first login when seed env vars are set", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rnr-auth-seed-"));
+    const store = new JsonCaseStore(path.join(dir, "cases.json"));
+    const app = createApp(store, { authSecret: TEST_AUTH_SECRET });
+
+    process.env.STAFF_ADMIN_EMAIL = "seeded-admin@example.com";
+    process.env.STAFF_ADMIN_PASSWORD = "seed-password-123";
+    try {
+      // No staff user exists yet: the login itself performs the seed.
+      const first = await request(app)
+        .post("/api/v1/auth/login")
+        .send({ email: "seeded-admin@example.com", password: "seed-password-123" })
+        .expect(200);
+      expect(typeof first.body.token).toBe("string");
+      expect(first.body.staff.email).toBe("seeded-admin@example.com");
+
+      // Second login is idempotent: no duplicate admin is created.
+      await request(app)
+        .post("/api/v1/auth/login")
+        .send({ email: "seeded-admin@example.com", password: "seed-password-123" })
+        .expect(200);
+    } finally {
+      delete process.env.STAFF_ADMIN_EMAIL;
+      delete process.env.STAFF_ADMIN_PASSWORD;
+    }
+  });
+
+  it("does not seed when seed env vars are absent", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rnr-auth-noseed-"));
+    const store = new JsonCaseStore(path.join(dir, "cases.json"));
+    const app = createApp(store, { authSecret: TEST_AUTH_SECRET });
+
+    delete process.env.STAFF_ADMIN_EMAIL;
+    delete process.env.STAFF_ADMIN_PASSWORD;
+    await request(app)
+      .post("/api/v1/auth/login")
+      .send({ email: "nobody@example.com", password: "whatever" })
+      .expect(401);
+    expect(await store.findStaffByEmail("nobody@example.com")).toBeNull();
+  });
 });
