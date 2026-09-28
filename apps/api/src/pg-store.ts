@@ -543,6 +543,13 @@ export class PgCaseStore implements CaseStore {
     }
   }
 
+  async clearSupplierOffers(glassRequestId: string): Promise<void> {
+    await this.pool.query(
+      "delete from supplier_offers where glass_request_id = $1",
+      [glassRequestId]
+    );
+  }
+
   async savePriceCalculation(input: SavePriceCalculationInput): Promise<PriceCalculation> {
     const id = randomUUID();
     const now = new Date().toISOString();

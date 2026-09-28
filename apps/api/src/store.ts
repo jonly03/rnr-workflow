@@ -121,6 +121,8 @@ export interface CaseStore {
   saveSupplierOffer(input: SaveSupplierOfferInput): Promise<SupplierOffer>;
   listSupplierOffers(glassRequestId: string): Promise<SupplierOffer[]>;
   selectSupplierOffer(offerId: string): Promise<void>;
+  /** Removes all offers for a glass request (used before a sourcing re-run). */
+  clearSupplierOffers(glassRequestId: string): Promise<void>;
   savePriceCalculation(input: SavePriceCalculationInput): Promise<PriceCalculation>;
   getLatestPriceCalculation(glassRequestId: string): Promise<PriceCalculation | null>;
 }
@@ -441,6 +443,14 @@ export class JsonCaseStore implements CaseStore {
       if (o.glass_request_id === record.glass_request_id) o.selected = false;
     }
     record.selected = true;
+    this.persist(next);
+  }
+
+  async clearSupplierOffers(glassRequestId: string): Promise<void> {
+    const next = structuredClone(this.data);
+    next.supplier_offers = next.supplier_offers.filter(
+      o => o.glass_request_id !== glassRequestId
+    );
     this.persist(next);
   }
 
