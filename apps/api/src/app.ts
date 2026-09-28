@@ -11,12 +11,14 @@ import { ocrVinFromImage, OcrError } from "./vin-ocr.js";
 import {
   IdentificationError,
   markGlassUnidentifiable,
+  overrideGlassCandidate,
   requestVinLookup,
   runIdentification,
   selectGlassCandidate
 } from "./glass-identification.js";
 import {
   MockSourcingProvider,
+  overrideSupplierOffer,
   runSourcing,
   SourcingError,
   type SourcingProvider
@@ -420,6 +422,28 @@ export function createApp(
         case "mark_glass_unidentifiable":
           await markGlassUnidentifiable(store, c.id, staffActor);
           break;
+        case "override_glass_candidate": {
+          const partNumber = req.body?.part_number;
+          if (typeof partNumber !== "string" || !partNumber.trim()) {
+            return res.status(422).json({
+              error: { code: "VALIDATION_ERROR", message: "part_number is required." }
+            });
+          }
+          await overrideGlassCandidate(store, c.id, partNumber.trim(), staffActor);
+          await advanceWorkflow(c.id);
+          break;
+        }
+        case "override_supplier_offer": {
+          const offerId = req.body?.offer_id;
+          if (typeof offerId !== "string" || !offerId.trim()) {
+            return res.status(422).json({
+              error: { code: "VALIDATION_ERROR", message: "offer_id is required." }
+            });
+          }
+          await overrideSupplierOffer(store, c.id, offerId.trim(), staffActor);
+          await advanceWorkflow(c.id);
+          break;
+        }
         case "retry_sourcing":
           await runSourcing(store, sourcingProvider, c.id, "RETRY_SOURCING", staffActor);
           await advanceWorkflow(c.id);
