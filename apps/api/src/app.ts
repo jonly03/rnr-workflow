@@ -5,6 +5,7 @@ import type { CaseRecord, Channel, StaffUser } from "./types.js";
 import type { CaseStore } from "./store.js";
 import type { GlassCatalogProvider } from "./glass-catalog.js";
 import { MockGlassCatalogProvider } from "./glass-catalog.js";
+import { decodeVinNhtsa, VinDecodeError } from "./vin-decode.js";
 import {
   IdentificationError,
   markGlassUnidentifiable,
@@ -219,6 +220,27 @@ export function createApp(
 
   app.get("/api/v1/auth/me", auth, (req, res) => {
     res.json({ staff: req.staff });
+  });
+
+  /**
+   * VIN decode via NHTSA vPIC (free, no key). Staff-only.
+   * Decodes a 17-character VIN to Year/Make/Model/Trim for VIN-first
+   * case creation. This is the free VIN→YMM lookup, distinct from the
+   * paid MyGrant VIN→glass-part lookup.
+   */
+  app.post("/api/v1/vin/decode", auth, async (req, res) => {
+    const vin = typeof req.body?.vin === "string" ? req.body.vin : "";
+    try {
+      const decoded = await decodeVinNhtsa(vin);
+      res.json({ vin: decoded.vin, vehicle: decoded });
+    } catch (error) {
+      if (error instanceof VinDecodeError) {
+        return res.status(422).json({
+          error: { code: "VIN_DECODE_FAILED", message: error.message }
+        });
+      }
+      throw error;
+    }
   });
 
   // All case routes require staff authentication.

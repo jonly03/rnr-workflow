@@ -127,6 +127,23 @@ export function performAction(
   }).then(json<CaseRecord>);
 }
 
+export interface DecodedVehicle {
+  vin: string;
+  year: number;
+  make: string;
+  model: string;
+  trim: string;
+  bodyClass: string;
+}
+
+export function decodeVin(vin: string) {
+  return fetch(`${API_BASE}/vin/decode`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ vin })
+  }).then(json<{ vin: string; vehicle: DecodedVehicle }>);
+}
+
 export function createCase(input: CreateCaseInput) {
   const idempotencyKey = crypto.randomUUID();
   return fetch(`${API_BASE}/cases`, {
