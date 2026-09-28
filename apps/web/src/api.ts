@@ -144,6 +144,17 @@ export function decodeVin(vin: string) {
   }).then(json<{ vin: string; vehicle: DecodedVehicle }>);
 }
 
+export function ocrVinPhoto(photo: File) {
+  const form = new FormData();
+  form.append("photo", photo);
+  const token = getToken();
+  return fetch(`${API_BASE}/vin/ocr`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: form
+  }).then(json<{ vin: string }>);
+}
+
 export function createCase(input: CreateCaseInput) {
   const idempotencyKey = crypto.randomUUID();
   return fetch(`${API_BASE}/cases`, {
