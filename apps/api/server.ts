@@ -1,6 +1,5 @@
 import express from "express";
 import { createApp } from "./src/app.js";
-import { ensureSeedAdmin } from "./src/auth.js";
 import { createStore } from "./src/store-factory.js";
 
 // Keep the framework import in the Vercel entrypoint so Express is detected
@@ -22,10 +21,5 @@ if (!authSecret) {
 const store = createStore();
 const app = createApp(store, { authSecret });
 
-// Seed the staff admin on cold start. No-op when already seeded or when the
-// seed credentials are not configured.
-void ensureSeedAdmin(store).catch(error => {
-  console.error("Staff admin seed failed (will retry on next cold start):", error);
-});
 
 export default app;
