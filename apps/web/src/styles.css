@@ -16,6 +16,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   height: 64px; display: flex; align-items: center; gap: 12px;
   padding: 0 24px; border-bottom: 1px solid #334155; background: #111827;
 }
+.staff-line { margin-left: auto; display: flex; align-items: center; gap: 12px; color: #94a3b8; font-size: 0.9rem; }
+button.link { background: none; border: none; color: #818cf8; padding: 0; text-decoration: underline; }
 .brand {
   display: grid; place-items: center; width: 40px; height: 40px;
   background: #4f46e5; border-radius: 10px; font-weight: 800;

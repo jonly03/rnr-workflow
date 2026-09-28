@@ -3,6 +3,12 @@ import cors from "cors";
 import { z } from "zod";
 import type { CaseRecord } from "./types.js";
 import type { CaseStore } from "./store.js";
+import {
+  requireAuth,
+  signToken,
+  verifyPassword,
+  type AuthConfig
+} from "./auth.js";
 
 const createCaseSchema = z.object({
   channel: z.enum(["DIRECT", "AUCTION", "INSURANCE"]),
@@ -18,10 +24,17 @@ const createCaseSchema = z.object({
   })
 });
 
-export function createApp(store: CaseStore) {
+const loginSchema = z.object({
+  email: z.string().trim().toLowerCase().email(),
+  password: z.string().min(1)
+});
+
+export function createApp(store: CaseStore, authConfig: AuthConfig) {
   const app = express();
   app.use(cors());
   app.use(express.json());
+
+  const auth = requireAuth(authConfig);
 
   const detail = async (c: CaseRecord) => {
     const [vehicle, glass_request] = await Promise.all([
@@ -38,6 +51,44 @@ export function createApp(store: CaseStore) {
       storage: process.env.DATABASE_URL ? "postgres" : "json"
     });
   });
+
+  app.post("/api/v1/auth/login", async (req, res) => {
+    const parsed = loginSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(422).json({
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Email and password are required."
+        }
+      });
+    }
+
+    const record = await store.findStaffByEmail(parsed.data.email);
+    const valid =
+      record !== null &&
+      (await verifyPassword(parsed.data.password, record.password_hash));
+
+    if (!valid) {
+      // Generic message: do not reveal whether the email exists.
+      return res.status(401).json({
+        error: {
+          code: "INVALID_CREDENTIALS",
+          message: "Email or password is incorrect."
+        }
+      });
+    }
+
+    const { password_hash: _hash, ...staff } = record;
+    const token = signToken(staff, authConfig.authSecret, authConfig.tokenTtlSeconds);
+    return res.json({ token, staff });
+  });
+
+  app.get("/api/v1/auth/me", auth, (req, res) => {
+    res.json({ staff: req.staff });
+  });
+
+  // All case routes require staff authentication.
+  app.use("/api/v1/cases", auth);
 
   app.post("/api/v1/cases", async (req, res) => {
     const parsed = createCaseSchema.safeParse(req.body);
@@ -58,7 +109,8 @@ export function createApp(store: CaseStore) {
       customer_id: parsed.data.customer_id,
       vehicle: parsed.data.vehicle,
       glass_type: parsed.data.glass_request.glass_type,
-      idempotencyKey
+      idempotencyKey,
+      actor: { type: "RNR_STAFF", id: req.staff?.id ?? null }
     });
 
     return res.status(result.reused ? 200 : 201).json(await detail(result.caseRecord));

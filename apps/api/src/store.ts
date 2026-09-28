@@ -1,7 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { CaseEvent, CaseRecord, GlassRequest, StoreShape, Vehicle } from "./types.js";
+import type {
+  CaseEvent,
+  CaseRecord,
+  GlassRequest,
+  StaffUser,
+  StaffUserRecord,
+  StoreShape,
+  Vehicle
+} from "./types.js";
 
 export interface CreateCaseStoreInput {
   channel: CaseRecord["channel"];
@@ -9,6 +17,14 @@ export interface CreateCaseStoreInput {
   vehicle: Omit<Vehicle, "id" | "created_at" | "updated_at">;
   glass_type: GlassRequest["glass_type"];
   idempotencyKey?: string;
+  actor?: { type: string; id: string | null };
+}
+
+export interface CreateStaffUserInput {
+  email: string;
+  name: string;
+  role: string;
+  passwordHash: string;
 }
 
 export interface CaseStore {
@@ -19,6 +35,8 @@ export interface CaseStore {
   getGlassRequest(id: string): Promise<GlassRequest | null>;
   getEvents(caseId: string): Promise<CaseEvent[]>;
   createCase(input: CreateCaseStoreInput): Promise<{ caseRecord: CaseRecord; reused: boolean }>;
+  findStaffByEmail(email: string): Promise<StaffUserRecord | null>;
+  createStaffUser(input: CreateStaffUserInput): Promise<StaffUser>;
 }
 
 const emptyStore = (): StoreShape => ({
@@ -26,7 +44,8 @@ const emptyStore = (): StoreShape => ({
   vehicles: [],
   glass_requests: [],
   events: [],
-  idempotency: {}
+  idempotency: {},
+  staff_users: []
 });
 
 export class JsonCaseStore implements CaseStore {
@@ -38,7 +57,9 @@ export class JsonCaseStore implements CaseStore {
 
   private load(): StoreShape {
     if (!fs.existsSync(this.filePath)) return emptyStore();
-    return JSON.parse(fs.readFileSync(this.filePath, "utf8")) as StoreShape;
+    const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf8"));
+    // Tolerate store files written before staff_users existed.
+    return { ...emptyStore(), ...parsed };
   }
 
   private persist(next: StoreShape) {
@@ -129,8 +150,8 @@ export class JsonCaseStore implements CaseStore {
       sequence: 1,
       event_type: "CASE_CREATED",
       occurred_at: now,
-      actor_type: "RNR_STAFF",
-      actor_id: null,
+      actor_type: input.actor?.type ?? "RNR_STAFF",
+      actor_id: input.actor?.id ?? null,
       payload: {
         channel: input.channel,
         vehicle_id: vehicleId,
@@ -148,5 +169,33 @@ export class JsonCaseStore implements CaseStore {
 
     this.persist(next);
     return { caseRecord, reused: false };
+  }
+
+  async findStaffByEmail(email: string): Promise<StaffUserRecord | null> {
+    const normalized = email.trim().toLowerCase();
+    return (
+      this.data.staff_users.find(u => u.email === normalized) ?? null
+    );
+  }
+
+  async createStaffUser(input: CreateStaffUserInput): Promise<StaffUser> {
+    const normalized = input.email.trim().toLowerCase();
+    if (await this.findStaffByEmail(normalized)) {
+      throw new Error("Staff user already exists.");
+    }
+    const now = new Date().toISOString();
+    const record: StaffUserRecord = {
+      id: randomUUID(),
+      email: normalized,
+      name: input.name,
+      role: input.role,
+      password_hash: input.passwordHash,
+      created_at: now
+    };
+    const next = structuredClone(this.data);
+    next.staff_users.push(record);
+    this.persist(next);
+    const { password_hash: _hash, ...user } = record;
+    return user;
   }
 }

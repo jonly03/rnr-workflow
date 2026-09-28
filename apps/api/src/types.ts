@@ -49,10 +49,24 @@ export interface CaseEvent {
   corrects_event_id: string | null;
 }
 
+export interface StaffUser {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  created_at: string;
+}
+
+/** Staff record as stored, including the password hash. Never sent to clients. */
+export interface StaffUserRecord extends StaffUser {
+  password_hash: string;
+}
+
 export interface StoreShape {
   cases: CaseRecord[];
   vehicles: Vehicle[];
   glass_requests: GlassRequest[];
   events: CaseEvent[];
   idempotency: Record<string, string>;
+  staff_users: StaffUserRecord[];
 }
