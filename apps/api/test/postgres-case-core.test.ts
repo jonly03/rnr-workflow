@@ -1,6 +1,7 @@
 import request from "supertest";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { hashPassword } from "../src/auth.js";
 import { createPool } from "../src/db.js";
 import { createStore } from "../src/store-factory.js";
 
@@ -13,13 +14,37 @@ suite("Case Core PostgreSQL adapter", () => {
     process.env.DATABASE_SSL_MODE = "disable";
     const pool = createPool(url!);
     await pool.query(
-      "truncate table case_create_idempotency, case_events, glass_requests, cases, vehicles, customers restart identity cascade"
+      "truncate table case_create_idempotency, case_events, glass_requests, cases, vehicles, customers, staff_users restart identity cascade"
     );
+    const seedPool = createPool(url!);
+    const seedStore = new (await import("../src/pg-store.js")).PgCaseStore(seedPool);
+    await seedStore.createStaffUser({
+      email: "staff@example.com",
+      name: "Test Staff",
+      role: "staff",
+      passwordHash: await hashPassword("password123")
+    });
+    await seedPool.end();
     await pool.end();
   });
 
+  const authedApp = async () => {
+    const app = createApp(createStore(), { authSecret: "test-secret" });
+    const login = await request(app)
+      .post("/api/v1/auth/login")
+      .send({ email: "staff@example.com", password: "password123" })
+      .expect(200);
+    const token = login.body.token as string;
+    return {
+      get: (url: string) =>
+        request(app).get(url).set("Authorization", `Bearer ${token}`),
+      post: (url: string) =>
+        request(app).post(url).set("Authorization", `Bearer ${token}`)
+    };
+  };
+
   it("persists a Case and event across store instances", async () => {
-    const app = createApp(createStore());
+    const app = await authedApp();
     const input = {
       channel: "DIRECT",
       vehicle: {
@@ -31,7 +56,7 @@ suite("Case Core PostgreSQL adapter", () => {
       glass_request: { glass_type: "WINDSHIELD" }
     };
 
-    const created = await request(app)
+    const created = await app
       .post("/api/v1/cases")
       .set("Idempotency-Key", "pg-e2e-001")
       .send(input)
@@ -39,16 +64,16 @@ suite("Case Core PostgreSQL adapter", () => {
 
     expect(created.body.current_state).toBe("REQUEST_RECEIVED");
 
-    const restartedApp = createApp(createStore());
+    const restartedApp = await authedApp();
 
-    const detail = await request(restartedApp)
+    const detail = await restartedApp
       .get(`/api/v1/cases/${created.body.id}`)
       .expect(200);
 
     expect(detail.body.reference).toBe(created.body.reference);
     expect(detail.body.vehicle.vin).toBe(input.vehicle.vin);
 
-    const events = await request(restartedApp)
+    const events = await restartedApp
       .get(`/api/v1/cases/${created.body.id}/events`)
       .expect(200);
 
@@ -60,7 +85,7 @@ suite("Case Core PostgreSQL adapter", () => {
   });
 
   it("reuses an idempotency key instead of duplicating a Case", async () => {
-    const app = createApp(createStore());
+    const app = await authedApp();
     const input = {
       channel: "AUCTION",
       vehicle: {
@@ -72,13 +97,13 @@ suite("Case Core PostgreSQL adapter", () => {
       glass_request: { glass_type: "BACK_GLASS" }
     };
 
-    const first = await request(app)
+    const first = await app
       .post("/api/v1/cases")
       .set("Idempotency-Key", "pg-idempotent-001")
       .send(input)
       .expect(201);
 
-    const second = await request(app)
+    const second = await app
       .post("/api/v1/cases")
       .set("Idempotency-Key", "pg-idempotent-001")
       .send(input)

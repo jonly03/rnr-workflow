@@ -9,9 +9,10 @@ vi.stubGlobal("fetch", vi.fn(async () => ({
 })));
 
 describe("R&R Case Core staff shell", () => {
-  it("renders the Case Queue and New Case action", async () => {
+  it("shows the sign-in screen when no session exists", async () => {
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Case Queue" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /New Case/i })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
   });
 });

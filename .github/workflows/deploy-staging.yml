@@ -25,6 +25,9 @@ jobs:
       WEB_PROJECT_ID: ${{ vars.VERCEL_WEB_PROJECT_ID }}
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+      AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+      STAFF_ADMIN_EMAIL: ${{ secrets.STAFF_ADMIN_EMAIL }}
+      STAFF_ADMIN_PASSWORD: ${{ secrets.STAFF_ADMIN_PASSWORD }}
 
     steps:
       - uses: actions/checkout@v4
@@ -37,7 +40,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for name in VERCEL_TOKEN VERCEL_ORG_ID API_PROJECT_ID WEB_PROJECT_ID DATABASE_URL VERCEL_AUTOMATION_BYPASS_SECRET; do
+          for name in VERCEL_TOKEN VERCEL_ORG_ID API_PROJECT_ID WEB_PROJECT_ID DATABASE_URL VERCEL_AUTOMATION_BYPASS_SECRET AUTH_SECRET STAFF_ADMIN_EMAIL STAFF_ADMIN_PASSWORD; do
             if [ -z "${!name:-}" ]; then
               echo "Missing staging deployment value: $name" >&2
               exit 1
@@ -64,7 +67,7 @@ jobs:
         run: |
           set -euo pipefail
           vercel pull --yes --environment=preview --token="$VERCEL_TOKEN"
-          api_url="$(vercel deploy --yes --token="$VERCEL_TOKEN" --env DATABASE_URL="$DATABASE_URL" --env PG_POOL_MAX=3 | tail -n1)"
+          api_url="$(vercel deploy --yes --token="$VERCEL_TOKEN" --env DATABASE_URL="$DATABASE_URL" --env PG_POOL_MAX=3 --env AUTH_SECRET="$AUTH_SECRET" --env STAFF_ADMIN_EMAIL="$STAFF_ADMIN_EMAIL" --env STAFF_ADMIN_PASSWORD="$STAFF_ADMIN_PASSWORD" | tail -n1)"
           echo "url=$api_url" >> "$GITHUB_OUTPUT"
           echo "API: $api_url" >> "$GITHUB_STEP_SUMMARY"
 
@@ -106,6 +109,25 @@ jobs:
           grep -q '"ok":true' /tmp/staging-health.json
           grep -q '"storage":"postgres"' /tmp/staging-health.json
 
+      - name: Staff login (smoke)
+        env:
+          API_URL: ${{ steps.api.outputs.url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$(curl --show-error --silent \
+            -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
+            -H "content-type: application/json" \
+            --data "{\"email\":\"$STAFF_ADMIN_EMAIL\",\"password\":\"$STAFF_ADMIN_PASSWORD\"}" \
+            "$API_URL/api/v1/auth/login")"
+          token="$(echo "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
+          if [ -z "$token" ]; then
+            echo "Staff login failed: $response" >&2
+            exit 1
+          fi
+          echo "SMOKE_TOKEN=$token" >> "$GITHUB_ENV"
+          echo "Staff login: ok"
+
       - name: Live web API proxy check
         env:
           WEB_URL: ${{ steps.web.outputs.url }}
@@ -116,6 +138,7 @@ jobs:
             -o /tmp/staging-proxy.json \
             -w '%{http_code}' \
             -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
+            -H "Authorization: Bearer $SMOKE_TOKEN" \
             "$WEB_URL/api/v1/cases")"
           echo "Proxy status: $status"
           cat /tmp/staging-proxy.json || true
@@ -137,6 +160,7 @@ jobs:
             -w '%{http_code}' \
             -X POST \
             -H "content-type: application/json" \
+            -H "Authorization: Bearer $SMOKE_TOKEN" \
             -H "idempotency-key: staging-smoke-${GITHUB_SHA}" \
             -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
             --data "$payload" \
@@ -154,6 +178,8 @@ jobs:
         env:
           WEB_BASE_URL: ${{ steps.web.outputs.url }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ env.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          E2E_STAFF_EMAIL: ${{ secrets.STAFF_ADMIN_EMAIL }}
+          E2E_STAFF_PASSWORD: ${{ secrets.STAFF_ADMIN_PASSWORD }}
         run: |
           npm install
           npx playwright install --with-deps chromium

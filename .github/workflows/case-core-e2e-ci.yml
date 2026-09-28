@@ -17,6 +17,14 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CASE_STORE_FILE: /tmp/rnr-case-core-e2e.json
+      # Throwaway staff-auth credentials for the local smoke API. The API
+      # seeds this admin on boot; the Playwright spec signs in with the
+      # E2E_* pair. Never real secrets -- CI-only values.
+      AUTH_SECRET: e2e-ci-auth-secret
+      STAFF_ADMIN_EMAIL: e2e-staff@example.com
+      STAFF_ADMIN_PASSWORD: e2e-ci-staff-password
+      E2E_STAFF_EMAIL: e2e-staff@example.com
+      E2E_STAFF_PASSWORD: e2e-ci-staff-password
 
     steps:
       - uses: actions/checkout@v4

@@ -1,5 +1,16 @@
 import { FormEvent, useEffect, useState } from "react";
-import { createCase, getCase, getCaseEvents, listCases } from "./api";
+import {
+  createCase,
+  getCase,
+  getCaseEvents,
+  getMe,
+  getToken,
+  listCases,
+  login,
+  logout,
+  UnauthorizedError,
+  type StaffUser
+} from "./api";
 import type { CaseEvent, CaseRecord, Channel, GlassType } from "./types";
 
 type Screen = "queue" | "new" | "detail";
@@ -8,6 +19,8 @@ const humanize = (value: string) =>
   value.toLowerCase().replaceAll("_", " ").replace(/(^|\s)\S/g, c => c.toUpperCase());
 
 export function App() {
+  const [staff, setStaff] = useState<StaffUser | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
   const [screen, setScreen] = useState<Screen>("queue");
   const [cases, setCases] = useState<CaseRecord[]>([]);
   const [selected, setSelected] = useState<CaseRecord | null>(null);
@@ -15,21 +28,46 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
 
+  const handleUnauthorized = () => {
+    setStaff(null);
+    setScreen("queue");
+  };
+
+  const loadError = (error: unknown) => {
+    if (error instanceof UnauthorizedError) {
+      handleUnauthorized();
+      return;
+    }
+    setMessage(error instanceof Error ? error.message : "Could not load cases.");
+  };
+
+  useEffect(() => {
+    if (!getToken()) {
+      setAuthChecked(true);
+      setLoading(false);
+      return;
+    }
+    getMe()
+      .then(({ staff }) => setStaff(staff))
+      .catch(() => setStaff(null))
+      .finally(() => setAuthChecked(true));
+  }, []);
+
   const refreshQueue = async () => {
     setLoading(true);
     setMessage("");
     try {
       setCases(await listCases());
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not load cases.");
+      loadError(error);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    void refreshQueue();
-  }, []);
+    if (staff) void refreshQueue();
+  }, [staff]);
 
   const openCase = async (id: string) => {
     setLoading(true);
@@ -40,15 +78,39 @@ export function App() {
       setEvents([...activity].sort((a, b) => b.sequence - a.sequence));
       setScreen("detail");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not load this case.");
+      loadError(error);
     } finally {
       setLoading(false);
     }
   };
 
+  const signOut = () => {
+    logout();
+    setStaff(null);
+    setCases([]);
+    setSelected(null);
+    setScreen("queue");
+  };
+
+  if (!authChecked) {
+    return (
+      <Shell staff={null} onSignOut={signOut}>
+        <div className="card">Loading…</div>
+      </Shell>
+    );
+  }
+
+  if (!staff) {
+    return (
+      <Shell staff={null} onSignOut={signOut}>
+        <LoginScreen onSignedIn={s => setStaff(s)} />
+      </Shell>
+    );
+  }
+
   if (screen === "new") {
     return (
-      <Shell>
+      <Shell staff={staff} onSignOut={signOut}>
         <NewCase
           onCancel={() => setScreen("queue")}
           onCreated={async c => {
@@ -62,7 +124,7 @@ export function App() {
 
   if (screen === "detail" && selected) {
     return (
-      <Shell>
+      <Shell staff={staff} onSignOut={signOut}>
         <CaseDetail
           item={selected}
           events={events}
@@ -74,7 +136,7 @@ export function App() {
   }
 
   return (
-    <Shell>
+    <Shell staff={staff} onSignOut={signOut}>
       <section className="page-head">
         <div>
           <p className="eyebrow">R&R Operations</p>
@@ -116,15 +178,89 @@ export function App() {
   );
 }
 
-function Shell({ children }: { children: React.ReactNode }) {
+function Shell({
+  children,
+  staff,
+  onSignOut
+}: {
+  children: React.ReactNode;
+  staff: StaffUser | null;
+  onSignOut: () => void;
+}) {
   return (
     <div className="app-shell">
       <header className="topbar">
         <div className="brand">R&R</div>
         <span>Case Operations</span>
+        {staff && (
+          <span className="staff-line">
+            {staff.name} · {staff.email}
+            <button className="link" onClick={onSignOut}>Sign out</button>
+          </span>
+        )}
       </header>
       <main>{children}</main>
     </div>
+  );
+}
+
+function LoginScreen({ onSignedIn }: { onSignedIn: (s: StaffUser) => void }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [signingIn, setSigningIn] = useState(false);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setSigningIn(true);
+    try {
+      onSignedIn(await login(email.trim(), password));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Sign in failed.");
+    } finally {
+      setSigningIn(false);
+    }
+  };
+
+  return (
+    <form className="form card" onSubmit={submit}>
+      <div className="page-head">
+        <div>
+          <p className="eyebrow">R&R Operations</p>
+          <h1>Sign in</h1>
+          <p className="muted">Staff access only.</p>
+        </div>
+      </div>
+
+      {error && <div className="alert" role="alert">{error}</div>}
+
+      <label>
+        Email
+        <input
+          type="email"
+          autoComplete="username"
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+        />
+      </label>
+
+      <label>
+        Password
+        <input
+          type="password"
+          autoComplete="current-password"
+          value={password}
+          onChange={e => setPassword(e.target.value)}
+        />
+      </label>
+
+      <div className="actions">
+        <button className="primary" disabled={signingIn}>
+          {signingIn ? "Signing in…" : "Sign in"}
+        </button>
+      </div>
+    </form>
   );
 }
 
