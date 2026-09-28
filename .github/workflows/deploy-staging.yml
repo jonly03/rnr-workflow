@@ -109,6 +109,32 @@ jobs:
           grep -q '"ok":true' /tmp/staging-health.json
           grep -q '"storage":"postgres"' /tmp/staging-health.json
 
+      - name: Verify staff admin seed (runtime logs)
+        env:
+          API_URL: ${{ steps.api.outputs.url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The admin seed runs on API cold start. The health check above
+          # triggered that cold start; poll the runtime logs for the outcome.
+          for attempt in 1 2 3 4 5 6; do
+            vercel logs "$API_URL" --token="$VERCEL_TOKEN" > /tmp/staging-runtime.log 2>&1 || true
+            if grep -q "Seeded staff admin account" /tmp/staging-runtime.log; then
+              echo "Staff admin seed confirmed in runtime logs."
+              exit 0
+            fi
+            if grep -q "Staff admin seed failed" /tmp/staging-runtime.log; then
+              echo "Staff admin seed FAILED. Runtime logs:" >&2
+              cat /tmp/staging-runtime.log >&2 || true
+              exit 1
+            fi
+            echo "Seed outcome not in logs yet (attempt $attempt/6); waiting..."
+            sleep 10
+          done
+          echo "Staff admin seed outcome not found in runtime logs:" >&2
+          cat /tmp/staging-runtime.log >&2 || true
+          exit 1
+
       - name: Staff login (smoke)
         env:
           API_URL: ${{ steps.api.outputs.url }}
@@ -131,6 +157,8 @@ jobs:
           if [ "$http_code" != "200" ]; then
             echo "Login response body:"
             cat /tmp/staging-login.json || true
+            echo "Recent API runtime logs:"
+            vercel logs "$API_URL" --token="$VERCEL_TOKEN" 2>&1 | tail -n 60 || true
             exit 1
           fi
           token="$(python3 -c 'import json; print(json.load(open("/tmp/staging-login.json"))["token"])')"
