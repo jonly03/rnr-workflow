@@ -7,8 +7,10 @@ import type {
   GlassCandidate,
   GlassIdentification,
   GlassRequest,
+  PriceCalculation,
   StaffUser,
   StaffUserRecord,
+  SupplierOffer,
   Vehicle,
   VinLookupRecord
 } from "./types.js";
@@ -19,6 +21,8 @@ import type {
   CreateCaseStoreInput,
   CreateStaffUserInput,
   SaveGlassIdentificationInput,
+  SavePriceCalculationInput,
+  SaveSupplierOfferInput,
   SaveVinLookupInput
 } from "./store.js";
 
@@ -141,6 +145,41 @@ function vinLookupRow(row: any): VinLookupRecord {
     vin: row.vin,
     success: Boolean(row.success),
     result: parseJson<Record<string, unknown>>(row.result, {}),
+    created_at: iso(row.created_at)
+  };
+}
+
+function supplierOfferRow(row: any): SupplierOffer {
+  return {
+    id: row.id,
+    case_id: row.case_id,
+    glass_request_id: row.glass_request_id,
+    supplier_name: row.supplier_name,
+    supplier_type: row.supplier_type,
+    part_number: row.part_number,
+    price_cents: Number(row.price_cents),
+    available: Boolean(row.available),
+    quantity: Number(row.quantity),
+    lead_time_days: row.lead_time_days == null ? null : Number(row.lead_time_days),
+    excluded_reason: row.excluded_reason,
+    selected: Boolean(row.selected),
+    created_at: iso(row.created_at)
+  };
+}
+
+function priceCalculationRow(row: any): PriceCalculation {
+  return {
+    id: row.id,
+    case_id: row.case_id,
+    glass_request_id: row.glass_request_id,
+    selected_offer_id: row.selected_offer_id,
+    glass_cost_cents: Number(row.glass_cost_cents),
+    labor_cents: Number(row.labor_cents),
+    profit_cents: Number(row.profit_cents),
+    tax_cents: Number(row.tax_cents),
+    sell_price_cents: Number(row.sell_price_cents),
+    pricing_config: parseJson<Record<string, unknown>>(row.pricing_config, {}),
+    status: row.status,
     created_at: iso(row.created_at)
   };
 }
@@ -435,5 +474,108 @@ export class PgCaseStore implements CaseStore {
        on conflict (vin) do update set success = excluded.success, result = excluded.result`,
       [randomUUID(), normalized, input.success, JSON.stringify(input.result)]
     );
+  }
+
+  async saveSupplierOffer(input: SaveSupplierOfferInput): Promise<SupplierOffer> {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    await this.pool.query(
+      `insert into supplier_offers(id, case_id, glass_request_id, supplier_name,
+        supplier_type, part_number, price_cents, available, quantity,
+        lead_time_days, excluded_reason, selected, created_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+      [
+        id,
+        input.caseId,
+        input.glassRequestId,
+        input.supplierName,
+        input.supplierType,
+        input.partNumber,
+        input.priceCents,
+        input.available,
+        input.quantity,
+        input.leadTimeDays,
+        input.excludedReason,
+        input.selected,
+        now
+      ]
+    );
+    const result = await this.pool.query("select * from supplier_offers where id = $1", [id]);
+    return supplierOfferRow(result.rows[0]);
+  }
+
+  async listSupplierOffers(glassRequestId: string): Promise<SupplierOffer[]> {
+    const result = await this.pool.query(
+      `select * from supplier_offers
+       where glass_request_id = $1 order by created_at asc`,
+      [glassRequestId]
+    );
+    return result.rows.map(supplierOfferRow);
+  }
+
+  async selectSupplierOffer(offerId: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const found = await client.query(
+        "select glass_request_id from supplier_offers where id = $1",
+        [offerId]
+      );
+      if (!found.rowCount) {
+        await client.query("rollback");
+        return;
+      }
+      const glassRequestId = found.rows[0].glass_request_id;
+      await client.query(
+        "update supplier_offers set selected = false where glass_request_id = $1",
+        [glassRequestId]
+      );
+      await client.query(
+        "update supplier_offers set selected = true where id = $1",
+        [offerId]
+      );
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async savePriceCalculation(input: SavePriceCalculationInput): Promise<PriceCalculation> {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    await this.pool.query(
+      `insert into price_calculations(id, case_id, glass_request_id, selected_offer_id,
+        glass_cost_cents, labor_cents, profit_cents, tax_cents, sell_price_cents,
+        pricing_config, status, created_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12)`,
+      [
+        id,
+        input.caseId,
+        input.glassRequestId,
+        input.selectedOfferId,
+        input.glassCostCents,
+        input.laborCents,
+        input.profitCents,
+        input.taxCents,
+        input.sellPriceCents,
+        JSON.stringify(input.pricingConfig),
+        input.status,
+        now
+      ]
+    );
+    const result = await this.pool.query("select * from price_calculations where id = $1", [id]);
+    return priceCalculationRow(result.rows[0]);
+  }
+
+  async getLatestPriceCalculation(glassRequestId: string): Promise<PriceCalculation | null> {
+    const result = await this.pool.query(
+      `select * from price_calculations
+       where glass_request_id = $1 order by created_at desc limit 1`,
+      [glassRequestId]
+    );
+    return result.rowCount ? priceCalculationRow(result.rows[0]) : null;
   }
 }

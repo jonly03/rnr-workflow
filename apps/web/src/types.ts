@@ -39,6 +39,41 @@ export interface GlassIdentification {
   created_at: string;
 }
 
+export type SupplierType = "NATIONAL" | "REGIONAL" | "LOCAL";
+
+export interface SupplierOffer {
+  id: string;
+  case_id: string;
+  glass_request_id: string;
+  supplier_name: string;
+  supplier_type: SupplierType;
+  part_number: string;
+  price_cents: number;
+  available: boolean;
+  quantity: number;
+  lead_time_days: number | null;
+  excluded_reason: string | null;
+  selected: boolean;
+  created_at: string;
+}
+
+export type PriceStatus = "CALCULATED" | "PROFIT_REVIEW" | "APPROVED" | "REJECTED";
+
+export interface PriceCalculation {
+  id: string;
+  case_id: string;
+  glass_request_id: string;
+  selected_offer_id: string | null;
+  glass_cost_cents: number;
+  labor_cents: number;
+  profit_cents: number;
+  tax_cents: number;
+  sell_price_cents: number;
+  pricing_config: Record<string, unknown>;
+  status: PriceStatus;
+  created_at: string;
+}
+
 export interface CaseRecord {
   id: string;
   reference: string;
@@ -48,6 +83,8 @@ export interface CaseRecord {
   vehicle: Vehicle;
   glass_request: GlassRequest;
   glass_identification: GlassIdentification | null;
+  supplier_offers: SupplierOffer[];
+  price_calculation: PriceCalculation | null;
   created_at: string;
   updated_at: string;
 }
