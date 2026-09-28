@@ -6,11 +6,16 @@ import type {
   CaseEvent,
   CaseRecord,
   Channel,
+  GlassCandidate,
+  GlassIdentification,
   GlassRequest,
+  IdentificationMethod,
+  IdentificationStatus,
   StaffUser,
   StaffUserRecord,
   StoreShape,
-  Vehicle
+  Vehicle,
+  VinLookupRecord
 } from "./types.js";
 
 export interface CreateCaseStoreInput {
@@ -38,6 +43,31 @@ export interface CreateApprovalTokenInput {
   expiresAt: string;
 }
 
+export interface AppendEventInput {
+  caseId: string;
+  eventType: string;
+  actor: { type: string; id: string | null };
+  payload?: Record<string, unknown>;
+  /** When present, the case transitions to this state atomically with the event. */
+  nextState?: string;
+}
+
+export interface SaveGlassIdentificationInput {
+  caseId: string;
+  glassRequestId: string;
+  method: IdentificationMethod;
+  status: IdentificationStatus;
+  provider: string;
+  candidates: GlassCandidate[];
+  selectedCandidate?: GlassCandidate | null;
+}
+
+export interface SaveVinLookupInput {
+  vin: string;
+  success: boolean;
+  result: Record<string, unknown>;
+}
+
 export interface CaseStore {
   health(): Promise<void>;
   listCases(): Promise<CaseRecord[]>;
@@ -51,6 +81,12 @@ export interface CaseStore {
   createApprovalToken(input: CreateApprovalTokenInput): Promise<{ jti: string }>;
   findApprovalTokenByHash(tokenHash: string): Promise<ApprovalTokenRecord | null>;
   consumeApprovalToken(jti: string): Promise<void>;
+  /** Appends an event, optionally transitioning the case state atomically. */
+  appendEvent(input: AppendEventInput): Promise<CaseEvent>;
+  saveGlassIdentification(input: SaveGlassIdentificationInput): Promise<GlassIdentification>;
+  getLatestGlassIdentification(glassRequestId: string): Promise<GlassIdentification | null>;
+  findVinLookup(vin: string): Promise<VinLookupRecord | null>;
+  saveVinLookup(input: SaveVinLookupInput): Promise<void>;
 }
 
 const emptyStore = (): StoreShape => ({
@@ -60,7 +96,9 @@ const emptyStore = (): StoreShape => ({
   events: [],
   idempotency: {},
   staff_users: [],
-  approval_tokens: []
+  approval_tokens: [],
+  glass_identifications: [],
+  vin_lookups: []
 });
 
 export class JsonCaseStore implements CaseStore {
@@ -242,6 +280,88 @@ export class JsonCaseStore implements CaseStore {
     const record = next.approval_tokens.find(t => t.jti === jti);
     if (!record || record.consumed_at) return;
     record.consumed_at = new Date().toISOString();
+    this.persist(next);
+  }
+
+  async appendEvent(input: AppendEventInput): Promise<CaseEvent> {
+    const now = new Date().toISOString();
+    const next = structuredClone(this.data);
+    const caseRecord = next.cases.find(c => c.id === input.caseId);
+    if (!caseRecord) throw new Error("Case not found.");
+    const sequence =
+      next.events.filter(e => e.case_id === input.caseId).length + 1;
+    const event: CaseEvent = {
+      id: randomUUID(),
+      case_id: input.caseId,
+      sequence,
+      event_type: input.eventType,
+      occurred_at: now,
+      actor_type: input.actor.type,
+      actor_id: input.actor.id,
+      payload: input.payload ?? {},
+      corrects_event_id: null
+    };
+    next.events.push(event);
+    if (input.nextState) {
+      caseRecord.current_state = input.nextState;
+      caseRecord.updated_at = now;
+      caseRecord.version += 1;
+    }
+    this.persist(next);
+    return event;
+  }
+
+  async saveGlassIdentification(
+    input: SaveGlassIdentificationInput
+  ): Promise<GlassIdentification> {
+    const now = new Date().toISOString();
+    const record: GlassIdentification = {
+      id: randomUUID(),
+      case_id: input.caseId,
+      glass_request_id: input.glassRequestId,
+      method: input.method,
+      status: input.status,
+      provider: input.provider,
+      candidates: input.candidates,
+      selected_candidate: input.selectedCandidate ?? null,
+      created_at: now
+    };
+    const next = structuredClone(this.data);
+    next.glass_identifications.push(record);
+    this.persist(next);
+    return record;
+  }
+
+  async getLatestGlassIdentification(
+    glassRequestId: string
+  ): Promise<GlassIdentification | null> {
+    const matches = this.data.glass_identifications.filter(
+      g => g.glass_request_id === glassRequestId
+    );
+    return matches.length ? matches[matches.length - 1] : null;
+  }
+
+  async findVinLookup(vin: string): Promise<VinLookupRecord | null> {
+    const normalized = vin.trim().toUpperCase();
+    return this.data.vin_lookups.find(v => v.vin === normalized) ?? null;
+  }
+
+  async saveVinLookup(input: SaveVinLookupInput): Promise<void> {
+    const normalized = input.vin.trim().toUpperCase();
+    const next = structuredClone(this.data);
+    const existing = next.vin_lookups.find(v => v.vin === normalized);
+    const record: VinLookupRecord = {
+      id: existing?.id ?? randomUUID(),
+      vin: normalized,
+      success: input.success,
+      result: input.result,
+      created_at: existing?.created_at ?? new Date().toISOString()
+    };
+    if (existing) {
+      next.vin_lookups[next.vin_lookups.indexOf(existing)] = record;
+    } else {
+      next.vin_lookups.push(record);
+    }
     this.persist(next);
   }
 }

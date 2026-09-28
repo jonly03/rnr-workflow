@@ -3,6 +3,15 @@ import cors from "cors";
 import { z } from "zod";
 import type { CaseRecord, Channel, StaffUser } from "./types.js";
 import type { CaseStore } from "./store.js";
+import type { GlassCatalogProvider } from "./glass-catalog.js";
+import { MockGlassCatalogProvider } from "./glass-catalog.js";
+import {
+  IdentificationError,
+  markGlassUnidentifiable,
+  requestVinLookup,
+  runIdentification,
+  selectGlassCandidate
+} from "./glass-identification.js";
 import {
   ensureSeedAdmin,
   requireAuth,
@@ -47,11 +56,21 @@ function parseCorsOrigins(raw: string | undefined): string[] {
     .filter((s) => s.length > 0);
 }
 
+export interface AppDeps {
+  /**
+   * Glass catalog provider. Defaults to the deterministic mock (no network,
+   * no charges). The live MyGrant provider implements the same interface.
+   */
+  glassCatalog?: GlassCatalogProvider;
+}
+
 export function createApp(
   store: CaseStore,
   authConfig: AuthConfig,
-  securityConfig: SecurityConfig = {}
+  securityConfig: SecurityConfig = {},
+  deps: AppDeps = {}
 ) {
+  const glassCatalog = deps.glassCatalog ?? new MockGlassCatalogProvider();
   const app = express();
 
   // Trust the first proxy hop (Vercel edge / web proxy) so req.ip reflects the
@@ -98,7 +117,10 @@ export function createApp(
       store.getVehicle(c.vehicle_id),
       store.getGlassRequest(c.glass_request_id)
     ]);
-    return { ...c, vehicle, glass_request };
+    const glass_identification = glass_request
+      ? await store.getLatestGlassIdentification(glass_request.id)
+      : null;
+    return { ...c, vehicle, glass_request, glass_identification };
   };
 
   app.get("/health", async (_req, res) => {
@@ -203,7 +225,15 @@ export function createApp(
       actor: { type: "RNR_STAFF", id: req.staff?.id ?? null }
     });
 
-    return res.status(result.reused ? 200 : 201).json(await detail(result.caseRecord));
+    // Glass identification starts automatically after valid intake
+    // (workflow-spec §4). The mock provider is synchronous-fast; a live
+    // provider would move this to background processing.
+    if (!result.reused) {
+      await runIdentification(store, glassCatalog, result.caseRecord.id);
+    }
+
+    const fresh = (await store.getCase(result.caseRecord.id)) ?? result.caseRecord;
+    return res.status(result.reused ? 200 : 201).json(await detail(fresh));
   });
 
   app.get("/api/v1/cases", async (req, res) => {
@@ -236,12 +266,52 @@ export function createApp(
       return channelNotFound(res);
     }
 
-    return res.status(409).json({
-      error: {
-        code: "ACTION_NOT_ALLOWED",
-        message: `Action ${String(req.body?.action ?? "") || "(missing)"} is not implemented in Case Core v0.1.`
+    const staffActor = { type: "RNR_STAFF", id: req.staff?.id ?? null };
+    const action = String(req.body?.action ?? "");
+
+    try {
+      switch (action) {
+        case "start_identification":
+          await runIdentification(store, glassCatalog, c.id, "START_IDENTIFICATION", staffActor);
+          break;
+        case "retry_identification":
+          await runIdentification(store, glassCatalog, c.id, "RETRY_IDENTIFICATION", staffActor);
+          break;
+        case "request_vin_lookup":
+          await requestVinLookup(store, glassCatalog, c.id, staffActor);
+          break;
+        case "select_glass_candidate": {
+          const partNumber = req.body?.part_number;
+          if (typeof partNumber !== "string" || !partNumber.trim()) {
+            return res.status(422).json({
+              error: { code: "VALIDATION_ERROR", message: "part_number is required." }
+            });
+          }
+          await selectGlassCandidate(store, c.id, partNumber.trim(), staffActor);
+          break;
+        }
+        case "mark_glass_unidentifiable":
+          await markGlassUnidentifiable(store, c.id, staffActor);
+          break;
+        default:
+          return res.status(409).json({
+            error: {
+              code: "ACTION_NOT_ALLOWED",
+              message: `Action ${action || "(missing)"} is not implemented in Case Core v0.1.`
+            }
+          });
       }
-    });
+    } catch (error) {
+      if (error instanceof IdentificationError) {
+        return res.status(error.httpStatus).json({
+          error: { code: error.code, message: error.message }
+        });
+      }
+      throw error;
+    }
+
+    const updated = await store.getCase(c.id);
+    return res.json(await detail(updated!));
   });
 
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

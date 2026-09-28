@@ -85,6 +85,45 @@ export interface ApprovalTokenRecord {
   created_at: string;
 }
 
+/** One glass part candidate returned by a catalog provider. */
+export interface GlassCandidate {
+  part_number: string;
+  description: string;
+  /** Option/feature codes that distinguish candidates, e.g. "rain-sensor". */
+  features: string[];
+  position: GlassType;
+  list_price_cents: number;
+}
+
+export type IdentificationMethod = "YMM" | "VIN";
+export type IdentificationStatus =
+  | "CANDIDATES_FOUND"
+  | "AMBIGUOUS"
+  | "RESOLVED"
+  | "FAILED";
+
+/** One persisted identification run for a glass request. Latest wins. */
+export interface GlassIdentification {
+  id: string;
+  case_id: string;
+  glass_request_id: string;
+  method: IdentificationMethod;
+  status: IdentificationStatus;
+  provider: string;
+  candidates: GlassCandidate[];
+  selected_candidate: GlassCandidate | null;
+  created_at: string;
+}
+
+/** Cached VIN lookup result. A successful result is reused, never repurchased. */
+export interface VinLookupRecord {
+  id: string;
+  vin: string;
+  success: boolean;
+  result: Record<string, unknown>;
+  created_at: string;
+}
+
 export interface StoreShape {
   cases: CaseRecord[];
   vehicles: Vehicle[];
@@ -93,4 +132,6 @@ export interface StoreShape {
   idempotency: Record<string, string>;
   staff_users: StaffUserRecord[];
   approval_tokens: ApprovalTokenRecord[];
+  glass_identifications: GlassIdentification[];
+  vin_lookups: VinLookupRecord[];
 }
