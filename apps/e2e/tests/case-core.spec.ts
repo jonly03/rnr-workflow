@@ -46,7 +46,7 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
   // photo button ("Upload a photo of the VIN") accessible names also
   // contain "VIN", which breaks getByLabel("VIN") strict mode.
   await page.getByRole("textbox", { name: "VIN" }).fill("1C4HJXEG3JW224862");
-  await page.getByRole("button", { name: "Decode" }).click();
+  await page.getByRole("button", { name: "Decode VIN" }).click();
   // NHTSA decodes this VIN to 2018 Jeep Wrangler (make arrives uppercase).
   await expect(page.getByText(/2018 jeep wrangler/i)).toBeVisible();
   await page.getByRole("button", { name: "Windshield" }).click();
