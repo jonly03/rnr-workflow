@@ -144,6 +144,8 @@ Invariant: no legal transition from `REQUEST_VALIDATION_REQUIRED` directly to a 
 
 Invariants: `VIN_LOOKUP_REQUIRED` is not legal for Door, Quarter, or Vent Glass. A saved successful VIN lookup must be reused, never automatically repurchased. `GLASS_IDENTIFIED` may represent one candidate or a set of equivalent valid candidates sourced competitively.
 
+Implementation note (Phase 2, v0.1): YMM identification runs synchronously inside case creation (the mock provider is deterministic and instant); the live MyGrant provider will move this to background processing without changing the API contract. `RETRY_IDENTIFICATION` re-enters `YMM_SEARCH_IN_PROGRESS` directly rather than routing through `REQUEST_VALIDATION_IN_PROGRESS`, since the retry re-runs identification against the current intake data. `USE_SAVED_VIN_RESULT` and `START_VIN_LOOKUP` both funnel back through `GLASS_MATCH_EVALUATION` after a VIN result, per the table above.
+
 ### Sourcing
 
 | Current state | Event | Guard / condition | Driver | Next state |
