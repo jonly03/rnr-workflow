@@ -69,7 +69,9 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
   await expect(page.locator("h1")).toHaveText(/^RRA-\d{6}$/);
   await expect(page.getByRole("heading", { name: "Vehicle / Service" })).toBeVisible();
   await expect(page.getByTestId("case-channel")).toHaveText("DIRECT");
-  await expect(page.getByText("2018 Jeep Wrangler")).toBeVisible();
+  // Exact match: the identification summary also shows the candidate
+  // description ("2018 Jeep Wrangler Windshield"), which contains this string.
+  await expect(page.getByText("2018 Jeep Wrangler", { exact: true })).toBeVisible();
   await expect(page.getByText("1C4HJXEG3JW224862")).toBeVisible();
   // Phase 2: identification auto-runs after intake; the 2018 Jeep Wrangler
   // resolves to a single catalog candidate.
@@ -88,13 +90,13 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
   await expect(page.getByRole("heading", { name: "Case Queue" })).toBeVisible();
   const caseCard = page.locator(".case-card", { hasText: reference! });
   await expect(caseCard).toBeVisible();
-  await expect(caseCard.getByText("2018 Jeep Wrangler")).toBeVisible();
+  await expect(caseCard.getByText("2018 Jeep Wrangler", { exact: true })).toBeVisible();
 
   await page.reload();
 
   await expect(page.getByRole("heading", { name: "Case Queue" })).toBeVisible();
   await expect(caseCard).toBeVisible();
-  await expect(caseCard.getByText("2018 Jeep Wrangler")).toBeVisible();
+  await expect(caseCard.getByText("2018 Jeep Wrangler", { exact: true })).toBeVisible();
 });
 
 test("Case Core browser path does not expose paid VIN lookup action", async ({ page }) => {

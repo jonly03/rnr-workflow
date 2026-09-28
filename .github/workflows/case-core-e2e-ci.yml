@@ -83,24 +83,7 @@ jobs:
 
       - name: Run Playwright
         working-directory: apps/e2e
-        run: |
-          set +e
-          npm test 2>&1 | tee /tmp/pw-output.txt
-          EXIT_CODE=${PIPESTATUS[0]}
-          set -e
-          if [ "$EXIT_CODE" -ne 0 ]; then
-            {
-              echo "## Playwright failure output"
-              echo '```'
-              # Print the failing test blocks with error context (up to 120 lines).
-              grep -B2 -A28 -E "^\s+[0-9]+\) " /tmp/pw-output.txt | head -120
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-            # Also surface the first error as an annotation (visible via API).
-            FIRST_ERROR=$(grep -A12 -E "^\s+1\) " /tmp/pw-output.txt | head -15 | tr '\n' '|' | cut -c1-900)
-            echo "::error::Playwright failed: $FIRST_ERROR"
-          fi
-          exit "$EXIT_CODE"
+        run: npm test
 
       - name: Upload Playwright report
         if: always()
