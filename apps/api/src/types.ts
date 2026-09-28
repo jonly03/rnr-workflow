@@ -55,11 +55,34 @@ export interface StaffUser {
   name: string;
   role: string;
   created_at: string;
+  /**
+   * Channels this staff member may access. Absent/undefined means all
+   * channels (full-access staff/admin). Enforced backend-side on case routes.
+   */
+  channels?: Channel[];
 }
 
 /** Staff record as stored, including the password hash. Never sent to clients. */
 export interface StaffUserRecord extends StaffUser {
   password_hash: string;
+}
+
+export type ApprovalTokenPurpose = "quote-approval";
+
+/**
+ * Opaque single-use token granting an external party scoped access to one
+ * case for one purpose (e.g. approving a quote). Only the sha256 hash is
+ * stored; the token itself is shown once at mint time.
+ */
+export interface ApprovalTokenRecord {
+  jti: string;
+  case_id: string;
+  channel: Channel;
+  purpose: ApprovalTokenPurpose;
+  token_hash: string;
+  expires_at: string;
+  consumed_at: string | null;
+  created_at: string;
 }
 
 export interface StoreShape {
@@ -69,4 +92,5 @@ export interface StoreShape {
   events: CaseEvent[];
   idempotency: Record<string, string>;
   staff_users: StaffUserRecord[];
+  approval_tokens: ApprovalTokenRecord[];
 }
