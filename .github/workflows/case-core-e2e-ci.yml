@@ -96,6 +96,9 @@ jobs:
               grep -B2 -A28 -E "^\s+[0-9]+\) " /tmp/pw-output.txt | head -120
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
+            # Also surface the first error as an annotation (visible via API).
+            FIRST_ERROR=$(grep -A12 -E "^\s+1\) " /tmp/pw-output.txt | head -15 | tr '\n' '|' | cut -c1-900)
+            echo "::error::Playwright failed: $FIRST_ERROR"
           fi
           exit "$EXIT_CODE"
 
