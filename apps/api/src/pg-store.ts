@@ -4,16 +4,22 @@ import type {
   ApprovalTokenRecord,
   CaseEvent,
   CaseRecord,
+  GlassCandidate,
+  GlassIdentification,
   GlassRequest,
   StaffUser,
   StaffUserRecord,
-  Vehicle
+  Vehicle,
+  VinLookupRecord
 } from "./types.js";
 import type {
+  AppendEventInput,
   CaseStore,
   CreateApprovalTokenInput,
   CreateCaseStoreInput,
-  CreateStaffUserInput
+  CreateStaffUserInput,
+  SaveGlassIdentificationInput,
+  SaveVinLookupInput
 } from "./store.js";
 
 type Pool = pg.Pool;
@@ -99,6 +105,42 @@ function approvalTokenRow(row: any): ApprovalTokenRecord {
     token_hash: row.token_hash,
     expires_at: iso(row.expires_at),
     consumed_at: row.consumed_at ? iso(row.consumed_at) : null,
+    created_at: iso(row.created_at)
+  };
+}
+
+function parseJson<T>(value: unknown, fallback: T): T {
+  if (value == null) return fallback;
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      return fallback;
+    }
+  }
+  return value as T;
+}
+
+function glassIdentificationRow(row: any): GlassIdentification {
+  return {
+    id: row.id,
+    case_id: row.case_id,
+    glass_request_id: row.glass_request_id,
+    method: row.method,
+    status: row.status,
+    provider: row.provider,
+    candidates: parseJson<GlassCandidate[]>(row.candidates, []),
+    selected_candidate: parseJson<GlassCandidate | null>(row.selected_candidate, null),
+    created_at: iso(row.created_at)
+  };
+}
+
+function vinLookupRow(row: any): VinLookupRecord {
+  return {
+    id: row.id,
+    vin: row.vin,
+    success: Boolean(row.success),
+    result: parseJson<Record<string, unknown>>(row.result, {}),
     created_at: iso(row.created_at)
   };
 }
@@ -296,6 +338,102 @@ export class PgCaseStore implements CaseStore {
       `update approval_tokens set consumed_at = now()
        where jti = $1 and consumed_at is null`,
       [jti]
+    );
+  }
+
+  async appendEvent(input: AppendEventInput): Promise<CaseEvent> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const now = new Date().toISOString();
+      const seqResult = await client.query(
+        "select coalesce(max(sequence), 0)::int as max_seq from case_events where case_id = $1",
+        [input.caseId]
+      );
+      const sequence = Number(seqResult.rows[0].max_seq) + 1;
+      const eventId = randomUUID();
+      await client.query(
+        `insert into case_events(id, case_id, sequence, event_type, occurred_at,
+          actor_type, actor_id, payload, corrects_event_id)
+         values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,null)`,
+        [
+          eventId,
+          input.caseId,
+          sequence,
+          input.eventType,
+          now,
+          input.actor.type,
+          input.actor.id,
+          JSON.stringify(input.payload ?? {})
+        ]
+      );
+      if (input.nextState) {
+        await client.query(
+          "update cases set current_state = $1, updated_at = $2, version = version + 1 where id = $3",
+          [input.nextState, now, input.caseId]
+        );
+      }
+      await client.query("commit");
+      const result = await this.pool.query("select * from case_events where id = $1", [eventId]);
+      return eventRow(result.rows[0]);
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async saveGlassIdentification(
+    input: SaveGlassIdentificationInput
+  ): Promise<GlassIdentification> {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    await this.pool.query(
+      `insert into glass_identifications(id, case_id, glass_request_id, method, status,
+        provider, candidates, selected_candidate, created_at)
+       values ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9)`,
+      [
+        id,
+        input.caseId,
+        input.glassRequestId,
+        input.method,
+        input.status,
+        input.provider,
+        JSON.stringify(input.candidates),
+        input.selectedCandidate ? JSON.stringify(input.selectedCandidate) : null,
+        now
+      ]
+    );
+    const result = await this.pool.query("select * from glass_identifications where id = $1", [id]);
+    return glassIdentificationRow(result.rows[0]);
+  }
+
+  async getLatestGlassIdentification(
+    glassRequestId: string
+  ): Promise<GlassIdentification | null> {
+    const result = await this.pool.query(
+      `select * from glass_identifications
+       where glass_request_id = $1 order by created_at desc limit 1`,
+      [glassRequestId]
+    );
+    return result.rowCount ? glassIdentificationRow(result.rows[0]) : null;
+  }
+
+  async findVinLookup(vin: string): Promise<VinLookupRecord | null> {
+    const result = await this.pool.query("select * from vin_lookups where vin = $1", [
+      vin.trim().toUpperCase()
+    ]);
+    return result.rowCount ? vinLookupRow(result.rows[0]) : null;
+  }
+
+  async saveVinLookup(input: SaveVinLookupInput): Promise<void> {
+    const normalized = input.vin.trim().toUpperCase();
+    await this.pool.query(
+      `insert into vin_lookups(id, vin, success, result, created_at)
+       values ($1,$2,$3,$4::jsonb,now())
+       on conflict (vin) do update set success = excluded.success, result = excluded.result`,
+      [randomUUID(), normalized, input.success, JSON.stringify(input.result)]
     );
   }
 }

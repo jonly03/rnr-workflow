@@ -8,10 +8,11 @@ import {
   listCases,
   login,
   logout,
+  performAction,
   UnauthorizedError,
   type StaffUser
 } from "./api";
-import type { CaseEvent, CaseRecord, Channel, GlassType } from "./types";
+import type { CaseEvent, CaseRecord, Channel, GlassCandidate, GlassType } from "./types";
 
 type Screen = "queue" | "new" | "detail";
 
@@ -129,6 +130,7 @@ export function App() {
           item={selected}
           events={events}
           onBack={() => setScreen("queue")}
+          onRefresh={() => openCase(selected.id)}
           loading={loading}
         />
       </Shell>
@@ -360,11 +362,13 @@ function CaseDetail({
   item,
   events,
   onBack,
+  onRefresh,
   loading
 }: {
   item: CaseRecord;
   events: CaseEvent[];
   onBack: () => void;
+  onRefresh: () => Promise<void>;
   loading: boolean;
 }) {
   return (
@@ -392,12 +396,10 @@ function CaseDetail({
           </dl>
         </section>
 
-        <section className="card">
-          <h2>Current action</h2>
-          <p>No staff action required at this step.</p>
-          <small>Workflow actions will appear here when their business contracts are implemented.</small>
-        </section>
+        <IdentificationWorkspace item={item} onRefresh={onRefresh} />
       </div>
+
+      <IdentificationSummary item={item} />
 
       <section className="card timeline">
         <h2>Activity</h2>
@@ -416,5 +418,158 @@ function CaseDetail({
         )}
       </section>
     </>
+  );
+}
+
+/** The staff workspace for the current workflow step. Phase 2 fills the
+ *  glass-identification steps; other steps show the standby message until
+ *  their business contracts land. */
+function IdentificationWorkspace({
+  item,
+  onRefresh
+}: {
+  item: CaseRecord;
+  onRefresh: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [selectedPart, setSelectedPart] = useState("");
+
+  const run = async (action: string, extra: Record<string, unknown> = {}) => {
+    setBusy(true);
+    setError("");
+    try {
+      await performAction(item.id, action, extra);
+      setSelectedPart("");
+      await onRefresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Action failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const ident = item.glass_identification;
+  const candidates: GlassCandidate[] = ident?.candidates ?? [];
+
+  let body: React.ReactNode;
+  switch (item.current_state) {
+    case "VIN_LOOKUP_REQUIRED":
+      body = (
+        <>
+          <p>
+            The catalog could not pin down the exact part. A VIN decode can
+            resolve it — the mock catalog stands in here, so nothing is charged.
+          </p>
+          <div className="workspace-actions">
+            <button className="primary" disabled={busy} onClick={() => run("request_vin_lookup")}>
+              {busy ? "Looking up…" : "Run VIN lookup"}
+            </button>
+          </div>
+          <small>Successful VIN results are cached and reused — never repurchased.</small>
+        </>
+      );
+      break;
+    case "HUMAN_GLASS_REVIEW_REQUIRED":
+      body = (
+        <>
+          <p>
+            The catalog returned {candidates.length} candidates and a VIN lookup
+            is not eligible for this glass type. Pick the correct part:
+          </p>
+          <div className="candidates">
+            {candidates.map(c => (
+              <label key={c.part_number} className="candidate">
+                <input
+                  type="radio"
+                  name="candidate"
+                  value={c.part_number}
+                  checked={selectedPart === c.part_number}
+                  onChange={() => setSelectedPart(c.part_number)}
+                />
+                <div>
+                  <strong><code>{c.part_number}</code></strong>
+                  <div>{c.description}</div>
+                  {c.features.length > 0 && <small>Features: {c.features.join(", ")}</small>}
+                </div>
+              </label>
+            ))}
+          </div>
+          <div className="workspace-actions">
+            <button
+              className="primary"
+              disabled={busy || !selectedPart}
+              onClick={() => run("select_glass_candidate", { part_number: selectedPart })}
+            >
+              {busy ? "Saving…" : "Select this glass"}
+            </button>
+            <button disabled={busy} onClick={() => run("mark_glass_unidentifiable")}>
+              Can't identify
+            </button>
+          </div>
+        </>
+      );
+      break;
+    case "GLASS_NOT_IDENTIFIED":
+      body = (
+        <>
+          <p>No valid glass could be identified from the current vehicle data.</p>
+          <div className="workspace-actions">
+            <button className="primary" disabled={busy} onClick={() => run("retry_identification")}>
+              {busy ? "Retrying…" : "Retry identification"}
+            </button>
+          </div>
+        </>
+      );
+      break;
+    default:
+      body = (
+        <>
+          <p>No staff action required at this step.</p>
+          <small>Workflow actions will appear here when their business contracts are implemented.</small>
+        </>
+      );
+  }
+
+  return (
+    <section className="card">
+      <h2>Current action</h2>
+      {error && <div className="alert">{error}</div>}
+      {body}
+    </section>
+  );
+}
+
+function IdentificationSummary({ item }: { item: CaseRecord }) {
+  const ident = item.glass_identification;
+  if (!ident) return null;
+  const selected = ident.selected_candidate;
+  return (
+    <section className="card" style={{ marginBottom: 18 }}>
+      <h2>Glass identification</h2>
+      <dl>
+        <dt>Method</dt>
+        <dd>{ident.method === "YMM" ? "YMM catalog search" : "VIN decode"}</dd>
+        <dt>Status</dt><dd>{humanize(ident.status)}</dd>
+        {selected && (
+          <>
+            <dt>Selected part</dt>
+            <dd><code>{selected.part_number}</code> — {selected.description}</dd>
+          </>
+        )}
+      </dl>
+      {!selected && ident.candidates.length > 0 && (
+        <>
+          <h3>Candidates ({ident.candidates.length})</h3>
+          <ul className="candidate-list">
+            {ident.candidates.map(c => (
+              <li key={c.part_number}>
+                <code>{c.part_number}</code> — {c.description}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
   );
 }

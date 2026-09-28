@@ -53,7 +53,8 @@ describe("Case Core API", () => {
     const create = await authed.post("/api/v1/cases").send(input).expect(201);
 
     expect(create.body.reference).toMatch(/^RRA-\d{6}$/);
-    expect(create.body.current_state).toBe("REQUEST_RECEIVED");
+    // Phase 2: identification auto-runs after intake (single candidate here).
+    expect(create.body.current_state).toBe("GLASS_IDENTIFIED");
     expect(create.body.channel).toBe("DIRECT");
     expect(create.body.vehicle.vin).toBe(input.vehicle.vin);
 
@@ -61,13 +62,22 @@ describe("Case Core API", () => {
       .get(`/api/v1/cases/${create.body.id}/events`)
       .expect(200);
 
-    expect(events.body).toHaveLength(1);
+    // Phase 2: CASE_CREATED plus the automatic identification event trail.
+    expect(events.body).toHaveLength(5);
     expect(events.body[0]).toMatchObject({
       sequence: 1,
       event_type: "CASE_CREATED",
       actor_type: "RNR_STAFF",
       actor_id: staffId
     });
+    const types = events.body.map((e: { event_type: string }) => e.event_type);
+    expect(types).toEqual([
+      "CASE_CREATED",
+      "START_IDENTIFICATION",
+      "YMM_RESULTS_RETURNED",
+      "EVALUATE_GLASS_MATCHES",
+      "GLASS_RESOLVED"
+    ]);
   });
 
   it("persists DIRECT, AUCTION and INSURANCE through one model", async () => {
@@ -113,7 +123,8 @@ describe("Case Core API", () => {
       .expect(409);
 
     const detail = await authed.get(`/api/v1/cases/${create.body.id}`).expect(200);
-    expect(detail.body.current_state).toBe("REQUEST_RECEIVED");
+    // Phase 2: arbitrary actions stay rejected; state is the identified one.
+    expect(detail.body.current_state).toBe("GLASS_IDENTIFIED");
   });
 
   it("returns validation errors without persisting partial data", async () => {
