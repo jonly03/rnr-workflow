@@ -1,4 +1,20 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+// Staff auth gate: sign in when the login screen is shown.
+async function signInIfRequired(page: Page) {
+  if (await page.getByRole("heading", { name: "Sign in" }).isVisible()) {
+    const email = process.env.E2E_STAFF_EMAIL;
+    const password = process.env.E2E_STAFF_PASSWORD;
+    if (!email || !password) {
+      throw new Error(
+        "E2E_STAFF_EMAIL and E2E_STAFF_PASSWORD must be set for the authenticated smoke test."
+      );
+    }
+    await page.getByLabel(/email/i).fill(email);
+    await page.getByLabel(/password/i).fill(password);
+    await page.getByRole("button", { name: "Sign in" }).click();
+  }
+}
 
 test("Case Core create → detail → activity → queue survives refresh", async ({ page }) => {
   page.on("request", request => {
@@ -19,19 +35,7 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
 
   await page.goto("/");
 
-  // Staff auth gate: sign in when the login screen is shown.
-  if (await page.getByRole("heading", { name: "Sign in" }).isVisible()) {
-    const email = process.env.E2E_STAFF_EMAIL;
-    const password = process.env.E2E_STAFF_PASSWORD;
-    if (!email || !password) {
-      throw new Error(
-        "E2E_STAFF_EMAIL and E2E_STAFF_PASSWORD must be set for the authenticated smoke test."
-      );
-    }
-    await page.getByLabel(/email/i).fill(email);
-    await page.getByLabel(/password/i).fill(password);
-    await page.getByRole("button", { name: "Sign in" }).click();
-  }
+  await signInIfRequired(page);
 
   await expect(page.getByRole("heading", { name: "Case Queue" })).toBeVisible();
 
@@ -92,6 +96,7 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
 
 test("Case Core browser path does not expose paid VIN lookup action", async ({ page }) => {
   await page.goto("/");
+  await signInIfRequired(page);
   await page.getByRole("button", { name: /New Case/i }).click();
 
   await expect(page.getByRole("button", { name: /VIN lookup/i })).toHaveCount(0);
