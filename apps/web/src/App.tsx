@@ -137,6 +137,7 @@ export function App() {
           onBack={() => setScreen("queue")}
           onRefresh={() => openCase(selected.id)}
           loading={loading}
+          staffEmail={staff.email}
         />
       </Shell>
     );
@@ -737,19 +738,193 @@ function ManualCaseForm({
   );
 }
 
+/** Case detail cards, reorderable by staff. The order is remembered per
+ *  staff member in localStorage so each person sees their preferred layout. */
+export const CASE_CARDS = ["vehicle", "pricing", "identification", "action", "sourcing", "activity"] as const;
+export type CaseCardId = (typeof CASE_CARDS)[number];
+export const DEFAULT_CARD_ORDER: CaseCardId[] = ["vehicle", "pricing", "identification", "action", "sourcing", "activity"];
+
+export function cardOrderKey(staffEmail: string) {
+  return `rnr:card-order:${staffEmail}`;
+}
+
+export function loadCardOrder(staffEmail: string): CaseCardId[] {
+  try {
+    const raw = localStorage.getItem(cardOrderKey(staffEmail));
+    if (raw) {
+      const saved = JSON.parse(raw) as string[];
+      const isCard = (id: string): id is CaseCardId =>
+        (CASE_CARDS as readonly string[]).includes(id);
+      const valid = saved.filter(isCard);
+      // Append any new cards staff hasn't positioned yet, drop unknown ids.
+      const missing = DEFAULT_CARD_ORDER.filter(id => !valid.includes(id));
+      if (valid.length > 0) return [...valid, ...missing];
+    }
+  } catch {
+    /* corrupted storage -> fall through to default */
+  }
+  return [...DEFAULT_CARD_ORDER];
+}
+
+function useCardOrder(staffEmail: string) {
+  const [order, setOrder] = useState<CaseCardId[]>(() => loadCardOrder(staffEmail));
+  const save = useCallback((next: CaseCardId[]) => {
+    setOrder(next);
+    try {
+      localStorage.setItem(cardOrderKey(staffEmail), JSON.stringify(next));
+    } catch {
+      /* storage unavailable -> order still applies for this session */
+    }
+  }, [staffEmail]);
+  return [order, save] as const;
+}
+
+/** Single-column list of case cards with pointer-based drag handles.
+ *  Works with mouse and touch (touch-action: none on the handle). */
+function SortableCardList({
+  order,
+  onReorder,
+  renderCard
+}: {
+  order: CaseCardId[];
+  onReorder: (next: CaseCardId[]) => void;
+  renderCard: (id: CaseCardId) => React.ReactNode;
+}) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ id: CaseCardId; pointerId: number } | null>(null);
+  const [draggingId, setDraggingId] = useState<CaseCardId | null>(null);
+
+  const indexFromY = (y: number): number => {
+    const el = listRef.current;
+    if (!el) return 0;
+    const cards = Array.from(el.querySelectorAll<HTMLElement>("[data-card-id]"));
+    for (let i = 0; i < cards.length; i++) {
+      const r = cards[i].getBoundingClientRect();
+      if (y < r.top + r.height / 2) return i;
+    }
+    return cards.length;
+  };
+
+  const beginDrag = (id: CaseCardId) => (e: React.PointerEvent<HTMLElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    drag.current = { id, pointerId: e.pointerId };
+    setDraggingId(id);
+    e.preventDefault();
+  };
+
+  const moveDrag = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d || e.pointerId !== d.pointerId) return;
+    const from = order.indexOf(d.id);
+    if (from === -1) return;
+    let to = indexFromY(e.clientY);
+    if (to > from) to -= 1; // the dragged card still occupies its slot
+    if (to < 0 || to === from) return;
+    const next = [...order];
+    next.splice(from, 1);
+    next.splice(to, 0, d.id);
+    onReorder(next);
+  };
+
+  const endDrag = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d || e.pointerId !== d.pointerId) return;
+    drag.current = null;
+    setDraggingId(null);
+  };
+
+  return (
+    <div
+      ref={listRef}
+      className="sortable-cards"
+      onPointerMove={moveDrag}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+    >
+      {order.map(id => (
+        <div
+          key={id}
+          data-card-id={id}
+          className={"sortable-card" + (draggingId === id ? " is-dragging" : "")}
+        >
+          <span
+            className="drag-handle"
+            role="button"
+            tabIndex={0}
+            aria-label="Drag to reorder this card"
+            onPointerDown={beginDrag(id)}
+            onClick={e => e.preventDefault()}
+          >
+            ⠿
+          </span>
+          {renderCard(id)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function CaseDetail({
   item,
   events,
   onBack,
   onRefresh,
-  loading
+  loading,
+  staffEmail
 }: {
   item: CaseRecord;
   events: CaseEvent[];
   onBack: () => void;
   onRefresh: () => Promise<void>;
   loading: boolean;
+  staffEmail: string;
 }) {
+  const [order, setOrder] = useCardOrder(staffEmail);
+
+  const renderCard = (id: CaseCardId) => {
+    switch (id) {
+      case "vehicle":
+        return (
+          <section className="card">
+            <h2>Vehicle / Service</h2>
+            <dl>
+              <dt>Vehicle</dt><dd>{item.vehicle.year} {item.vehicle.make} {item.vehicle.model}</dd>
+              <dt>VIN</dt><dd><code>{item.vehicle.vin}</code></dd>
+              <dt>Glass type</dt><dd>{humanize(item.glass_request.glass_type)}</dd>
+              <dt>Created</dt><dd>{new Date(item.created_at).toLocaleString()}</dd>
+            </dl>
+          </section>
+        );
+      case "pricing":
+        return <PricingSummary item={item} />;
+      case "identification":
+        return <IdentificationSummary item={item} events={events} onRefresh={onRefresh} />;
+      case "action":
+        return <IdentificationWorkspace item={item} onRefresh={onRefresh} />;
+      case "sourcing":
+        return <SourcingSummary item={item} events={events} onRefresh={onRefresh} />;
+      case "activity":
+        return (
+          <section className="card timeline">
+            <h2>Activity</h2>
+            {loading ? <p>Loading activity…</p> : events.length === 0 ? (
+              <p>No activity recorded yet.</p>
+            ) : (
+              <ol>
+                {events.map(e => (
+                  <li key={e.id}>
+                    <strong>{e.event_type}</strong>
+                    <span>{new Date(e.occurred_at).toLocaleString()}</span>
+                    <small>#{e.sequence} · {e.actor_type}</small>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+        );
+    }
+  };
+
   return (
     <>
       <button className="back" onClick={onBack}>← Case Queue</button>
@@ -764,42 +939,7 @@ function CaseDetail({
         </div>
       </section>
 
-      <div className="detail-grid">
-        <section className="card">
-          <h2>Vehicle / Service</h2>
-          <dl>
-            <dt>Vehicle</dt><dd>{item.vehicle.year} {item.vehicle.make} {item.vehicle.model}</dd>
-            <dt>VIN</dt><dd><code>{item.vehicle.vin}</code></dd>
-            <dt>Glass type</dt><dd>{humanize(item.glass_request.glass_type)}</dd>
-            <dt>Created</dt><dd>{new Date(item.created_at).toLocaleString()}</dd>
-          </dl>
-        </section>
-
-        <IdentificationWorkspace item={item} onRefresh={onRefresh} />
-      </div>
-
-      <IdentificationSummary item={item} events={events} onRefresh={onRefresh} />
-
-      <SourcingSummary item={item} events={events} onRefresh={onRefresh} />
-
-      <PricingSummary item={item} />
-
-      <section className="card timeline">
-        <h2>Activity</h2>
-        {loading ? <p>Loading activity…</p> : events.length === 0 ? (
-          <p>No activity recorded yet.</p>
-        ) : (
-          <ol>
-            {events.map(e => (
-              <li key={e.id}>
-                <strong>{e.event_type}</strong>
-                <span>{new Date(e.occurred_at).toLocaleString()}</span>
-                <small>#{e.sequence} · {e.actor_type}</small>
-              </li>
-            ))}
-          </ol>
-        )}
-      </section>
+      <SortableCardList order={order} onReorder={setOrder} renderCard={renderCard} />
     </>
   );
 }
