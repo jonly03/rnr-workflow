@@ -772,9 +772,9 @@ function CaseDetail({
         <IdentificationWorkspace item={item} onRefresh={onRefresh} />
       </div>
 
-      <IdentificationSummary item={item} />
+      <IdentificationSummary item={item} events={events} onRefresh={onRefresh} />
 
-      <SourcingSummary item={item} />
+      <SourcingSummary item={item} events={events} onRefresh={onRefresh} />
 
       <PricingSummary item={item} />
 
@@ -996,10 +996,38 @@ function IdentificationWorkspace({
   );
 }
 
-function IdentificationSummary({ item }: { item: CaseRecord }) {
+function IdentificationSummary({ item, events, onRefresh }: {
+  item: CaseRecord;
+  events: CaseEvent[];
+  onRefresh: () => Promise<void>;
+}) {
   const ident = item.glass_identification;
+  const [overriding, setOverriding] = useState(false);
+  const [partNumber, setPartNumber] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   if (!ident) return null;
   const selected = ident.selected_candidate;
+  const candidates = ident.candidates;
+  const overrideEvents = events.filter(e => e.event_type === "GLASS_CANDIDATE_OVERRIDDEN");
+  const lastOverride = overrideEvents[overrideEvents.length - 1];
+
+  async function submitOverride() {
+    if (!partNumber) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await performAction(item.id, "override_glass_candidate", { part_number: partNumber });
+      setOverriding(false);
+      setPartNumber("");
+      await onRefresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Override failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="card" style={{ marginBottom: 18 }}>
       <h2>Glass identification</h2>
@@ -1014,11 +1042,18 @@ function IdentificationSummary({ item }: { item: CaseRecord }) {
           </>
         )}
       </dl>
-      {!selected && ident.candidates.length > 0 && (
+      {lastOverride && (
+        <p className="override-note">
+          Staff override: system selected <code>{String(lastOverride.payload.old_part_number)}</code>,
+          {" "}staff chose <code>{String(lastOverride.payload.new_part_number)}</code>{" "}
+          ({new Date(lastOverride.occurred_at).toLocaleString()})
+        </p>
+      )}
+      {!selected && candidates.length > 0 && (
         <>
-          <h3>Candidates ({ident.candidates.length})</h3>
+          <h3>Candidates ({candidates.length})</h3>
           <ul className="candidate-list">
-            {ident.candidates.map(c => (
+            {candidates.map(c => (
               <li key={c.part_number}>
                 <code>{c.part_number}</code> — {c.description}
               </li>
@@ -1026,15 +1061,75 @@ function IdentificationSummary({ item }: { item: CaseRecord }) {
           </ul>
         </>
       )}
+      {selected && candidates.length > 1 && !overriding && (
+        <button className="secondary" onClick={() => { setOverriding(true); setPartNumber(""); }}>
+          Override part…
+        </button>
+      )}
+      {overriding && (
+        <div className="override-form">
+          <label>
+            Replacement part
+            <select value={partNumber} onChange={e => setPartNumber(e.target.value)}>
+              <option value="">Choose a candidate…</option>
+              {candidates
+                .filter(c => c.part_number !== selected?.part_number)
+                .map(c => (
+                  <option key={c.part_number} value={c.part_number}>
+                    {c.part_number} — {c.description}
+                  </option>
+                ))}
+            </select>
+          </label>
+          {error && <p className="error">{error}</p>}
+          <div className="row">
+            <button className="primary" disabled={busy || !partNumber} onClick={submitOverride}>
+              {busy ? "Applying…" : "Apply override"}
+            </button>
+            <button className="secondary" disabled={busy} onClick={() => setOverriding(false)}>
+              Cancel
+            </button>
+          </div>
+          <small>Re-runs supplier sourcing and pricing for the new part.</small>
+        </div>
+      )}
     </section>
   );
 }
 
-function SourcingSummary({ item }: { item: CaseRecord }) {
+function SourcingSummary({ item, events, onRefresh }: {
+  item: CaseRecord;
+  events: CaseEvent[];
+  onRefresh: () => Promise<void>;
+}) {
   const offers = item.supplier_offers ?? [];
+  const [overriding, setOverriding] = useState(false);
+  const [offerId, setOfferId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   if (offers.length === 0) return null;
   const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
   const selected = offers.find(o => o.selected);
+  const eligible = offers.filter(o => !o.selected && !o.excluded_reason);
+  const overrideEvents = events.filter(e => e.event_type === "SUPPLIER_OFFER_OVERRIDDEN");
+  const lastOverride = overrideEvents[overrideEvents.length - 1];
+
+  async function submitOverride() {
+    if (!offerId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await performAction(item.id, "override_supplier_offer", { offer_id: offerId });
+      setOverriding(false);
+      setOfferId("");
+      await onRefresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Override failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="card" style={{ marginBottom: 18 }}>
       <h2>Supplier sourcing</h2>
@@ -1043,6 +1138,13 @@ function SourcingSummary({ item }: { item: CaseRecord }) {
           Selected: <strong>{selected.supplier_name}</strong> —{" "}
           <code>{selected.part_number}</code> at {fmt(selected.price_cents)}
           {selected.lead_time_days !== null && ` (${selected.lead_time_days}d lead)`}
+        </p>
+      )}
+      {lastOverride && (
+        <p className="override-note">
+          Staff override: system selected <strong>{String(lastOverride.payload.old_supplier_name)}</strong>,
+          {" "}staff chose <strong>{String(lastOverride.payload.new_supplier_name)}</strong>{" "}
+          ({new Date(lastOverride.occurred_at).toLocaleString()})
         </p>
       )}
       <h3>Offers ({offers.length})</h3>
@@ -1059,6 +1161,36 @@ function SourcingSummary({ item }: { item: CaseRecord }) {
           </li>
         ))}
       </ul>
+      {eligible.length > 0 && !overriding && (
+        <button className="secondary" onClick={() => { setOverriding(true); setOfferId(""); }}>
+          Override supplier…
+        </button>
+      )}
+      {overriding && (
+        <div className="override-form">
+          <label>
+            Replacement supplier
+            <select value={offerId} onChange={e => setOfferId(e.target.value)}>
+              <option value="">Choose an eligible offer…</option>
+              {eligible.map(o => (
+                <option key={o.id} value={o.id}>
+                  {o.supplier_name} — {fmt(o.price_cents)}{o.lead_time_days !== null ? ` (${o.lead_time_days}d lead)` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          {error && <p className="error">{error}</p>}
+          <div className="row">
+            <button className="primary" disabled={busy || !offerId} onClick={submitOverride}>
+              {busy ? "Applying…" : "Apply override"}
+            </button>
+            <button className="secondary" disabled={busy} onClick={() => setOverriding(false)}>
+              Cancel
+            </button>
+          </div>
+          <small>Re-runs pricing for the new supplier. Excluded offers can't be chosen.</small>
+        </div>
+      )}
     </section>
   );
 }

@@ -259,6 +259,9 @@ export async function runSourcing(
   });
 
   // Persist all offers with eligibility evaluation.
+  // Clear stale offers first: a re-run (retry or post-override) replaces
+  // the offer set rather than appending to it.
+  await store.clearSupplierOffers(glassRequest.id);
   const evaluated = rawOffers.map(offer => ({
     offer,
     excludedReason: evaluateOfferEligibility(offer)
@@ -334,6 +337,84 @@ export async function runSourcing(
       supplier_name: winner.offer.supplier_name,
       price_cents: winner.offer.price_cents,
       part_number: winner.offer.part_number
+    }
+  });
+}
+
+/**
+ * Staff overrides the system-selected supplier offer after the case has
+ * already advanced past sourcing. The override is an explicit, audited
+ * action: it records the old and new offers, rewinds the case to
+ * GLASS_SELECTED, and the caller re-runs pricing for the new offer via
+ * advanceWorkflow.
+ *
+ * The replacement must be an eligible offer (not excluded) from the
+ * current offer set — constrained choice, not free text.
+ */
+const OFFER_OVERRIDE_ELIGIBLE_STATES = new Set([
+  "GLASS_SELECTED",
+  "PRICE_CALCULATED",
+  "PROFIT_REVIEW",
+  "PRICE_APPROVED"
+]);
+
+export async function overrideSupplierOffer(
+  store: CaseStore,
+  caseId: string,
+  offerId: string,
+  actor: Actor
+): Promise<void> {
+  const caseRecord = await store.getCase(caseId);
+  if (!caseRecord) throw new Error("Case not found.");
+  const glassRequest = await store.getGlassRequest(caseRecord.glass_request_id);
+  if (!glassRequest) throw new Error("Case is missing glass request.");
+
+  if (!OFFER_OVERRIDE_ELIGIBLE_STATES.has(caseRecord.current_state)) {
+    throw new SourcingError(
+      "INVALID_TRANSITION",
+      `Supplier override is not available from state ${caseRecord.current_state}.`,
+      409
+    );
+  }
+
+  const offers = await store.listSupplierOffers(glassRequest.id);
+  const replacement = offers.find(o => o.id === offerId);
+  if (!replacement) {
+    throw new SourcingError(
+      "INVALID_OFFER",
+      "The selected offer does not belong to this case.",
+      422
+    );
+  }
+  if (replacement.excluded_reason) {
+    throw new SourcingError(
+      "INVALID_OFFER",
+      `That offer is not eligible: ${replacement.excluded_reason}.`,
+      422
+    );
+  }
+  const current = offers.find(o => o.selected);
+  if (current && current.id === replacement.id) {
+    throw new SourcingError(
+      "INVALID_OFFER",
+      "That offer is already the selected supplier.",
+      422
+    );
+  }
+
+  await store.selectSupplierOffer(replacement.id);
+  await store.appendEvent({
+    caseId,
+    eventType: "SUPPLIER_OFFER_OVERRIDDEN",
+    actor,
+    nextState: "GLASS_SELECTED",
+    payload: {
+      old_offer_id: current?.id ?? null,
+      old_supplier_name: current?.supplier_name ?? null,
+      new_offer_id: replacement.id,
+      new_supplier_name: replacement.supplier_name,
+      new_price_cents: replacement.price_cents,
+      basis: "staff-override"
     }
   });
 }

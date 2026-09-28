@@ -435,3 +435,84 @@ export async function markGlassUnidentifiable(
     nextState: transition(caseRecord, "HUMAN_CANNOT_IDENTIFY")
   });
 }
+
+/**
+ * Staff overrides the system-selected glass candidate after the case has
+ * already advanced past identification. The override is an explicit,
+ * audited action: it records the old and new part numbers, rewinds the
+ * case to GLASS_IDENTIFIED, and the caller re-runs sourcing + pricing
+ * for the new part via advanceWorkflow.
+ *
+ * The replacement must be one of the candidates from the latest
+ * identification run — constrained choice, not free text.
+ */
+const OVERRIDE_ELIGIBLE_STATES = new Set([
+  "GLASS_IDENTIFIED",
+  "GLASS_SELECTED",
+  "PRICE_CALCULATED",
+  "PROFIT_REVIEW",
+  "PRICE_APPROVED"
+]);
+
+export async function overrideGlassCandidate(
+  store: CaseStore,
+  caseId: string,
+  partNumber: string,
+  actor: Actor
+): Promise<void> {
+  const { caseRecord, glassRequest } = await loadCaseContext(store, caseId);
+
+  if (!OVERRIDE_ELIGIBLE_STATES.has(caseRecord.current_state)) {
+    throw new IdentificationError(
+      "INVALID_TRANSITION",
+      `Glass override is not available from state ${caseRecord.current_state}.`,
+      409
+    );
+  }
+
+  const identification = await store.getLatestGlassIdentification(glassRequest.id);
+  if (!identification?.selected_candidate) {
+    throw new IdentificationError(
+      "IDENTIFICATION_NOT_FOUND",
+      "No selected glass candidate to override.",
+      409
+    );
+  }
+  const candidate = identification.candidates.find(c => c.part_number === partNumber);
+  if (!candidate) {
+    throw new IdentificationError(
+      "INVALID_CANDIDATE",
+      "The override part number is not one of the identified candidates.",
+      422
+    );
+  }
+  if (candidate.part_number === identification.selected_candidate.part_number) {
+    throw new IdentificationError(
+      "INVALID_CANDIDATE",
+      "The override part is already the selected candidate.",
+      422
+    );
+  }
+
+  const oldPartNumber = identification.selected_candidate.part_number;
+  await store.saveGlassIdentification({
+    caseId,
+    glassRequestId: glassRequest.id,
+    method: identification.method,
+    status: "RESOLVED",
+    provider: identification.provider,
+    candidates: identification.candidates,
+    selectedCandidate: candidate
+  });
+  await store.appendEvent({
+    caseId,
+    eventType: "GLASS_CANDIDATE_OVERRIDDEN",
+    actor,
+    nextState: "GLASS_IDENTIFIED",
+    payload: {
+      old_part_number: oldPartNumber,
+      new_part_number: candidate.part_number,
+      basis: "staff-override"
+    }
+  });
+}
