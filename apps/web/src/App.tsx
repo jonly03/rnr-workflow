@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import {
   createCase,
   decodeVin,
@@ -15,6 +15,8 @@ import {
   type StaffUser
 } from "./api";
 import type { CaseEvent, CaseRecord, Channel, GlassCandidate, GlassType } from "./types";
+import { normalizeSpokenVin, validateSpokenVin } from "./vin-voice";
+import { useVinVoice } from "./useVinVoice";
 
 type Screen = "queue" | "new" | "detail";
 
@@ -291,24 +293,76 @@ function VinFirstCase({
   const [glassType, setGlassType] = useState<GlassType>("WINDSHIELD");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // Voice dictation state: a validated 17-char VIN awaiting confirmation.
+  const [voiceCandidate, setVoiceCandidate] = useState<string | null>(null);
+  const [correctionIndex, setCorrectionIndex] = useState<number | null>(null);
+  const [correctionValue, setCorrectionValue] = useState("");
 
-  const handleDecode = async (e: FormEvent) => {
-    e.preventDefault();
+  const handleVoiceTranscript = useCallback((transcript: string) => {
+    const candidate = normalizeSpokenVin(transcript);
+    const result = validateSpokenVin(candidate);
+    if (!result.ok) {
+      setError(result.reason);
+      return;
+    }
+    setError("");
+    setVoiceCandidate(result.vin);
+    setCorrectionIndex(null);
+  }, []);
+
+  const voice = useVinVoice(handleVoiceTranscript);
+
+  const applyCorrection = useCallback(
+    (index: number, char: string) => {
+      setVoiceCandidate(prev => {
+        if (!prev) return prev;
+        const next = prev.slice(0, index) + char + prev.slice(index + 1);
+        const result = validateSpokenVin(next);
+        setError(result.ok ? "" : result.reason);
+        return next;
+      });
+    },
+    []
+  );
+
+  const runDecode = async (vin: string) => {
     setError("");
     setDecoded(null);
-    if (vinInput.trim().length !== 17) {
+    if (vin.trim().length !== 17) {
       setError("Enter a 17-character VIN.");
       return;
     }
     setDecoding(true);
     try {
-      const result = await decodeVin(vinInput.trim());
+      const result = await decodeVin(vin.trim());
       setDecoded(result.vehicle);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not decode VIN.");
     } finally {
       setDecoding(false);
     }
+  };
+
+  const handleDecode = (e: FormEvent) => {
+    e.preventDefault();
+    void runDecode(vinInput);
+  };
+
+  const useVoiceCandidate = () => {
+    if (!voiceCandidate) return;
+    const vin = voiceCandidate;
+    setVoiceCandidate(null);
+    setCorrectionIndex(null);
+    setCorrectionValue("");
+    setVinInput(vin);
+    void runDecode(vin);
+  };
+
+  const discardVoiceCandidate = () => {
+    setVoiceCandidate(null);
+    setCorrectionIndex(null);
+    setCorrectionValue("");
+    setError("");
   };
 
   const handleCreate = async () => {
@@ -347,24 +401,102 @@ function VinFirstCase({
 
       {!decoded ? (
         <form onSubmit={handleDecode}>
-          <label>
-            VIN
-            <div style={{ display: "flex", gap: "0.5rem" }}>
-              <input
-                value={vinInput}
-                onChange={e => setVinInput(e.target.value.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/gi, ""))}
-                placeholder="17-character VIN"
-                maxLength={17}
-                style={{ textTransform: "uppercase", flex: 1 }}
-                autoFocus
-              />
-              <button className="primary" type="submit" disabled={decoding || vinInput.trim().length !== 17}>
-                {decoding ? "Decoding…" : "Decode"}
+          <label htmlFor="vin-input">VIN</label>
+          <div style={{ display: "flex", gap: "0.5rem" }}>
+            {voice.supported && (
+              <button
+                type="button"
+                className={"mic-btn" + (voice.status === "listening" ? " listening" : "")}
+                onClick={() => (voice.status === "listening" ? voice.stop() : voice.start())}
+                aria-label={voice.status === "listening" ? "Stop dictating VIN" : "Dictate VIN by voice"}
+                title={voice.status === "listening" ? "Stop" : "Dictate the VIN"}
+              >
+                {voice.status === "listening" ? "⏹" : "🎤"}
               </button>
+            )}
+            <input
+              id="vin-input"
+              value={vinInput}
+              onChange={e => setVinInput(e.target.value.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/gi, ""))}
+              placeholder="17-character VIN"
+              maxLength={17}
+              style={{ textTransform: "uppercase", flex: 1 }}
+              autoFocus
+            />
+            <button className="primary" type="submit" disabled={decoding || vinInput.trim().length !== 17}>
+              {decoding ? "Decoding…" : "Decode"}
+            </button>
+          </div>
+          {voice.status === "listening" && (
+            <p className="muted interim" role="status">
+              Listening… speak the VIN one character at a time.
+              {voice.interim ? ` Heard so far: "${voice.interim}"` : ""}
+            </p>
+          )}
+          {voice.error && <div className="alert" role="alert">{voice.error}</div>}
+          {voiceCandidate && (
+            <div className="card vin-confirm">
+              <h3 style={{ margin: "0 0 0.25rem" }}>I heard this VIN — look it over</h3>
+              <p className="muted" style={{ margin: "0 0 0.5rem" }}>
+                Tap any character to fix it, then use the VIN below.
+              </p>
+              <div className="vin-groups" aria-label={`Dictated VIN ${voiceCandidate}`}>
+                {[0, 3, 9].map(start => {
+                  const end = start === 0 ? 3 : start === 3 ? 9 : 17;
+                  return (
+                    <span key={start} className="vin-group">
+                      {voiceCandidate.slice(start, end).split("").map((c, i) => {
+                        const index = start + i;
+                        return (
+                          <button
+                            key={index}
+                            type="button"
+                            className={"vin-char" + (correctionIndex === index ? " selected" : "")}
+                            onClick={() => {
+                              setCorrectionIndex(index);
+                              setCorrectionValue(voiceCandidate[index]);
+                            }}
+                            aria-label={`Character ${index + 1}: ${c}. Activate to correct.`}
+                          >
+                            {c}
+                          </button>
+                        );
+                      })}
+                    </span>
+                  );
+                })}
+              </div>
+              {correctionIndex !== null && (
+                <div className="vin-correction">
+                  <label>
+                    Fix character {correctionIndex + 1}:
+                    <input
+                      value={correctionValue}
+                      maxLength={1}
+                      onChange={e => {
+                        const v = e.target.value.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/g, "");
+                        setCorrectionValue(v);
+                        if (v) applyCorrection(correctionIndex, v);
+                      }}
+                      style={{ textTransform: "uppercase", width: "3rem", marginLeft: "0.5rem" }}
+                      autoFocus
+                    />
+                  </label>
+                  <button type="button" onClick={() => setCorrectionIndex(null)} style={{ marginLeft: "0.5rem" }}>
+                    Done
+                  </button>
+                </div>
+              )}
+              <div className="actions" style={{ marginTop: "1rem" }}>
+                <button type="button" onClick={discardVoiceCandidate}>Discard</button>
+                <button type="button" className="primary" onClick={useVoiceCandidate}>
+                  Use this VIN
+                </button>
+              </div>
             </div>
-          </label>
+          )}
           <p className="muted" style={{ marginTop: "0.5rem" }}>
-            Paste or type the 17-character VIN. Vehicle details are decoded automatically.
+            Paste, type, or dictate the 17-character VIN. Vehicle details are decoded automatically.
           </p>
         </form>
       ) : (

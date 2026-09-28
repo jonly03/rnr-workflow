@@ -96,3 +96,27 @@ dd { margin: 0; }
 .card dt { color: #94a3b8; }
 .card dd { margin: 0; }
 .workspace-actions { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+
+/* Voice VIN intake */
+.mic-btn { font-size: 1.2rem; padding: 10px 13px; line-height: 1; }
+.mic-btn.listening {
+  background: #7f1d1d;
+  border-color: #ef4444;
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+@keyframes mic-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+.interim { font-style: italic; margin-top: 0.5rem; }
+.vin-confirm { margin-top: 1rem; }
+.vin-groups { display: flex; gap: 0.9rem; margin: 0.75rem 0; flex-wrap: wrap; }
+.vin-group { display: flex; gap: 4px; }
+.vin-char {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1.05rem;
+  min-width: 2.1rem;
+  padding: 6px 4px;
+}
+.vin-char.selected { outline: 3px solid #818cf8; outline-offset: 1px; }
+.vin-correction { margin: 0.5rem 0; }
