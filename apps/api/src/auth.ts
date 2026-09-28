@@ -165,11 +165,19 @@ export async function ensureSeedAdmin(store: CaseStore): Promise<void> {
   if (!email || !password) return;
   const existing = await store.findStaffByEmail(email);
   if (existing) return;
-  await store.createStaffUser({
-    email,
-    name: "Admin",
-    role: "admin",
-    passwordHash: await hashPassword(password)
-  });
+  try {
+    await store.createStaffUser({
+      email,
+      name: "Admin",
+      role: "admin",
+      passwordHash: await hashPassword(password)
+    });
+  } catch (error) {
+    // Another instance may have seeded the same admin concurrently.
+    // Re-check before treating this as a real failure.
+    const raced = await store.findStaffByEmail(email).catch(() => null);
+    if (raced) return;
+    throw error;
+  }
   console.log(`Seeded staff admin account: ${email}`);
 }
