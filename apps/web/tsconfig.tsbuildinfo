@@ -1,1 +1,1 @@
-{"root":["./src/App.test.tsx","./src/App.tsx","./src/api.ts","./src/main.tsx","./src/types.ts","./src/useVinVoice.ts","./src/vin-voice.test.ts","./src/vin-voice.ts","./src/vite-env.d.ts"],"version":"5.9.3"}
+{"root":["./src/App.test.tsx","./src/App.tsx","./src/api.ts","./src/main.tsx","./src/types.ts","./src/vite-env.d.ts"],"version":"5.9.3"}
