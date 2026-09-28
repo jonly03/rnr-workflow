@@ -26,4 +26,6 @@ jobs:
         with:
           node-version: '22'
       - run: npm install
+      - name: Typecheck (covers the Vercel entrypoint server.ts)
+        run: npx tsc --noEmit
       - run: npm test
