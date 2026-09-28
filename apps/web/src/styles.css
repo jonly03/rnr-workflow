@@ -142,3 +142,31 @@ dd { margin: 0; }
 .override-form select { padding: 8px; border-radius: 6px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; }
 .override-form .row { display: flex; gap: 8px; }
 .override-form .error { color: #f87171; font-size: .9rem; }
+
+/* Reorderable case detail cards */
+.sortable-cards { display: grid; gap: 0; }
+.sortable-card { position: relative; }
+.sortable-card .card { margin-bottom: 18px; }
+.drag-handle {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 5;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  color: #64748b;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 8px 6px;
+  letter-spacing: 1px;
+}
+.drag-handle:hover { color: #cbd5e1; }
+.drag-handle:active { cursor: grabbing; }
+.sortable-card.is-dragging .card {
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  border-color: #818cf8;
+  opacity: 0.96;
+}
+.sortable-card.is-dragging .drag-handle { color: #cbd5e1; cursor: grabbing; }
