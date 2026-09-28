@@ -63,7 +63,8 @@ suite("Case Core PostgreSQL adapter", () => {
       .expect(201);
 
     // Phase 2: identification auto-runs after intake (single candidate here).
-    expect(created.body.current_state).toBe("GLASS_IDENTIFIED");
+    // Phase 3: sourcing + pricing auto-advance to PRICE_APPROVED.
+    expect(created.body.current_state).toBe("PRICE_APPROVED");
 
     const restartedApp = await authedApp();
 
