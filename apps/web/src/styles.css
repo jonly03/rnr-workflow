@@ -80,3 +80,19 @@ dd { margin: 0; }
   .actions { flex-direction: column-reverse; }
   .actions button { width: 100%; }
 }
+
+.candidates { display: grid; gap: 8px; margin: 12px 0; }
+.candidate {
+  display: flex; gap: 12px; align-items: flex-start;
+  border: 1px solid #334155; border-radius: 10px; padding: 10px 12px; cursor: pointer;
+}
+.candidate:hover { border-color: #2563eb; }
+.candidate input { margin-top: 4px; }
+.candidate code { color: #e2e8f0; }
+.candidate-list { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 6px; }
+.candidate-list li { border-top: 1px solid #1e293b; padding-top: 6px; font-size: .92rem; }
+.card h3 { margin: 14px 0 4px; font-size: 1rem; }
+.card dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0; }
+.card dt { color: #94a3b8; }
+.card dd { margin: 0; }
+.workspace-actions { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
