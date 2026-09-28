@@ -124,6 +124,47 @@ export interface VinLookupRecord {
   created_at: string;
 }
 
+export type SupplierType = "NATIONAL" | "REGIONAL" | "LOCAL";
+
+/** One supplier offer for an identified glass part. Regional suppliers and
+ *  unavailable stock are excluded from auto-selection (see excluded_reason). */
+export interface SupplierOffer {
+  id: string;
+  case_id: string;
+  glass_request_id: string;
+  supplier_name: string;
+  supplier_type: SupplierType;
+  part_number: string;
+  /** What R&R pays the supplier, in cents. */
+  price_cents: number;
+  available: boolean;
+  quantity: number;
+  lead_time_days: number | null;
+  /** Why this offer was excluded from auto-selection; null if eligible. */
+  excluded_reason: string | null;
+  selected: boolean;
+  created_at: string;
+}
+
+export type PriceStatus = "CALCULATED" | "PROFIT_REVIEW" | "APPROVED" | "REJECTED";
+
+/** A persisted pricing snapshot. The sell price is reproducible from the
+ *  stored inputs + pricing_config; snapshots are never mutated. */
+export interface PriceCalculation {
+  id: string;
+  case_id: string;
+  glass_request_id: string;
+  selected_offer_id: string | null;
+  glass_cost_cents: number;
+  labor_cents: number;
+  profit_cents: number;
+  tax_cents: number;
+  sell_price_cents: number;
+  pricing_config: Record<string, unknown>;
+  status: PriceStatus;
+  created_at: string;
+}
+
 export interface StoreShape {
   cases: CaseRecord[];
   vehicles: Vehicle[];
@@ -134,4 +175,6 @@ export interface StoreShape {
   approval_tokens: ApprovalTokenRecord[];
   glass_identifications: GlassIdentification[];
   vin_lookups: VinLookupRecord[];
+  supplier_offers: SupplierOffer[];
+  price_calculations: PriceCalculation[];
 }

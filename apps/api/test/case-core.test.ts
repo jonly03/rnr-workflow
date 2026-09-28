@@ -54,7 +54,8 @@ describe("Case Core API", () => {
 
     expect(create.body.reference).toMatch(/^RRA-\d{6}$/);
     // Phase 2: identification auto-runs after intake (single candidate here).
-    expect(create.body.current_state).toBe("GLASS_IDENTIFIED");
+    // Phase 3: sourcing + pricing auto-advance from GLASS_IDENTIFIED.
+    expect(create.body.current_state).toBe("PRICE_APPROVED");
     expect(create.body.channel).toBe("DIRECT");
     expect(create.body.vehicle.vin).toBe(input.vehicle.vin);
 
@@ -63,7 +64,8 @@ describe("Case Core API", () => {
       .expect(200);
 
     // Phase 2: CASE_CREATED plus the automatic identification event trail.
-    expect(events.body).toHaveLength(5);
+    // Phase 3: sourcing + pricing auto-advance from GLASS_IDENTIFIED.
+    expect(events.body).toHaveLength(11);
     expect(events.body[0]).toMatchObject({
       sequence: 1,
       event_type: "CASE_CREATED",
@@ -76,7 +78,13 @@ describe("Case Core API", () => {
       "START_IDENTIFICATION",
       "YMM_RESULTS_RETURNED",
       "EVALUATE_GLASS_MATCHES",
-      "GLASS_RESOLVED"
+      "GLASS_RESOLVED",
+      "START_SOURCING",
+      "SUPPLIER_OFFERS_RETURNED",
+      "EVALUATE_OFFERS",
+      "ELIGIBLE_OFFER_SELECTED",
+      "START_PRICING",
+      "STANDARD_PRICE_CALCULATED"
     ]);
   });
 
@@ -123,8 +131,9 @@ describe("Case Core API", () => {
       .expect(409);
 
     const detail = await authed.get(`/api/v1/cases/${create.body.id}`).expect(200);
-    // Phase 2: arbitrary actions stay rejected; state is the identified one.
-    expect(detail.body.current_state).toBe("GLASS_IDENTIFIED");
+    // Phase 2: arbitrary actions stay rejected.
+    // Phase 3: state is the priced one after the automatic chain.
+    expect(detail.body.current_state).toBe("PRICE_APPROVED");
   });
 
   it("returns validation errors without persisting partial data", async () => {

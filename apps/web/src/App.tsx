@@ -401,6 +401,10 @@ function CaseDetail({
 
       <IdentificationSummary item={item} />
 
+      <SourcingSummary item={item} />
+
+      <PricingSummary item={item} />
+
       <section className="card timeline">
         <h2>Activity</h2>
         {loading ? <p>Loading activity…</p> : events.length === 0 ? (
@@ -421,9 +425,70 @@ function CaseDetail({
   );
 }
 
+/** Profit review: R&R sets the profit for low-cost glass (or accepts the
+ *  proposed one) or declines the job. */
+function ProfitReviewBody({
+  item,
+  run,
+  busy
+}: {
+  item: CaseRecord;
+  run: (action: string, extra?: Record<string, unknown>) => Promise<void>;
+  busy: boolean;
+}) {
+  const [profitDollars, setProfitDollars] = useState("");
+  const calc = item.price_calculation;
+  if (!calc) return <p>No pricing data available.</p>;
+
+  const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+  const parsed = profitDollars.trim() === "" ? null : Math.round(Number(profitDollars) * 100);
+  const profitValid = parsed === null || (Number.isInteger(parsed) && parsed >= 0);
+
+  return (
+    <>
+      <p>
+        The glass cost is below the standard pricing threshold, so the profit
+        needs your judgment. The proposed breakdown:
+      </p>
+      <dl>
+        <dt>Glass cost</dt><dd>{fmt(calc.glass_cost_cents)}</dd>
+        <dt>Labor</dt><dd>{fmt(calc.labor_cents)}</dd>
+        <dt>Proposed profit</dt><dd>{fmt(calc.profit_cents)}</dd>
+        <dt>Tax (6.25% of glass)</dt><dd>{fmt(calc.tax_cents)}</dd>
+        <dt><strong>Proposed sell price</strong></dt>
+        <dd><strong>{fmt(calc.sell_price_cents)}</strong></dd>
+      </dl>
+      <label>
+        Adjusted profit ($, optional):
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={profitDollars}
+          onChange={e => setProfitDollars(e.target.value)}
+          placeholder={fmt(calc.profit_cents)}
+        />
+      </label>
+      {!profitValid && <div className="alert">Profit must be a non-negative dollar amount.</div>}
+      <div className="workspace-actions">
+        <button
+          className="primary"
+          disabled={busy || !profitValid}
+          onClick={() => run("approve_price", parsed === null ? {} : { profit_cents: parsed })}
+        >
+          {busy ? "Approving…" : "Approve price"}
+        </button>
+        <button disabled={busy} onClick={() => run("reject_price")}>
+          Decline job
+        </button>
+      </div>
+    </>
+  );
+}
+
 /** The staff workspace for the current workflow step. Phase 2 fills the
- *  glass-identification steps; other steps show the standby message until
- *  their business contracts land. */
+ *  glass-identification steps; Phase 3 fills sourcing/pricing; other steps
+ *  show the standby message until their business contracts land. */
 function IdentificationWorkspace({
   item,
   onRefresh
@@ -522,6 +587,24 @@ function IdentificationWorkspace({
         </>
       );
       break;
+    case "NO_ELIGIBLE_INVENTORY":
+      body = (
+        <>
+          <p>
+            No supplier had eligible stock for the identified part. Regional
+            suppliers are excluded from automatic quoting.
+          </p>
+          <div className="workspace-actions">
+            <button className="primary" disabled={busy} onClick={() => run("retry_sourcing")}>
+              {busy ? "Retrying…" : "Retry sourcing"}
+            </button>
+          </div>
+        </>
+      );
+      break;
+    case "PROFIT_REVIEW_REQUIRED":
+      body = <ProfitReviewBody item={item} run={run} busy={busy} />;
+      break;
     default:
       body = (
         <>
@@ -570,6 +653,60 @@ function IdentificationSummary({ item }: { item: CaseRecord }) {
           </ul>
         </>
       )}
+    </section>
+  );
+}
+
+function SourcingSummary({ item }: { item: CaseRecord }) {
+  const offers = item.supplier_offers ?? [];
+  if (offers.length === 0) return null;
+  const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+  const selected = offers.find(o => o.selected);
+  return (
+    <section className="card" style={{ marginBottom: 18 }}>
+      <h2>Supplier sourcing</h2>
+      {selected && (
+        <p>
+          Selected: <strong>{selected.supplier_name}</strong> —{" "}
+          <code>{selected.part_number}</code> at {fmt(selected.price_cents)}
+          {selected.lead_time_days !== null && ` (${selected.lead_time_days}d lead)`}
+        </p>
+      )}
+      <h3>Offers ({offers.length})</h3>
+      <ul className="candidate-list">
+        {offers.map(o => (
+          <li key={o.id}>
+            <strong>{o.supplier_name}</strong>{" "}
+            <small>({o.supplier_type})</small> — {fmt(o.price_cents)}
+            {o.available ? ` · ${o.quantity} in stock` : " · unavailable"}
+            {o.selected && " ✓ selected"}
+            {o.excluded_reason && (
+              <div><small>Excluded: {o.excluded_reason}</small></div>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function PricingSummary({ item }: { item: CaseRecord }) {
+  const calc = item.price_calculation;
+  if (!calc) return null;
+  const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+  return (
+    <section className="card" style={{ marginBottom: 18 }}>
+      <h2>Pricing</h2>
+      <dl>
+        <dt>Glass cost</dt><dd>{fmt(calc.glass_cost_cents)}</dd>
+        <dt>Labor</dt><dd>{fmt(calc.labor_cents)}</dd>
+        <dt>Profit</dt><dd>{fmt(calc.profit_cents)}</dd>
+        <dt>Tax (6.25% of glass)</dt><dd>{fmt(calc.tax_cents)}</dd>
+        <dt><strong>Sell price</strong></dt>
+        <dd><strong>{fmt(calc.sell_price_cents)}</strong></dd>
+        <dt>Status</dt><dd>{humanize(calc.status)}</dd>
+      </dl>
+      <small>Supplier costs and margins are staff-only; never shown to customers.</small>
     </section>
   );
 }
