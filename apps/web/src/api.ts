@@ -115,6 +115,18 @@ export function getCaseEvents(id: string) {
   );
 }
 
+export function performAction(
+  caseId: string,
+  action: string,
+  extra: Record<string, unknown> = {}
+) {
+  return fetch(`${API_BASE}/cases/${caseId}/actions`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ action, ...extra })
+  }).then(json<CaseRecord>);
+}
+
 export function createCase(input: CreateCaseInput) {
   const idempotencyKey = crypto.randomUUID();
   return fetch(`${API_BASE}/cases`, {

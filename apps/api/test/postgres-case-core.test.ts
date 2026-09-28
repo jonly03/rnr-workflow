@@ -14,7 +14,7 @@ suite("Case Core PostgreSQL adapter", () => {
     process.env.DATABASE_SSL_MODE = "disable";
     const pool = createPool(url!);
     await pool.query(
-      "truncate table case_create_idempotency, case_events, glass_requests, cases, vehicles, customers, staff_users restart identity cascade"
+      "truncate table case_create_idempotency, case_events, glass_identifications, vin_lookups, approval_tokens, glass_requests, cases, vehicles, customers, staff_users restart identity cascade"
     );
     const seedPool = createPool(url!);
     const seedStore = new (await import("../src/pg-store.js")).PgCaseStore(seedPool);
@@ -62,7 +62,8 @@ suite("Case Core PostgreSQL adapter", () => {
       .send(input)
       .expect(201);
 
-    expect(created.body.current_state).toBe("REQUEST_RECEIVED");
+    // Phase 2: identification auto-runs after intake (single candidate here).
+    expect(created.body.current_state).toBe("GLASS_IDENTIFIED");
 
     const restartedApp = await authedApp();
 
@@ -72,12 +73,16 @@ suite("Case Core PostgreSQL adapter", () => {
 
     expect(detail.body.reference).toBe(created.body.reference);
     expect(detail.body.vehicle.vin).toBe(input.vehicle.vin);
+    expect(detail.body.glass_identification).toMatchObject({
+      method: "YMM",
+      status: "RESOLVED"
+    });
 
     const events = await restartedApp
       .get(`/api/v1/cases/${created.body.id}/events`)
       .expect(200);
 
-    expect(events.body).toHaveLength(1);
+    expect(events.body).toHaveLength(5);
     expect(events.body[0]).toMatchObject({
       sequence: 1,
       event_type: "CASE_CREATED"

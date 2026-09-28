@@ -19,6 +19,26 @@ export interface GlassRequest {
   glass_type: GlassType;
 }
 
+export interface GlassCandidate {
+  part_number: string;
+  description: string;
+  features: string[];
+  position: GlassType;
+  list_price_cents: number;
+}
+
+export interface GlassIdentification {
+  id: string;
+  case_id: string;
+  glass_request_id: string;
+  method: "YMM" | "VIN";
+  status: "CANDIDATES_FOUND" | "AMBIGUOUS" | "RESOLVED" | "FAILED";
+  provider: string;
+  candidates: GlassCandidate[];
+  selected_candidate: GlassCandidate | null;
+  created_at: string;
+}
+
 export interface CaseRecord {
   id: string;
   reference: string;
@@ -27,6 +47,7 @@ export interface CaseRecord {
   customer_id: string | null;
   vehicle: Vehicle;
   glass_request: GlassRequest;
+  glass_identification: GlassIdentification | null;
   created_at: string;
   updated_at: string;
 }

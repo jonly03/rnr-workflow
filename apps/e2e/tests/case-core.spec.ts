@@ -71,8 +71,11 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
   await expect(page.getByTestId("case-channel")).toHaveText("DIRECT");
   await expect(page.getByText("2018 Jeep Wrangler")).toBeVisible();
   await expect(page.getByText("1C4HJXEG3JW224862")).toBeVisible();
-  await expect(page.getByText("Request Received")).toBeVisible();
-  await expect(page.getByText("REQUEST_RECEIVED")).toBeVisible();
+  // Phase 2: identification auto-runs after intake; the 2018 Jeep Wrangler
+  // resolves to a single catalog candidate.
+  await expect(page.getByText("Glass Identified")).toBeVisible();
+  await expect(page.getByText("GLASS_IDENTIFIED")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Glass identification" })).toBeVisible();
 
   await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible();
   await expect(page.getByText("CASE_CREATED")).toBeVisible();
