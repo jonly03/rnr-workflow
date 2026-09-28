@@ -425,48 +425,54 @@ function VinFirstCase({
       {!decoded ? (
         <form onSubmit={handleDecode}>
           <label htmlFor="vin-input">VIN</label>
-          <div style={{ display: "flex", gap: "0.5rem" }}>
+          <div className="vin-input-methods">
             {voice.supported && (
               <button
                 type="button"
-                className={"mic-btn" + (voice.status === "listening" ? " listening" : "")}
+                className={"input-method" + (voice.status === "listening" ? " listening" : "")}
                 onClick={() => (voice.status === "listening" ? voice.stop() : voice.start())}
                 aria-label={voice.status === "listening" ? "Stop dictating VIN" : "Dictate VIN by voice"}
                 title={voice.status === "listening" ? "Stop" : "Dictate the VIN"}
               >
-                {voice.status === "listening" ? "⏹" : "🎤"}
+                <span className="input-method-icon" aria-hidden="true">
+                  {voice.status === "listening" ? "⏹" : "🎤"}
+                </span>
+                <span>{voice.status === "listening" ? "Stop" : "Dictate"}</span>
               </button>
             )}
-            <input
-              id="vin-input"
-              value={vinInput}
-              onChange={e => setVinInput(e.target.value.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/gi, ""))}
-              placeholder="17-character VIN"
-              maxLength={17}
-              style={{ textTransform: "uppercase", flex: 1 }}
-              autoFocus
-            />
             <button
               type="button"
+              className="input-method"
               onClick={() => fileInputRef.current?.click()}
               disabled={ocrScanning}
               title="Upload a photo of the VIN"
               aria-label="Upload a photo of the VIN"
             >
-              {ocrScanning ? "…" : "📷"}
+              <span className="input-method-icon" aria-hidden="true">
+                {ocrScanning ? "…" : "📷"}
+              </span>
+              <span>{ocrScanning ? "Scanning…" : "Scan"}</span>
             </button>
             <input
               ref={fileInputRef}
               type="file"
               accept="image/*"
-              capture="environment"
               style={{ display: "none" }}
               onChange={handlePhotoSelected}
             />
-            <button className="primary" type="submit" disabled={decoding || vinInput.trim().length !== 17}>
-              {decoding ? "Decoding…" : "Decode"}
-            </button>
           </div>
+          <input
+            id="vin-input"
+            value={vinInput}
+            onChange={e => setVinInput(e.target.value.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/gi, ""))}
+            placeholder="17-character VIN"
+            maxLength={17}
+            style={{ textTransform: "uppercase", width: "100%" }}
+            autoFocus
+          />
+          <button className="primary vin-decode-btn" type="submit" disabled={decoding || vinInput.trim().length !== 17}>
+            {decoding ? "Decoding…" : "Decode VIN"}
+          </button>
           {voice.status === "listening" && (
             <p className="muted interim" role="status">
               Listening… speak the VIN one character at a time.
