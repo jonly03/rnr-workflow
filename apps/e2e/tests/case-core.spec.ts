@@ -41,12 +41,12 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
 
   await page.getByRole("button", { name: /New Case/i }).click();
 
-  await page.getByLabel("Channel").selectOption("DIRECT");
-  await page.getByLabel("Year").fill("2018");
-  await page.getByLabel("Make").fill("Jeep");
-  await page.getByLabel("Model").fill("Wrangler");
+  // VIN-first flow: paste VIN, decode via NHTSA, pick glass, create.
   await page.getByLabel("VIN").fill("1C4HJXEG3JW224862");
-  await page.getByLabel("Requested glass type").selectOption("WINDSHIELD");
+  await page.getByRole("button", { name: "Decode" }).click();
+  // NHTSA decodes this VIN to 2018 Jeep Wrangler (make arrives uppercase).
+  await expect(page.getByText(/2018 jeep wrangler/i)).toBeVisible();
+  await page.getByRole("button", { name: "Windshield" }).click();
 
   const createResponsePromise = page.waitForResponse(
     response =>
@@ -70,8 +70,9 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
   await expect(page.getByRole("heading", { name: "Vehicle / Service" })).toBeVisible();
   await expect(page.getByTestId("case-channel")).toHaveText("DIRECT");
   // Exact match: the identification summary also shows the candidate
-  // description ("2018 Jeep Wrangler Windshield"), which contains this string.
-  await expect(page.getByText("2018 Jeep Wrangler", { exact: true })).toBeVisible();
+  // description ("2018 JEEP Wrangler Windshield"), which contains this string.
+  // NHTSA returns the make uppercase, so match case-insensitively.
+  await expect(page.getByText(/2018 jeep wrangler/i).first()).toBeVisible();
   await expect(page.getByText("1C4HJXEG3JW224862")).toBeVisible();
   // Phase 2: identification auto-runs after intake; the 2018 Jeep Wrangler
   // resolves to a single catalog candidate.
@@ -93,13 +94,13 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
   await expect(page.getByRole("heading", { name: "Case Queue" })).toBeVisible();
   const caseCard = page.locator(".case-card", { hasText: reference! });
   await expect(caseCard).toBeVisible();
-  await expect(caseCard.getByText("2018 Jeep Wrangler", { exact: true })).toBeVisible();
+  await expect(caseCard.getByText(/2018 jeep wrangler/i)).toBeVisible();
 
   await page.reload();
 
   await expect(page.getByRole("heading", { name: "Case Queue" })).toBeVisible();
   await expect(caseCard).toBeVisible();
-  await expect(caseCard.getByText("2018 Jeep Wrangler", { exact: true })).toBeVisible();
+  await expect(caseCard.getByText(/2018 jeep wrangler/i)).toBeVisible();
 });
 
 test("Case Core browser path does not expose paid VIN lookup action", async ({ page }) => {
