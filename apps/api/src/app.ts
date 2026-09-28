@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { CaseRecord } from "./types.js";
 import type { CaseStore } from "./store.js";
 import {
+  ensureSeedAdmin,
   requireAuth,
   signToken,
   verifyPassword,
@@ -62,6 +63,11 @@ export function createApp(store: CaseStore, authConfig: AuthConfig) {
         }
       });
     }
+
+    // Seed the admin inside the request lifecycle: cold-start seeding is
+    // unreliable on serverless (the DB connection can die across the
+    // init/request freeze boundary), so guarantee the account exists here.
+    await ensureSeedAdmin(store);
 
     const record = await store.findStaffByEmail(parsed.data.email);
     const valid =
