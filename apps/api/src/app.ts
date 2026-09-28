@@ -1,11 +1,13 @@
 import express from "express";
 import cors from "cors";
+import multer from "multer";
 import { z } from "zod";
 import type { CaseRecord, Channel, StaffUser } from "./types.js";
 import type { CaseStore } from "./store.js";
 import type { GlassCatalogProvider } from "./glass-catalog.js";
 import { MockGlassCatalogProvider } from "./glass-catalog.js";
 import { decodeVinNhtsa, VinDecodeError } from "./vin-decode.js";
+import { ocrVinFromImage, OcrError } from "./vin-ocr.js";
 import {
   IdentificationError,
   markGlassUnidentifiable,
@@ -242,6 +244,53 @@ export function createApp(
       throw error;
     }
   });
+
+  /**
+   * VIN OCR: extract a VIN candidate from a photo (dashboard plate,
+   * registration, etc.). Returns the candidate for staff confirmation —
+   * the caller should feed the confirmed VIN into /vin/decode.
+   * Staff-only. Multipart upload, field name "photo", max 10MB.
+   */
+  const vinPhotoUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 10 * 1024 * 1024, files: 1 }
+  });
+  app.post(
+    "/api/v1/vin/ocr",
+    auth,
+    vinPhotoUpload.single("photo"),
+    async (req, res) => {
+      try {
+        const buffer = req.file?.buffer;
+        if (!buffer) {
+          return res.status(422).json({
+            error: {
+              code: "VIN_OCR_NO_PHOTO",
+              message: "Attach a photo in the 'photo' field."
+            }
+          });
+        }
+        const result = await ocrVinFromImage(buffer);
+        if (!result.vin) {
+          return res.status(422).json({
+            error: {
+              code: "VIN_OCR_NOT_FOUND",
+              message:
+                "No VIN found in the photo. Try a clearer shot of the VIN plate or type the VIN manually."
+            }
+          });
+        }
+        res.json({ vin: result.vin });
+      } catch (error) {
+        if (error instanceof OcrError) {
+          return res.status(422).json({
+            error: { code: "VIN_OCR_FAILED", message: error.message }
+          });
+        }
+        throw error;
+      }
+    }
+  );
 
   // All case routes require staff authentication.
   app.use("/api/v1/cases", auth);

@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   createCase,
   decodeVin,
@@ -9,6 +9,7 @@ import {
   listCases,
   login,
   logout,
+  ocrVinPhoto,
   performAction,
   UnauthorizedError,
   type DecodedVehicle,
@@ -365,6 +366,28 @@ function VinFirstCase({
     setError("");
   };
 
+  // Photo OCR state: a VIN read from an uploaded photo, awaiting confirmation.
+  const [ocrScanning, setOcrScanning] = useState(false);
+  const [ocrVin, setOcrVin] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handlePhotoSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setError("");
+    setOcrVin(null);
+    setOcrScanning(true);
+    try {
+      const result = await ocrVinPhoto(file);
+      setOcrVin(result.vin);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not read VIN from photo.");
+    } finally {
+      setOcrScanning(false);
+    }
+  };
+
   const handleCreate = async () => {
     if (!decoded) return;
     setError("");
@@ -422,6 +445,23 @@ function VinFirstCase({
               maxLength={17}
               style={{ textTransform: "uppercase", flex: 1 }}
               autoFocus
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={ocrScanning}
+              title="Upload a photo of the VIN"
+              aria-label="Upload a photo of the VIN"
+            >
+              {ocrScanning ? "…" : "📷"}
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              style={{ display: "none" }}
+              onChange={handlePhotoSelected}
             />
             <button className="primary" type="submit" disabled={decoding || vinInput.trim().length !== 17}>
               {decoding ? "Decoding…" : "Decode"}
@@ -495,8 +535,31 @@ function VinFirstCase({
               </div>
             </div>
           )}
+          {ocrScanning && (
+            <div className="alert" role="status">Reading VIN from photo…</div>
+          )}
+          {ocrVin && (
+            <div className="card" style={{ marginTop: "0.75rem", padding: "0.75rem 1rem" }}>
+              <p style={{ margin: "0 0 0.5rem" }}>
+                Found VIN: <strong style={{ fontFamily: "ui-monospace, monospace" }}>{ocrVin}</strong>
+              </p>
+              <p className="muted" style={{ margin: "0 0 0.5rem" }}>
+                Check it matches the photo before continuing.
+              </p>
+              <div className="actions">
+                <button type="button" onClick={() => setOcrVin(null)}>Retake</button>
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() => { setVinInput(ocrVin); setOcrVin(null); }}
+                >
+                  Use this VIN
+                </button>
+              </div>
+            </div>
+          )}
           <p className="muted" style={{ marginTop: "0.5rem" }}>
-            Paste, type, or dictate the 17-character VIN. Vehicle details are decoded automatically.
+            Paste, type, dictate, or tap 📷 to scan the 17-character VIN. Vehicle details are decoded automatically.
           </p>
         </form>
       ) : (
