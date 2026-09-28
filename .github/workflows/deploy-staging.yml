@@ -115,14 +115,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          response="$(curl --show-error --silent \
+          # Build the JSON body with python so special characters in the
+          # credentials cannot break the request payload.
+          body="$(STAFF_ADMIN_EMAIL="$STAFF_ADMIN_EMAIL" \
+            STAFF_ADMIN_PASSWORD="$STAFF_ADMIN_PASSWORD" \
+            python3 -c 'import json,os; print(json.dumps({"email": os.environ["STAFF_ADMIN_EMAIL"], "password": os.environ["STAFF_ADMIN_PASSWORD"]}))')"
+          http_code="$(curl --show-error --silent \
+            -o /tmp/staging-login.json \
+            -w '%{http_code}' \
             -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
             -H "content-type: application/json" \
-            --data "{\"email\":\"$STAFF_ADMIN_EMAIL\",\"password\":\"$STAFF_ADMIN_PASSWORD\"}" \
+            --data "$body" \
             "$API_URL/api/v1/auth/login")"
-          token="$(echo "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
+          echo "Login HTTP status: $http_code"
+          if [ "$http_code" != "200" ]; then
+            echo "Login response body:"
+            cat /tmp/staging-login.json || true
+            exit 1
+          fi
+          token="$(python3 -c 'import json; print(json.load(open("/tmp/staging-login.json"))["token"])')"
           if [ -z "$token" ]; then
-            echo "Staff login failed: $response" >&2
+            echo "Staff login failed: no token in response" >&2
+            cat /tmp/staging-login.json || true
             exit 1
           fi
           echo "SMOKE_TOKEN=$token" >> "$GITHUB_ENV"
