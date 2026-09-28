@@ -13,6 +13,20 @@ import {
   selectGlassCandidate
 } from "./glass-identification.js";
 import {
+  MockSourcingProvider,
+  runSourcing,
+  SourcingError,
+  type SourcingProvider
+} from "./sourcing.js";
+import {
+  approvePrice,
+  loadPricingConfig,
+  PricingError,
+  rejectPrice,
+  runPricing,
+  type PricingConfig
+} from "./pricing.js";
+import {
   ensureSeedAdmin,
   requireAuth,
   signToken,
@@ -62,6 +76,14 @@ export interface AppDeps {
    * no charges). The live MyGrant provider implements the same interface.
    */
   glassCatalog?: GlassCatalogProvider;
+  /**
+   * Supplier sourcing provider. Defaults to the deterministic mock (no
+   * network, no charges). A live supplier integration implements the same
+   * interface.
+   */
+  sourcingProvider?: SourcingProvider;
+  /** Pricing configuration override (for tests). Defaults to env vars. */
+  pricingConfig?: PricingConfig;
 }
 
 export function createApp(
@@ -71,6 +93,8 @@ export function createApp(
   deps: AppDeps = {}
 ) {
   const glassCatalog = deps.glassCatalog ?? new MockGlassCatalogProvider();
+  const sourcingProvider = deps.sourcingProvider ?? new MockSourcingProvider();
+  const pricingConfig = deps.pricingConfig ?? loadPricingConfig();
   const app = express();
 
   // Trust the first proxy hop (Vercel edge / web proxy) so req.ip reflects the
@@ -120,7 +144,33 @@ export function createApp(
     const glass_identification = glass_request
       ? await store.getLatestGlassIdentification(glass_request.id)
       : null;
-    return { ...c, vehicle, glass_request, glass_identification };
+    const supplier_offers = glass_request
+      ? await store.listSupplierOffers(glass_request.id)
+      : [];
+    const price_calculation = glass_request
+      ? await store.getLatestPriceCalculation(glass_request.id)
+      : null;
+    return { ...c, vehicle, glass_request, glass_identification, supplier_offers, price_calculation };
+  };
+
+  /**
+   * Advances the automatic workflow chain after a state change:
+   * GLASS_IDENTIFIED → sourcing → GLASS_SELECTED → pricing.
+   * Staff-driven states (NO_ELIGIBLE_INVENTORY, PROFIT_REVIEW_REQUIRED)
+   * wait for explicit R&R actions.
+   */
+  const advanceWorkflow = async (caseId: string): Promise<void> => {
+    const c = await store.getCase(caseId);
+    if (!c) return;
+    if (c.current_state === "GLASS_IDENTIFIED") {
+      await runSourcing(store, sourcingProvider, caseId);
+      const after = await store.getCase(caseId);
+      if (after?.current_state === "GLASS_SELECTED") {
+        await runPricing(store, pricingConfig, caseId);
+      }
+    } else if (c.current_state === "GLASS_SELECTED") {
+      await runPricing(store, pricingConfig, caseId);
+    }
   };
 
   app.get("/health", async (_req, res) => {
@@ -228,8 +278,10 @@ export function createApp(
     // Glass identification starts automatically after valid intake
     // (workflow-spec §4). The mock provider is synchronous-fast; a live
     // provider would move this to background processing.
+    // Phase 3: sourcing + pricing advance automatically from GLASS_IDENTIFIED.
     if (!result.reused) {
       await runIdentification(store, glassCatalog, result.caseRecord.id);
+      await advanceWorkflow(result.caseRecord.id);
     }
 
     const fresh = (await store.getCase(result.caseRecord.id)) ?? result.caseRecord;
@@ -273,12 +325,15 @@ export function createApp(
       switch (action) {
         case "start_identification":
           await runIdentification(store, glassCatalog, c.id, "START_IDENTIFICATION", staffActor);
+          await advanceWorkflow(c.id);
           break;
         case "retry_identification":
           await runIdentification(store, glassCatalog, c.id, "RETRY_IDENTIFICATION", staffActor);
+          await advanceWorkflow(c.id);
           break;
         case "request_vin_lookup":
           await requestVinLookup(store, glassCatalog, c.id, staffActor);
+          await advanceWorkflow(c.id);
           break;
         case "select_glass_candidate": {
           const partNumber = req.body?.part_number;
@@ -288,10 +343,32 @@ export function createApp(
             });
           }
           await selectGlassCandidate(store, c.id, partNumber.trim(), staffActor);
+          await advanceWorkflow(c.id);
           break;
         }
         case "mark_glass_unidentifiable":
           await markGlassUnidentifiable(store, c.id, staffActor);
+          break;
+        case "retry_sourcing":
+          await runSourcing(store, sourcingProvider, c.id, "RETRY_SOURCING", staffActor);
+          await advanceWorkflow(c.id);
+          break;
+        case "approve_price": {
+          const profit = req.body?.profit_cents;
+          const profitCents =
+            profit === undefined || profit === null ? null :
+            typeof profit === "number" ? profit :
+            null;
+          if (profit !== undefined && profit !== null && profitCents === null) {
+            return res.status(422).json({
+              error: { code: "VALIDATION_ERROR", message: "profit_cents must be a number (cents) or omitted." }
+            });
+          }
+          await approvePrice(store, pricingConfig, c.id, profitCents, staffActor);
+          break;
+        }
+        case "reject_price":
+          await rejectPrice(store, c.id, staffActor);
           break;
         default:
           return res.status(409).json({
@@ -303,6 +380,16 @@ export function createApp(
       }
     } catch (error) {
       if (error instanceof IdentificationError) {
+        return res.status(error.httpStatus).json({
+          error: { code: error.code, message: error.message }
+        });
+      }
+      if (error instanceof SourcingError) {
+        return res.status(error.httpStatus).json({
+          error: { code: error.code, message: error.message }
+        });
+      }
+      if (error instanceof PricingError) {
         return res.status(error.httpStatus).json({
           error: { code: error.code, message: error.message }
         });

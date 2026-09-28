@@ -63,7 +63,8 @@ suite("Case Core PostgreSQL adapter", () => {
       .expect(201);
 
     // Phase 2: identification auto-runs after intake (single candidate here).
-    expect(created.body.current_state).toBe("GLASS_IDENTIFIED");
+    // Phase 3: sourcing + pricing auto-advance to PRICE_APPROVED.
+    expect(created.body.current_state).toBe("PRICE_APPROVED");
 
     const restartedApp = await authedApp();
 
@@ -82,7 +83,9 @@ suite("Case Core PostgreSQL adapter", () => {
       .get(`/api/v1/cases/${created.body.id}/events`)
       .expect(200);
 
-    expect(events.body).toHaveLength(5);
+    // Phase 2: CASE_CREATED + identification events.
+    // Phase 3: sourcing + pricing auto-advance adds 6 more events (11 total).
+    expect(events.body).toHaveLength(11);
     expect(events.body[0]).toMatchObject({
       sequence: 1,
       event_type: "CASE_CREATED"

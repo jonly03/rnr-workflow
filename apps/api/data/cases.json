@@ -1,0 +1,22 @@
+{
+  "cases": [],
+  "vehicles": [],
+  "glass_requests": [],
+  "events": [],
+  "idempotency": {},
+  "staff_users": [
+    {
+      "id": "6a86528b-c217-40e2-8179-4c997a13f666",
+      "email": "e2e@example.com",
+      "name": "Admin",
+      "role": "admin",
+      "password_hash": "scrypt$94f7598a0da229f4d85c2b155ac22036$e7a83cc80e16df5ded56b83caf5c443f6c0fa982c22e83f83fa4cd5e51f60b82e72c746851782ae4f35d501bf073b9f893357979a0a971981a398ba771fd871d",
+      "created_at": "2026-09-28T20:04:45.811Z"
+    }
+  ],
+  "approval_tokens": [],
+  "glass_identifications": [],
+  "vin_lookups": [],
+  "supplier_offers": [],
+  "price_calculations": []
+}

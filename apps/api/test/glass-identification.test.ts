@@ -73,7 +73,7 @@ describe("Glass Identification", () => {
     const f = await fixture();
     const res = await f.createCase().expect(201);
 
-    expect(res.body.current_state).toBe("GLASS_IDENTIFIED");
+    expect(res.body.current_state).toBe("PRICE_APPROVED");
     expect(res.body.glass_identification).toMatchObject({
       method: "YMM",
       status: "RESOLVED",
@@ -109,7 +109,7 @@ describe("Glass Identification", () => {
     const created = await f.createCase({ model: "Ambiguous" }).expect(201);
 
     const res = await act(f, created.body.id, "request_vin_lookup").expect(200);
-    expect(res.body.current_state).toBe("GLASS_IDENTIFIED");
+    expect(res.body.current_state).toBe("PRICE_APPROVED");
     expect(res.body.glass_identification).toMatchObject({ method: "VIN", status: "RESOLVED" });
     expect(f.provider.vinLookups).toBe(1);
 
@@ -133,7 +133,7 @@ describe("Glass Identification", () => {
     const second = await f.createCase({ model: "Ambiguous" }).expect(201);
     expect(second.body.current_state).toBe("VIN_LOOKUP_REQUIRED");
     const res = await act(f, second.body.id, "request_vin_lookup").expect(200);
-    expect(res.body.current_state).toBe("GLASS_IDENTIFIED");
+    expect(res.body.current_state).toBe("PRICE_APPROVED");
     expect(f.provider.vinLookups).toBe(1);
 
     const events = await request(f.app)
@@ -169,7 +169,7 @@ describe("Glass Identification", () => {
     const selected = await act(f, res.body.id, "select_glass_candidate", {
       part_number: partNumber
     }).expect(200);
-    expect(selected.body.current_state).toBe("GLASS_IDENTIFIED");
+    expect(selected.body.current_state).toBe("PRICE_APPROVED");
     expect(selected.body.glass_identification.selected_candidate.part_number).toBe(partNumber);
     expect(selected.body.glass_identification.status).toBe("RESOLVED");
   });

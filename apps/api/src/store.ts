@@ -11,9 +11,13 @@ import type {
   GlassRequest,
   IdentificationMethod,
   IdentificationStatus,
+  PriceCalculation,
+  PriceStatus,
   StaffUser,
   StaffUserRecord,
   StoreShape,
+  SupplierOffer,
+  SupplierType,
   Vehicle,
   VinLookupRecord
 } from "./types.js";
@@ -68,6 +72,33 @@ export interface SaveVinLookupInput {
   result: Record<string, unknown>;
 }
 
+export interface SaveSupplierOfferInput {
+  caseId: string;
+  glassRequestId: string;
+  supplierName: string;
+  supplierType: SupplierType;
+  partNumber: string;
+  priceCents: number;
+  available: boolean;
+  quantity: number;
+  leadTimeDays: number | null;
+  excludedReason: string | null;
+  selected: boolean;
+}
+
+export interface SavePriceCalculationInput {
+  caseId: string;
+  glassRequestId: string;
+  selectedOfferId: string | null;
+  glassCostCents: number;
+  laborCents: number;
+  profitCents: number;
+  taxCents: number;
+  sellPriceCents: number;
+  pricingConfig: Record<string, unknown>;
+  status: PriceStatus;
+}
+
 export interface CaseStore {
   health(): Promise<void>;
   listCases(): Promise<CaseRecord[]>;
@@ -87,6 +118,11 @@ export interface CaseStore {
   getLatestGlassIdentification(glassRequestId: string): Promise<GlassIdentification | null>;
   findVinLookup(vin: string): Promise<VinLookupRecord | null>;
   saveVinLookup(input: SaveVinLookupInput): Promise<void>;
+  saveSupplierOffer(input: SaveSupplierOfferInput): Promise<SupplierOffer>;
+  listSupplierOffers(glassRequestId: string): Promise<SupplierOffer[]>;
+  selectSupplierOffer(offerId: string): Promise<void>;
+  savePriceCalculation(input: SavePriceCalculationInput): Promise<PriceCalculation>;
+  getLatestPriceCalculation(glassRequestId: string): Promise<PriceCalculation | null>;
 }
 
 const emptyStore = (): StoreShape => ({
@@ -98,7 +134,9 @@ const emptyStore = (): StoreShape => ({
   staff_users: [],
   approval_tokens: [],
   glass_identifications: [],
-  vin_lookups: []
+  vin_lookups: [],
+  supplier_offers: [],
+  price_calculations: []
 });
 
 export class JsonCaseStore implements CaseStore {
@@ -363,5 +401,75 @@ export class JsonCaseStore implements CaseStore {
       next.vin_lookups.push(record);
     }
     this.persist(next);
+  }
+
+  async saveSupplierOffer(input: SaveSupplierOfferInput): Promise<SupplierOffer> {
+    const now = new Date().toISOString();
+    const record: SupplierOffer = {
+      id: randomUUID(),
+      case_id: input.caseId,
+      glass_request_id: input.glassRequestId,
+      supplier_name: input.supplierName,
+      supplier_type: input.supplierType,
+      part_number: input.partNumber,
+      price_cents: input.priceCents,
+      available: input.available,
+      quantity: input.quantity,
+      lead_time_days: input.leadTimeDays,
+      excluded_reason: input.excludedReason,
+      selected: input.selected,
+      created_at: now
+    };
+    const next = structuredClone(this.data);
+    next.supplier_offers.push(record);
+    this.persist(next);
+    return record;
+  }
+
+  async listSupplierOffers(glassRequestId: string): Promise<SupplierOffer[]> {
+    return this.data.supplier_offers
+      .filter(o => o.glass_request_id === glassRequestId)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+
+  async selectSupplierOffer(offerId: string): Promise<void> {
+    const next = structuredClone(this.data);
+    const record = next.supplier_offers.find(o => o.id === offerId);
+    if (!record) return;
+    // Only one selected offer per glass request.
+    for (const o of next.supplier_offers) {
+      if (o.glass_request_id === record.glass_request_id) o.selected = false;
+    }
+    record.selected = true;
+    this.persist(next);
+  }
+
+  async savePriceCalculation(input: SavePriceCalculationInput): Promise<PriceCalculation> {
+    const now = new Date().toISOString();
+    const record: PriceCalculation = {
+      id: randomUUID(),
+      case_id: input.caseId,
+      glass_request_id: input.glassRequestId,
+      selected_offer_id: input.selectedOfferId,
+      glass_cost_cents: input.glassCostCents,
+      labor_cents: input.laborCents,
+      profit_cents: input.profitCents,
+      tax_cents: input.taxCents,
+      sell_price_cents: input.sellPriceCents,
+      pricing_config: input.pricingConfig,
+      status: input.status,
+      created_at: now
+    };
+    const next = structuredClone(this.data);
+    next.price_calculations.push(record);
+    this.persist(next);
+    return record;
+  }
+
+  async getLatestPriceCalculation(glassRequestId: string): Promise<PriceCalculation | null> {
+    const matches = this.data.price_calculations.filter(
+      p => p.glass_request_id === glassRequestId
+    );
+    return matches.length ? matches[matches.length - 1] : null;
   }
 }
