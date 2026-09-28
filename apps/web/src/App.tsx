@@ -401,33 +401,32 @@ function VinFirstCase({
 
       {!decoded ? (
         <form onSubmit={handleDecode}>
-          <label>
-            VIN
-            <div style={{ display: "flex", gap: "0.5rem" }}>
-              {voice.supported && (
-                <button
-                  type="button"
-                  className={"mic-btn" + (voice.status === "listening" ? " listening" : "")}
-                  onClick={() => (voice.status === "listening" ? voice.stop() : voice.start())}
-                  aria-label={voice.status === "listening" ? "Stop dictating VIN" : "Dictate VIN by voice"}
-                  title={voice.status === "listening" ? "Stop" : "Dictate the VIN"}
-                >
-                  {voice.status === "listening" ? "⏹" : "🎤"}
-                </button>
-              )}
-              <input
-                value={vinInput}
-                onChange={e => setVinInput(e.target.value.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/gi, ""))}
-                placeholder="17-character VIN"
-                maxLength={17}
-                style={{ textTransform: "uppercase", flex: 1 }}
-                autoFocus
-              />
-              <button className="primary" type="submit" disabled={decoding || vinInput.trim().length !== 17}>
-                {decoding ? "Decoding…" : "Decode"}
+          <label htmlFor="vin-input">VIN</label>
+          <div style={{ display: "flex", gap: "0.5rem" }}>
+            {voice.supported && (
+              <button
+                type="button"
+                className={"mic-btn" + (voice.status === "listening" ? " listening" : "")}
+                onClick={() => (voice.status === "listening" ? voice.stop() : voice.start())}
+                aria-label={voice.status === "listening" ? "Stop dictating VIN" : "Dictate VIN by voice"}
+                title={voice.status === "listening" ? "Stop" : "Dictate the VIN"}
+              >
+                {voice.status === "listening" ? "⏹" : "🎤"}
               </button>
-            </div>
-          </label>
+            )}
+            <input
+              id="vin-input"
+              value={vinInput}
+              onChange={e => setVinInput(e.target.value.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/gi, ""))}
+              placeholder="17-character VIN"
+              maxLength={17}
+              style={{ textTransform: "uppercase", flex: 1 }}
+              autoFocus
+            />
+            <button className="primary" type="submit" disabled={decoding || vinInput.trim().length !== 17}>
+              {decoding ? "Decoding…" : "Decode"}
+            </button>
+          </div>
           {voice.status === "listening" && (
             <p className="muted interim" role="status">
               Listening… speak the VIN one character at a time.
