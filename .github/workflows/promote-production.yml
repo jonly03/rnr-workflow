@@ -84,7 +84,7 @@ jobs:
         run: |
           set -euo pipefail
           vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
-          api_url="$(vercel deploy --prod --yes --token="$VERCEL_TOKEN" --env DATABASE_URL="$DATABASE_URL" --env PG_POOL_MAX=3 --env AUTH_SECRET="$AUTH_SECRET" --env STAFF_ADMIN_EMAIL="$STAFF_ADMIN_EMAIL" --env STAFF_ADMIN_PASSWORD="$STAFF_ADMIN_PASSWORD" | tail -n1)"
+          api_url="$(vercel deploy --prod --yes --token="$VERCEL_TOKEN" --env DATABASE_URL="$DATABASE_URL" --env PG_POOL_MAX=3 --env AUTH_SECRET="$AUTH_SECRET" --env STAFF_ADMIN_EMAIL="$STAFF_ADMIN_EMAIL" --env STAFF_ADMIN_PASSWORD="$STAFF_ADMIN_PASSWORD" --env CORS_ORIGIN="${{ vars.PRODUCTION_WEB_URL }}" | tail -n1)"
           echo "url=$api_url" >> "$GITHUB_OUTPUT"
           echo "Production API: $api_url" >> "$GITHUB_STEP_SUMMARY"
 

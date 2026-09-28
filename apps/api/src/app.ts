@@ -10,6 +10,7 @@ import {
   verifyPassword,
   type AuthConfig
 } from "./auth.js";
+import { createRateLimiter } from "./rate-limit.js";
 
 const createCaseSchema = z.object({
   channel: z.enum(["DIRECT", "AUCTION", "INSURANCE"]),
@@ -30,12 +31,67 @@ const loginSchema = z.object({
   password: z.string().min(1)
 });
 
-export function createApp(store: CaseStore, authConfig: AuthConfig) {
+export interface SecurityConfig {
+  /** Exact origins allowed by CORS. Defaults to the CORS_ORIGIN env var. */
+  corsOrigins?: string[];
+  /** Max login attempts per window. Defaults to LOGIN_RATE_LIMIT_MAX (20). */
+  loginRateLimitMax?: number;
+  /** Rate-limit window in ms. Defaults to LOGIN_RATE_LIMIT_WINDOW_MS (10 min). */
+  loginRateLimitWindowMs?: number;
+}
+
+function parseCorsOrigins(raw: string | undefined): string[] {
+  return (raw ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+export function createApp(
+  store: CaseStore,
+  authConfig: AuthConfig,
+  securityConfig: SecurityConfig = {}
+) {
   const app = express();
-  app.use(cors());
-  app.use(express.json());
+
+  // Trust the first proxy hop (Vercel edge / web proxy) so req.ip reflects the
+  // real client. Required for the login rate limiter to key on client IPs.
+  app.set("trust proxy", 1);
+
+  // Baseline security headers for a JSON API. HSTS is served by the Vercel
+  // edge; these cover what the edge does not set.
+  app.use((_req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    next();
+  });
+
+  const corsOrigins =
+    securityConfig.corsOrigins ?? parseCorsOrigins(process.env.CORS_ORIGIN);
+  // Browsers reach the API through the web app's same-origin proxy, so CORS
+  // is defense in depth. When CORS_ORIGIN is unset we stay permissive (and
+  // warn) so preview deployments keep working; production sets it explicitly.
+  app.use(cors(corsOrigins.length > 0 ? { origin: corsOrigins } : {}));
+  if (corsOrigins.length === 0) {
+    console.warn(
+      "WARNING: CORS_ORIGIN is not set; allowing all origins. " +
+        "Set CORS_ORIGIN to the web app origin in deployed environments."
+    );
+  }
+
+  app.use(express.json({ limit: "256kb" }));
 
   const auth = requireAuth(authConfig);
+
+  const loginLimiter = createRateLimiter({
+    windowMs:
+      securityConfig.loginRateLimitWindowMs ??
+      Number(process.env.LOGIN_RATE_LIMIT_WINDOW_MS ?? 10 * 60 * 1000),
+    max:
+      securityConfig.loginRateLimitMax ??
+      Number(process.env.LOGIN_RATE_LIMIT_MAX ?? 20)
+  });
 
   const detail = async (c: CaseRecord) => {
     const [vehicle, glass_request] = await Promise.all([
@@ -53,7 +109,7 @@ export function createApp(store: CaseStore, authConfig: AuthConfig) {
     });
   });
 
-  app.post("/api/v1/auth/login", async (req, res) => {
+  app.post("/api/v1/auth/login", loginLimiter, async (req, res) => {
     const parsed = loginSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(422).json({
@@ -164,6 +220,28 @@ export function createApp(store: CaseStore, authConfig: AuthConfig) {
   });
 
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    // express.json() reports malformed payloads as SyntaxError and oversized
+    // payloads with status 413: answer 4xx, not 500, and never leak details.
+    if (error instanceof SyntaxError && "body" in error) {
+      return res.status(400).json({
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Request body is not valid JSON."
+        }
+      });
+    }
+    const status =
+      typeof (error as { status?: unknown }).status === "number"
+        ? (error as { status: number }).status
+        : 500;
+    if (status === 413) {
+      return res.status(413).json({
+        error: {
+          code: "PAYLOAD_TOO_LARGE",
+          message: "Request body is too large."
+        }
+      });
+    }
     console.error(error);
     res.status(500).json({
       error: {
