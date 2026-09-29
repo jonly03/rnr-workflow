@@ -180,6 +180,9 @@ dd { margin: 0; }
 .timeline-details pre {
   background: #0b1120; border: 1px solid #1e293b; border-radius: 8px;
   padding: 10px; overflow: auto; font-size: .78rem; margin: 8px 0 0;
+  /* Long single-line payloads (e.g. error JSON) must wrap so the full text
+     is readable at normal zoom instead of truncating at the viewport edge. */
+  white-space: pre-wrap; overflow-wrap: anywhere;
 }
 
 @media (max-width: 950px) {
