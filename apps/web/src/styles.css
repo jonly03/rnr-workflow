@@ -14,8 +14,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .app-shell { min-height: 100vh; }
 .topbar {
   height: 64px; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
-  gap: 12px; padding: 0 24px; border-bottom: 1px solid #334155; background: #111827;
+  gap: 12px; padding: 0 24px; border-bottom: 1px solid rgba(0, 0, 0, 0.25); background: #4f46e5;
 }
+.topbar .brand { background: #ffffff; color: #4f46e5; }
+.topbar .crumbs { color: rgba(255, 255, 255, 0.8); }
+.topbar .crumb-sep { color: rgba(255, 255, 255, 0.5); }
+.topbar .crumbs [aria-current="page"] { color: #ffffff; }
+.topbar .link { color: #ffffff; }
 .brand-wrap { display: flex; align-items: center; gap: 12px; justify-self: start; }
 .crumbs {
   justify-self: center; display: flex; align-items: center;
@@ -25,17 +30,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .crumb { display: inline-flex; align-items: center; min-width: 0; }
 .crumb-sep { margin: 0 8px; color: #475569; }
 .crumbs [aria-current="page"] { color: #e2e8f0; font-weight: 600; }
-.staff-line { justify-self: end; display: flex; align-items: center; gap: 12px; color: #94a3b8; font-size: 0.9rem; }
+.staff-line { justify-self: end; display: flex; align-items: center; gap: 12px; color: rgba(255, 255, 255, 0.85); font-size: 0.9rem; }
 .topbar-right { justify-self: end; display: flex; align-items: center; position: relative; }
 .menu-wrap { display: none; position: relative; }
 .menu-btn {
-  background: none; border: 1px solid #334155; border-radius: 10px;
-  color: #e2e8f0; font-size: 1.25rem; line-height: 1;
-  width: 40px; height: 40px; cursor: pointer;
-}
-.menu-backdrop {
-  position: fixed; inset: 0; background: transparent; border: none;
-  z-index: 40; cursor: default; padding: 0;
+  background: none; border: none; border-radius: 10px;
+  color: #ffffff; font-size: 1.25rem; line-height: 1;
+  width: 40px; height: 40px; cursor: pointer; padding: 0;
 }
 .user-menu {
   position: absolute; top: calc(100% + 8px); right: 0; z-index: 50;
