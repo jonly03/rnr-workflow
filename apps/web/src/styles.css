@@ -26,6 +26,24 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .crumb-sep { margin: 0 8px; color: #475569; }
 .crumbs [aria-current="page"] { color: #e2e8f0; font-weight: 600; }
 .staff-line { justify-self: end; display: flex; align-items: center; gap: 12px; color: #94a3b8; font-size: 0.9rem; }
+.topbar-right { justify-self: end; display: flex; align-items: center; position: relative; }
+.menu-wrap { display: none; position: relative; }
+.menu-btn {
+  background: none; border: 1px solid #334155; border-radius: 10px;
+  color: #e2e8f0; font-size: 1.25rem; line-height: 1;
+  width: 40px; height: 40px; cursor: pointer;
+}
+.menu-backdrop {
+  position: fixed; inset: 0; background: transparent; border: none;
+  z-index: 40; cursor: default; padding: 0;
+}
+.user-menu {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 50;
+  background: #111827; border: 1px solid #334155; border-radius: 12px;
+  padding: 14px 16px; min-width: 230px; display: grid; gap: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+.user-menu-id { margin: 0; display: grid; gap: 2px; }
 .sidebar-new { width: 100%; margin-bottom: 20px; }
 .queue-bulk { display: flex; justify-content: flex-end; margin-bottom: 4px; }
 .queue-list-head {
@@ -157,8 +175,10 @@ dd { margin: 0; }
 @media (max-width: 950px) {
   main { width: min(100% - 24px, 1120px); padding-top: 20px; }
   .topbar { padding: 0 12px; }
-  .crumbs { max-width: 34vw; font-size: 0.85rem; }
-  .staff-line { font-size: 0.8rem; }
+  .brand-title { display: none; }
+  .crumbs { max-width: 62vw; font-size: 0.85rem; }
+  .staff-line { display: none; }
+  .menu-wrap { display: block; }
   .page-head { flex-direction: column; }
   .queue-layout { grid-template-columns: 1fr; }
   .queue-sidebar { position: static; }
