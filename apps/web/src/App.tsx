@@ -104,6 +104,34 @@ const GLASS_OPTIONS: { id: "ALL" | GlassType; label: string }[] = [
   { id: "VENT_GLASS", label: "Vent Glass" }
 ];
 
+export function SupplierOffersPreview({ item }: { item: CaseRecord }) {
+  const offers = item.supplier_offers ?? [];
+  if (offers.length === 0) return null;
+  const selected = offers.find(o => o.selected);
+  return (
+    <section className="card">
+      <h2>Supplier sourcing</h2>
+      {selected && (
+        <p>
+          Selected: <strong>{selected.supplier_name}</strong> —{" "}
+          <code>{selected.part_number}</code> at {formatCents(selected.price_cents)}
+          {selected.lead_time_days !== null && ` (${selected.lead_time_days}d lead)`}
+        </p>
+      )}
+      <ul className="candidate-list">
+        {offers.map(o => (
+          <li key={o.id}>
+            <strong>{o.supplier_name}</strong>{" "}
+            <small>({o.supplier_type})</small> — {formatCents(o.price_cents)}
+            {o.available ? ` · ${o.quantity} in stock` : " · unavailable"}
+            {o.selected && " ✓ selected"}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function FilterPills<T extends string>({
   label,
   options,
@@ -151,6 +179,15 @@ export function App() {
   const [glassFilter, setGlassFilter] = useState<"ALL" | GlassType>("ALL");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [sortBy, setSortBy] = useState<QueueSort>("newest");
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+
+  const toggleExpanded = (id: string) =>
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   const statusOptions = useMemo(
     () => [...new Set(cases.map(c => c.current_state))].sort(),
@@ -314,89 +351,117 @@ export function App() {
           <button className="primary" onClick={() => setScreen("new")}>Create first case</button>
         </div>
       ) : (
-        <>
-          <div className="queue-toolbar">
-            <input
-              className="queue-search"
-              type="search"
-              placeholder="Search reference, VIN, vehicle…"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              aria-label="Search cases"
-            />
-            <FilterPills
-              label="Channel"
-              options={CHANNEL_OPTIONS}
-              value={channelFilter}
-              onChange={setChannelFilter}
-            />
-            <FilterPills
-              label="Glass"
-              options={GLASS_OPTIONS}
-              value={glassFilter}
-              onChange={setGlassFilter}
-            />
-            <FilterPills
-              label="Status"
-              options={[
-                { id: "ALL", label: "All" },
-                ...statusOptions.map(s => ({ id: s, label: humanize(s) }))
-              ]}
-              value={statusFilter}
-              onChange={setStatusFilter}
-            />
-            <div className="filter-group">
-              <label className="filter-label" htmlFor="queue-sort">Sort</label>
-              <select
-                id="queue-sort"
-                value={sortBy}
-                onChange={e => setSortBy(e.target.value as QueueSort)}
-              >
-                {QUEUE_SORTS.map(s => (
-                  <option key={s.id} value={s.id}>{s.label}</option>
-                ))}
-              </select>
+        <div className="queue-layout">
+          <aside className="queue-sidebar" aria-label="Case filters">
+            <div className="queue-toolbar">
+              <input
+                className="queue-search"
+                type="search"
+                placeholder="Search reference, VIN, vehicle…"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                aria-label="Search cases"
+              />
+              <FilterPills
+                label="Channel"
+                options={CHANNEL_OPTIONS}
+                value={channelFilter}
+                onChange={setChannelFilter}
+              />
+              <FilterPills
+                label="Glass"
+                options={GLASS_OPTIONS}
+                value={glassFilter}
+                onChange={setGlassFilter}
+              />
+              <FilterPills
+                label="Status"
+                options={[
+                  { id: "ALL", label: "All" },
+                  ...statusOptions.map(s => ({ id: s, label: humanize(s) }))
+                ]}
+                value={statusFilter}
+                onChange={setStatusFilter}
+              />
+              <div className="filter-group">
+                <label className="filter-label" htmlFor="queue-sort">Sort</label>
+                <select
+                  id="queue-sort"
+                  value={sortBy}
+                  onChange={e => setSortBy(e.target.value as QueueSort)}
+                >
+                  {QUEUE_SORTS.map(s => (
+                    <option key={s.id} value={s.id}>{s.label}</option>
+                  ))}
+                </select>
+              </div>
             </div>
-          </div>
-          <p className="muted queue-count">
-            {visibleCases.length} of {cases.length} {cases.length === 1 ? "case" : "cases"}
-            {filtersActive && (
-              <> — <button type="button" className="link" onClick={clearFilters}>Clear filters</button></>
+          </aside>
+          <div className="queue-main">
+            <p className="muted queue-count">
+              {visibleCases.length} of {cases.length} {cases.length === 1 ? "case" : "cases"}
+              {filtersActive && (
+                <> — <button type="button" className="link" onClick={clearFilters}>Clear filters</button></>
+              )}
+            </p>
+            {visibleCases.length === 0 ? (
+              <div className="empty card">
+                <h2>No cases match.</h2>
+                <p>Try a different search or clear the filters.</p>
+                <button className="primary" onClick={clearFilters}>Clear filters</button>
+              </div>
+            ) : (
+              <div className="case-list">
+                {visibleCases.map(c => {
+                  const expanded = expandedIds.has(c.id);
+                  return (
+                    <article className={"case-card" + (expanded ? " expanded" : "")} key={c.id}>
+                      <div className="case-card-head">
+                        <div>
+                          <strong>{c.reference}</strong>
+                          <span className="channel">{c.channel}</span>
+                        </div>
+                        <div className="vehicle">{vehicleName(c)}</div>
+                        <div>{humanize(c.glass_request.glass_type)}</div>
+                        <div className="sell-price">
+                          {c.price_calculation ? (
+                            <strong>{formatCents(c.price_calculation.sell_price_cents)}</strong>
+                          ) : (
+                            <span className="muted">Not priced</span>
+                          )}
+                        </div>
+                        <div>
+                          <span className="state">{humanize(c.current_state)}</span>
+                          <small>{c.current_state}</small>
+                        </div>
+                        <div className="case-card-actions">
+                          <button
+                            type="button"
+                            className="icon-btn"
+                            aria-label={expanded ? `Collapse ${c.reference}` : `Expand ${c.reference}`}
+                            aria-expanded={expanded}
+                            onClick={() => toggleExpanded(c.id)}
+                          >
+                            {expanded ? "«" : "»"}
+                          </button>
+                          {expanded && (
+                            <button onClick={() => void openCase(c.id)}>Open</button>
+                          )}
+                        </div>
+                      </div>
+                      {expanded && (
+                        <div className="case-card-body">
+                          <PricingSummary item={c} />
+                          <SupplierOffersPreview item={c} />
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
             )}
-          </p>
-          {visibleCases.length === 0 ? (
-            <div className="empty card">
-              <h2>No cases match.</h2>
-              <p>Try a different search or clear the filters.</p>
-              <button className="primary" onClick={clearFilters}>Clear filters</button>
-            </div>
-          ) : (
-            <div className="case-list">
-              {visibleCases.map(c => (
-                <article className="case-card" key={c.id}>
-                  <div>
-                    <strong>{c.reference}</strong>
-                    <span className="channel">{c.channel}</span>
-                  </div>
-                  <div className="vehicle">{vehicleName(c)}</div>
-                  <div>{humanize(c.glass_request.glass_type)}</div>
-                  <div className="sell-price">
-                    {c.price_calculation ? (
-                      <strong>{formatCents(c.price_calculation.sell_price_cents)}</strong>
-                    ) : (
-                      <span className="muted">Not priced</span>
-                    )}
-                  </div>
-                  <div>
-                    <span className="state">{humanize(c.current_state)}</span>
-                    <small>{c.current_state}</small>
-                  </div>
-                  <button onClick={() => void openCase(c.id)}>Open</button>
-                </article>
-              ))}
-            </div>
-          )}
-        </>
+          </div>
+        </div>
       )}
     </Shell>
   );
