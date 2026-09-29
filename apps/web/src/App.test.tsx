@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { App, cardOrderKey, DEFAULT_CARD_ORDER, filterQueueCases, loadCardOrder, scanProgressForElapsed, sortQueueCases } from "./App";
+import { App, cardOrderKey, DEFAULT_CARD_ORDER, filterQueueCases, loadCardOrder, scanProgressForElapsed, sortQueueCases, SupplierOffersPreview } from "./App";
 import type { CaseRecord } from "./types";
 
 vi.stubGlobal("fetch", vi.fn(async () => ({
@@ -171,5 +171,58 @@ describe("case queue filtering and sorting", () => {
     const input = [b, a, c];
     sortQueueCases(input, "price-desc");
     expect(input.map(x => x.id)).toEqual(["b", "a", "c"]);
+  });
+});
+
+describe("SupplierOffersPreview", () => {
+  const offers = [
+    {
+      id: "o-1",
+      case_id: "case-1",
+      glass_request_id: "gr-1",
+      supplier_name: "PGW",
+      supplier_type: "NATIONAL",
+      part_number: "DW01234",
+      price_cents: 20000,
+      available: true,
+      quantity: 5,
+      lead_time_days: 2,
+      excluded_reason: null,
+      selected: true,
+      created_at: "2026-09-29T00:00:00Z"
+    },
+    {
+      id: "o-2",
+      case_id: "case-1",
+      glass_request_id: "gr-1",
+      supplier_name: "Local Glass Co",
+      supplier_type: "LOCAL",
+      part_number: "DW01234",
+      price_cents: 18000,
+      available: false,
+      quantity: 0,
+      lead_time_days: null,
+      excluded_reason: null,
+      selected: false,
+      created_at: "2026-09-29T00:00:00Z"
+    }
+  ];
+
+  it("shows the selected offer and the full offer list", () => {
+    const item = { supplier_offers: offers } as CaseRecord;
+    render(<SupplierOffersPreview item={item} />);
+    expect(screen.getByText("Supplier sourcing")).toBeInTheDocument();
+    expect(screen.getAllByText("PGW").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("DW01234")).toBeInTheDocument();
+    expect(screen.getAllByText(/\$200\.00/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Local Glass Co")).toBeInTheDocument();
+    expect(screen.getByText(/unavailable/)).toBeInTheDocument();
+    expect(screen.getByText(/✓ selected/)).toBeInTheDocument();
+  });
+
+  it("renders nothing when there are no offers", () => {
+    const item = { supplier_offers: [] } as unknown as CaseRecord;
+    const { container } = render(<SupplierOffersPreview item={item} />);
+    expect(container).toBeEmptyDOMElement();
   });
 });
