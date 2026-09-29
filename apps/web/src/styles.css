@@ -55,7 +55,6 @@ button:not(.primary) { background: #172033; color: #f8fafc; border: 1px solid #3
 .case-card-body { margin-top: 14px; display: grid; gap: 12px; }
 .case-card-body .card { margin-bottom: 0; }
 .channel { color: #cbd5e1; border: 1px solid #334155; border-radius: 999px; padding: 2px 8px; font-size: .72rem; }
-.state { display: inline-flex; background: rgba(37,99,235,.18); border: 1px solid #2563eb; border-radius: 999px; padding: 4px 9px; font-weight: 650; }
 .sell-price strong { font-size: 1.05rem; }
 .case-card small { display: block; margin-top: 5px; font-family: ui-monospace, SFMono-Regular, monospace; }
 .empty { text-align: center; padding: 48px 20px; }
