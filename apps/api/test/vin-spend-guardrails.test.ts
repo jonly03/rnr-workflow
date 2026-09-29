@@ -125,13 +125,17 @@ describe("paid VIN lookup spend tracking", () => {
     const provider = new PaidMockProvider();
     const f = await fixture(provider);
     // Spend the whole default $25 cap first (25 distinct VINs to avoid the cache).
+    // Reservations are the atomic check-and-record step, so pre-fill with them.
     for (let i = 0; i < 25; i++) {
-      await f.store.recordVinLookupSpend({
+      const r = await f.store.reserveVinLookupSpend({
         vin: `SPENT${String(i).padStart(11, "0")}`,
         glassType: "WINDSHIELD",
         costCents: 100,
-        provider: "paid-mock"
+        provider: "paid-mock",
+        capCents: 100_000,
+        sinceIso: new Date(0).toISOString()
       });
+      expect(r.reserved).toBe(true);
     }
     const created = await f.createCase().expect(201);
     const blocked = await f.runVinLookup(created.body.id).expect(200);
@@ -194,19 +198,23 @@ describe("paid VIN lookup spend tracking", () => {
   it("counts only spend since the given timestamp", async () => {
     const provider = new PaidMockProvider();
     const f = await fixture(provider);
-    await f.store.recordVinLookupSpend({
+    await f.store.reserveVinLookupSpend({
       vin: VIN_17,
       glassType: "WINDSHIELD",
       costCents: 100,
-      provider: "paid-mock"
+      provider: "paid-mock",
+      capCents: 100_000,
+      sinceIso: new Date(0).toISOString()
     });
     const since = new Date().toISOString();
     // A second spend after the watermark.
-    await f.store.recordVinLookupSpend({
+    await f.store.reserveVinLookupSpend({
       vin: OTHER_VIN,
       glassType: "WINDSHIELD",
       costCents: 100,
-      provider: "paid-mock"
+      provider: "paid-mock",
+      capCents: 100_000,
+      sinceIso: new Date(0).toISOString()
     });
     // The first row predates the real clock only if time passed; assert the
     // windowed query sees at most the rows, and the full query sees both.
@@ -215,6 +223,65 @@ describe("paid VIN lookup spend tracking", () => {
     expect(total).toBe(200);
     expect(windowed).toBeLessThanOrEqual(200);
     expect(windowed).toBeGreaterThanOrEqual(100);
+  });
+
+  it("refuses a reservation that would exceed the cap, without recording spend", async () => {
+    const f = await fixture(new PaidMockProvider());
+    const first = await f.store.reserveVinLookupSpend({
+      vin: VIN_17,
+      glassType: "WINDSHIELD",
+      costCents: 100,
+      provider: "paid-mock",
+      capCents: 100,
+      sinceIso: new Date(0).toISOString()
+    });
+    expect(first.reserved).toBe(true);
+    expect(first.spendId).toBeTruthy();
+
+    // The cap is now fully consumed: the next reservation is refused and
+    // records nothing.
+    const refused = await f.store.reserveVinLookupSpend({
+      vin: OTHER_VIN,
+      glassType: "WINDSHIELD",
+      costCents: 100,
+      provider: "paid-mock",
+      capCents: 100,
+      sinceIso: new Date(0).toISOString()
+    });
+    expect(refused).toEqual({ reserved: false, spendId: null });
+
+    const spent = await f.store.getVinLookupSpendCentsSince(new Date(0).toISOString());
+    expect(spent).toBe(100);
+  });
+
+  it("releases a reservation on proven-no-charge failure, freeing the budget", async () => {
+    const f = await fixture(new PaidMockProvider());
+    const r = await f.store.reserveVinLookupSpend({
+      vin: VIN_17,
+      glassType: "WINDSHIELD",
+      costCents: 100,
+      provider: "paid-mock",
+      capCents: 100,
+      sinceIso: new Date(0).toISOString()
+    });
+    expect(r.reserved).toBe(true);
+
+    // Simulate the proven-pre-submission failure path: the reservation is
+    // released and the budget is whole again.
+    await f.store.releaseVinLookupSpend(r.spendId!);
+    const spent = await f.store.getVinLookupSpendCentsSince(new Date(0).toISOString());
+    expect(spent).toBe(0);
+
+    // And a new reservation now fits under the cap.
+    const retry = await f.store.reserveVinLookupSpend({
+      vin: VIN_17,
+      glassType: "WINDSHIELD",
+      costCents: 100,
+      provider: "paid-mock",
+      capCents: 100,
+      sinceIso: new Date(0).toISOString()
+    });
+    expect(retry.reserved).toBe(true);
   });
 });
 

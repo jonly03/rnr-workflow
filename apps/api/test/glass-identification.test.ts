@@ -121,6 +121,11 @@ describe("Glass Identification", () => {
     );
     // The mock costs nothing, so the event honestly records charged:false.
     expect(lookup.payload.charged).toBe(false);
+    // The GLASS_RESOLVED event agrees: a free lookup is never marked charged.
+    const resolved = events.body.find(
+      (e: { event_type: string }) => e.event_type === "GLASS_RESOLVED"
+    );
+    expect(resolved.payload.charged).toBe(false);
 
     // And no spend is recorded for the free mock provider.
     const spent = await f.store.getVinLookupSpendCentsSince(new Date(0).toISOString());
