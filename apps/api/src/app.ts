@@ -5,7 +5,7 @@ import { z } from "zod";
 import type { CaseRecord, Channel, StaffUser } from "./types.js";
 import type { CaseStore } from "./store.js";
 import type { GlassCatalogProvider } from "./glass-catalog.js";
-import { MockGlassCatalogProvider } from "./glass-catalog.js";
+import { createGlassCatalogProvider } from "./mygrant.js";
 import { decodeVinNhtsa, VinDecodeError } from "./vin-decode.js";
 import { isValidVin } from "./vin-validation.js";
 import { ocrVinFromImage, OcrError } from "./vin-ocr.js";
@@ -108,7 +108,7 @@ export function createApp(
   securityConfig: SecurityConfig = {},
   deps: AppDeps = {}
 ) {
-  const glassCatalog = deps.glassCatalog ?? new MockGlassCatalogProvider();
+  const glassCatalog = deps.glassCatalog ?? createGlassCatalogProvider();
   const sourcingProvider = deps.sourcingProvider ?? new MockSourcingProvider();
   const pricingConfig = deps.pricingConfig ?? loadPricingConfig();
   const app = express();
@@ -193,7 +193,8 @@ export function createApp(
     await store.health();
     res.json({
       ok: true,
-      storage: process.env.DATABASE_URL ? "postgres" : "json"
+      storage: process.env.DATABASE_URL ? "postgres" : "json",
+      glass_catalog: glassCatalog.name
     });
   });
 

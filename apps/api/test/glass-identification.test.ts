@@ -104,10 +104,9 @@ describe("Glass Identification", () => {
     expect(res.body.glass_identification.selected_candidate).toBeNull();
   });
 
-  it("resolves via VIN lookup and records the charge", async () => {
+  it("resolves via VIN lookup and marks the mock lookup as uncharged", async () => {
     const f = await fixture();
     const created = await f.createCase({ model: "Ambiguous" }).expect(201);
-
     const res = await act(f, created.body.id, "request_vin_lookup").expect(200);
     expect(res.body.current_state).toBe("PRICE_APPROVED");
     expect(res.body.glass_identification).toMatchObject({ method: "VIN", status: "RESOLVED" });
@@ -120,7 +119,12 @@ describe("Glass Identification", () => {
     const lookup = events.body.find(
       (e: { event_type: string }) => e.event_type === "START_VIN_LOOKUP"
     );
-    expect(lookup.payload.charged).toBe(true);
+    // The mock costs nothing, so the event honestly records charged:false.
+    expect(lookup.payload.charged).toBe(false);
+
+    // And no spend is recorded for the free mock provider.
+    const spent = await f.store.getVinLookupSpendCentsSince(new Date(0).toISOString());
+    expect(spent).toBe(0);
   });
 
   it("reuses a saved successful VIN result instead of repurchasing", async () => {
