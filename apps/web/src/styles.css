@@ -27,6 +27,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .crumbs [aria-current="page"] { color: #e2e8f0; font-weight: 600; }
 .staff-line { justify-self: end; display: flex; align-items: center; gap: 12px; color: #94a3b8; font-size: 0.9rem; }
 .sidebar-new { width: 100%; margin-bottom: 20px; }
+.queue-bulk { display: flex; justify-content: flex-end; margin-bottom: 4px; }
 .toolbar-selects { display: none; }
 button.link { background: none; border: none; color: #818cf8; padding: 0; text-decoration: underline; }
 .brand {
