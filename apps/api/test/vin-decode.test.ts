@@ -96,8 +96,10 @@ describe("VIN decode (NHTSA vPIC)", () => {
     expect(res.body.error.code).toBe("VIN_DECODE_FAILED");
   });
 
-  it("returns 422 when NHTSA cannot decode the VIN", async () => {
+  it("rejects a VIN with an invalid check digit with 422", async () => {
     const { app, token } = await authedFixture();
+    // All-A is format-valid but fails the ISO 3779 check digit, so it is
+    // rejected by the shared VIN gate before NHTSA is ever called.
     const res = await request(app)
       .post("/api/v1/vin/decode")
       .set("Authorization", `Bearer ${token}`)
@@ -105,6 +107,7 @@ describe("VIN decode (NHTSA vPIC)", () => {
       .expect(422);
 
     expect(res.body.error.code).toBe("VIN_DECODE_FAILED");
+    expect(res.body.error.message).toMatch(/check digit/);
   });
 
   it("requires authentication", async () => {

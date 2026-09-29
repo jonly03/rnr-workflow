@@ -208,17 +208,103 @@ describe("Glass Identification", () => {
     expect(done.body.current_state).toBe("GLASS_NOT_IDENTIFIED");
   });
 
-  it("rejects VIN lookup from the wrong state and rejects short VINs", async () => {
+  it("rejects VIN lookup from the wrong state and rejects invalid VINs", async () => {
     const f = await fixture();
     const identified = await f.createCase().expect(201);
     const wrongState = await act(f, identified.body.id, "request_vin_lookup").expect(409);
     expect(wrongState.body.error.code).toBe("VIN_NOT_ELIGIBLE");
 
-    const shortVin = await f.createCase({ model: "Ambiguous", vin: "SHORT" }).expect(201);
-    expect(shortVin.body.current_state).toBe("VIN_LOOKUP_REQUIRED");
-    const badVin = await act(f, shortVin.body.id, "request_vin_lookup").expect(422);
-    expect(badVin.body.error.code).toBe("VIN_NOT_ELIGIBLE");
+    // Case creation enforces the shared ISO 3779 gate (format + check digit).
+    const shortVin = await f.createCase({ model: "Ambiguous", vin: "SHORT" }).expect(422);
+    expect(shortVin.body.error.code).toBe("VALIDATION_ERROR");
+    const badCheckDigit = await f
+      .createCase({ model: "Ambiguous", vin: "1HGCM82633A004353" })
+      .expect(422);
+    expect(badCheckDigit.body.error.code).toBe("VALIDATION_ERROR");
     expect(f.provider.vinLookups).toBe(0);
+  });
+
+  it("returns a back-glass candidate for back-glass VIN lookups", async () => {
+    const f = await fixture();
+    const created = await f
+      .createCase({ model: "Ambiguous", glassType: "BACK_GLASS" })
+      .expect(201);
+    expect(created.body.current_state).toBe("VIN_LOOKUP_REQUIRED");
+
+    const res = await act(f, created.body.id, "request_vin_lookup").expect(200);
+    expect(res.body.current_state).toBe("PRICE_APPROVED");
+    const identification = res.body.glass_identification;
+    expect(identification.method).toBe("VIN");
+    expect(identification.candidates).toHaveLength(1);
+    expect(identification.candidates[0].position).toBe("BACK_GLASS");
+    expect(identification.selected_candidate.position).toBe("BACK_GLASS");
+    expect(identification.selected_candidate.part_number).toContain("-BA");
+  });
+
+  it("reuses one VIN cache entry across glass types with type-correct candidates", async () => {
+    const f = await fixture();
+    const windshield = await f
+      .createCase({ model: "Ambiguous", glassType: "WINDSHIELD" })
+      .expect(201);
+    await act(f, windshield.body.id, "request_vin_lookup").expect(200);
+    expect(f.provider.vinLookups).toBe(1);
+
+    // Back Glass, same VIN: the cached Windshield result must NOT be
+    // reused. A second, type-correct paid lookup runs instead.
+    const backGlass = await f
+      .createCase({ model: "Ambiguous", glassType: "BACK_GLASS" })
+      .expect(201);
+    const bgRes = await act(f, backGlass.body.id, "request_vin_lookup").expect(200);
+    expect(f.provider.vinLookups).toBe(2);
+    expect(bgRes.body.glass_identification.selected_candidate.position).toBe("BACK_GLASS");
+
+    // A second Back Glass case reuses the cached Back Glass result:
+    // no new charge.
+    const backGlass2 = await f
+      .createCase({ model: "Ambiguous", glassType: "BACK_GLASS" })
+      .expect(201);
+    const bg2Res = await act(f, backGlass2.body.id, "request_vin_lookup").expect(200);
+    expect(f.provider.vinLookups).toBe(2);
+    expect(bg2Res.body.glass_identification.selected_candidate.position).toBe("BACK_GLASS");
+
+    const events = await request(f.app)
+      .get(`/api/v1/cases/${backGlass2.body.id}/events`)
+      .set("Authorization", `Bearer ${f.token}`)
+      .expect(200);
+    const reuse = events.body.find(
+      (e: { event_type: string }) => e.event_type === "USE_SAVED_VIN_RESULT"
+    );
+    expect(reuse.payload).toMatchObject({ cached: true, charged: false });
+
+    // Both glass types are served from the cache now.
+    expect(await f.store.findVinLookup(VIN_17, "WINDSHIELD")).toMatchObject({ success: true });
+    expect(await f.store.findVinLookup(VIN_17, "BACK_GLASS")).toMatchObject({ success: true });
+    expect(
+      (await f.store.findVinLookup(VIN_17, "WINDSHIELD"))?.candidates[0].position
+    ).toBe("WINDSHIELD");
+  });
+
+  it("charges only once for concurrent VIN lookups of the same VIN and glass type", async () => {
+    const f = await fixture();
+    // Slow the paid call so the two requests genuinely overlap.
+    const original = f.provider.lookupVin.bind(f.provider);
+    f.provider.lookupVin = (async (vin: string, glassType: GlassType) => {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      return original(vin, glassType);
+    }) as typeof f.provider.lookupVin;
+
+    const first = await f.createCase({ model: "Ambiguous" }).expect(201);
+    const second = await f.createCase({ model: "Ambiguous" }).expect(201);
+
+    const [r1, r2] = await Promise.all([
+      act(f, first.body.id, "request_vin_lookup"),
+      act(f, second.body.id, "request_vin_lookup")
+    ]);
+    expect(r1.status).toBe(200);
+    expect(r2.status).toBe(200);
+    expect(r1.body.current_state).toBe("PRICE_APPROVED");
+    expect(r2.body.current_state).toBe("PRICE_APPROVED");
+    expect(f.provider.vinLookups).toBe(1);
   });
 
   it("rejects unknown actions with 409 as before", async () => {

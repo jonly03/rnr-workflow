@@ -7,6 +7,7 @@ import type { CaseStore } from "./store.js";
 import type { GlassCatalogProvider } from "./glass-catalog.js";
 import { MockGlassCatalogProvider } from "./glass-catalog.js";
 import { decodeVinNhtsa, VinDecodeError } from "./vin-decode.js";
+import { isValidVin } from "./vin-validation.js";
 import { ocrVinFromImage, OcrError } from "./vin-ocr.js";
 import {
   IdentificationError,
@@ -47,7 +48,17 @@ const createCaseSchema = z.object({
     year: z.number().int().min(1886).max(2100),
     make: z.string().trim().min(1),
     model: z.string().trim().min(1),
-    vin: z.string().trim().min(1)
+    // Shared ISO 3779 gate (format + check digit): the same validation
+    // applied to typed VINs at /vin/decode and to photographed VINs when
+    // their OCR candidate is confirmed through /vin/decode.
+    vin: z
+      .string()
+      .trim()
+      .min(1)
+      .refine(isValidVin, {
+        message:
+          "VIN must be 17 characters (A-Z except I, O, Q, plus digits) with a valid check digit."
+      })
   }),
   glass_request: z.object({
     glass_type: z.enum(["WINDSHIELD", "BACK_GLASS", "DOOR_GLASS", "QUARTER_GLASS", "VENT_GLASS"])
