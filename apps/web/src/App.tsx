@@ -323,7 +323,6 @@ export function App() {
         <CaseDetail
           item={selected}
           events={events}
-          onBack={() => setScreen("queue")}
           onRefresh={() => openCase(selected.id)}
           onNewCase={() => setScreen("new")}
           loading={loading}
@@ -1108,7 +1107,6 @@ function SortableCardList({
 function CaseDetail({
   item,
   events,
-  onBack,
   onRefresh,
   onNewCase,
   loading,
@@ -1116,7 +1114,6 @@ function CaseDetail({
 }: {
   item: CaseRecord;
   events: CaseEvent[];
-  onBack: () => void;
   onRefresh: () => Promise<void>;
   onNewCase: () => void;
   loading: boolean;
@@ -1149,7 +1146,6 @@ function CaseDetail({
 
   return (
     <>
-      <button className="back" onClick={onBack}>← Case Queue</button>
       <section className="page-head">
         <div>
           <p className="eyebrow" data-testid="case-channel">{item.channel}</p>
