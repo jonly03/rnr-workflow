@@ -21,6 +21,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .topbar .crumb-sep { color: rgba(255, 255, 255, 0.5); }
 .topbar .crumbs [aria-current="page"] { color: #ffffff; }
 .topbar .link { color: #ffffff; }
+/* Chromeless topbar controls: outranks the generic button:not(.primary) pill rule. */
+.topbar .menu-btn,
+.topbar .crumbs .link { background: none; border: none; padding: 0; box-shadow: none; }
 .brand-wrap { display: flex; align-items: center; gap: 12px; justify-self: start; }
 .crumbs {
   justify-self: center; display: flex; align-items: center;
