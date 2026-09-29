@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createCase,
   decodeVin,
@@ -22,6 +22,119 @@ type Screen = "queue" | "new" | "detail";
 const humanize = (value: string) =>
   value.toLowerCase().replaceAll("_", " ").replace(/(^|\s)\S/g, c => c.toUpperCase());
 
+const formatCents = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+
+const vehicleName = (c: CaseRecord) => `${c.vehicle.year} ${c.vehicle.make} ${c.vehicle.model}`;
+
+/** Sort key for "Vehicle A–Z": make, model, then year. */
+const vehicleSortKey = (c: CaseRecord) =>
+  `${c.vehicle.make} ${c.vehicle.model} ${c.vehicle.year}`.toLowerCase();
+
+type QueueSort = "newest" | "price-desc" | "price-asc" | "vehicle";
+
+const QUEUE_SORTS: { id: QueueSort; label: string }[] = [
+  { id: "newest", label: "Newest first" },
+  { id: "price-desc", label: "Sell price: high to low" },
+  { id: "price-asc", label: "Sell price: low to high" },
+  { id: "vehicle", label: "Vehicle A–Z" }
+];
+
+export interface QueueFilters {
+  search: string;
+  channel: "ALL" | Channel;
+  glass: "ALL" | GlassType;
+  status: string;
+}
+
+/** Filter queue cases by search text, channel, glass type, and status. Exported for tests. */
+export function filterQueueCases(cases: CaseRecord[], filters: QueueFilters): CaseRecord[] {
+  const q = filters.search.trim().toLowerCase();
+  return cases.filter(c => {
+    if (filters.channel !== "ALL" && c.channel !== filters.channel) return false;
+    if (filters.glass !== "ALL" && c.glass_request.glass_type !== filters.glass) return false;
+    if (filters.status !== "ALL" && c.current_state !== filters.status) return false;
+    if (q) {
+      const haystack = `${c.reference} ${c.vehicle.vin} ${vehicleName(c)}`.toLowerCase();
+      if (!haystack.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+/** Sort queue cases. Unpriced cases sink to the bottom for price sorts. Exported for tests. */
+export function sortQueueCases(cases: CaseRecord[], sortBy: QueueSort): CaseRecord[] {
+  const sorted = [...cases];
+  switch (sortBy) {
+    case "price-desc":
+      sorted.sort(
+        (a, b) =>
+          (b.price_calculation?.sell_price_cents ?? -1) -
+          (a.price_calculation?.sell_price_cents ?? -1)
+      );
+      break;
+    case "price-asc":
+      sorted.sort(
+        (a, b) =>
+          (a.price_calculation?.sell_price_cents ?? Number.MAX_SAFE_INTEGER) -
+          (b.price_calculation?.sell_price_cents ?? Number.MAX_SAFE_INTEGER)
+      );
+      break;
+    case "vehicle":
+      sorted.sort((a, b) => vehicleSortKey(a).localeCompare(vehicleSortKey(b)));
+      break;
+    default:
+      sorted.sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
+  }
+  return sorted;
+}
+
+const CHANNEL_OPTIONS: { id: "ALL" | Channel; label: string }[] = [
+  { id: "ALL", label: "All" },
+  { id: "DIRECT", label: "Direct" },
+  { id: "AUCTION", label: "Auction" },
+  { id: "INSURANCE", label: "Insurance" }
+];
+
+const GLASS_OPTIONS: { id: "ALL" | GlassType; label: string }[] = [
+  { id: "ALL", label: "All" },
+  { id: "WINDSHIELD", label: "Windshield" },
+  { id: "BACK_GLASS", label: "Back Glass" },
+  { id: "DOOR_GLASS", label: "Door Glass" },
+  { id: "QUARTER_GLASS", label: "Quarter Glass" },
+  { id: "VENT_GLASS", label: "Vent Glass" }
+];
+
+function FilterPills<T extends string>({
+  label,
+  options,
+  value,
+  onChange
+}: {
+  label: string;
+  options: { id: T; label: string }[];
+  value: T;
+  onChange: (id: T) => void;
+}) {
+  return (
+    <div className="filter-group" role="group" aria-label={label}>
+      <span className="filter-label">{label}</span>
+      <div className="pills">
+        {options.map(o => (
+          <button
+            key={o.id}
+            type="button"
+            className={"pill" + (value === o.id ? " active" : "")}
+            aria-pressed={value === o.id}
+            onClick={() => onChange(o.id)}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function App() {
   const [staff, setStaff] = useState<StaffUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -31,6 +144,45 @@ export function App() {
   const [events, setEvents] = useState<CaseEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
+
+  // Case Queue toolbar: search, pill filters, and sorting.
+  const [search, setSearch] = useState("");
+  const [channelFilter, setChannelFilter] = useState<"ALL" | Channel>("ALL");
+  const [glassFilter, setGlassFilter] = useState<"ALL" | GlassType>("ALL");
+  const [statusFilter, setStatusFilter] = useState<string>("ALL");
+  const [sortBy, setSortBy] = useState<QueueSort>("newest");
+
+  const statusOptions = useMemo(
+    () => [...new Set(cases.map(c => c.current_state))].sort(),
+    [cases]
+  );
+
+  const visibleCases = useMemo(
+    () =>
+      sortQueueCases(
+        filterQueueCases(cases, {
+          search,
+          channel: channelFilter,
+          glass: glassFilter,
+          status: statusFilter
+        }),
+        sortBy
+      ),
+    [cases, search, channelFilter, glassFilter, statusFilter, sortBy]
+  );
+
+  const filtersActive =
+    search.trim() !== "" ||
+    channelFilter !== "ALL" ||
+    glassFilter !== "ALL" ||
+    statusFilter !== "ALL";
+
+  const clearFilters = () => {
+    setSearch("");
+    setChannelFilter("ALL");
+    setGlassFilter("ALL");
+    setStatusFilter("ALL");
+  };
 
   const handleUnauthorized = () => {
     setStaff(null);
@@ -162,23 +314,89 @@ export function App() {
           <button className="primary" onClick={() => setScreen("new")}>Create first case</button>
         </div>
       ) : (
-        <div className="case-list">
-          {cases.map(c => (
-            <article className="case-card" key={c.id}>
-              <div>
-                <strong>{c.reference}</strong>
-                <span className="channel">{c.channel}</span>
-              </div>
-              <div className="vehicle">{c.vehicle.year} {c.vehicle.make} {c.vehicle.model}</div>
-              <div>{humanize(c.glass_request.glass_type)}</div>
-              <div>
-                <span className="state">{humanize(c.current_state)}</span>
-                <small>{c.current_state}</small>
-              </div>
-              <button onClick={() => void openCase(c.id)}>Open</button>
-            </article>
-          ))}
-        </div>
+        <>
+          <div className="queue-toolbar">
+            <input
+              className="queue-search"
+              type="search"
+              placeholder="Search reference, VIN, vehicle…"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              aria-label="Search cases"
+            />
+            <FilterPills
+              label="Channel"
+              options={CHANNEL_OPTIONS}
+              value={channelFilter}
+              onChange={setChannelFilter}
+            />
+            <FilterPills
+              label="Glass"
+              options={GLASS_OPTIONS}
+              value={glassFilter}
+              onChange={setGlassFilter}
+            />
+            <FilterPills
+              label="Status"
+              options={[
+                { id: "ALL", label: "All" },
+                ...statusOptions.map(s => ({ id: s, label: humanize(s) }))
+              ]}
+              value={statusFilter}
+              onChange={setStatusFilter}
+            />
+            <div className="filter-group">
+              <label className="filter-label" htmlFor="queue-sort">Sort</label>
+              <select
+                id="queue-sort"
+                value={sortBy}
+                onChange={e => setSortBy(e.target.value as QueueSort)}
+              >
+                {QUEUE_SORTS.map(s => (
+                  <option key={s.id} value={s.id}>{s.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <p className="muted queue-count">
+            {visibleCases.length} of {cases.length} {cases.length === 1 ? "case" : "cases"}
+            {filtersActive && (
+              <> — <button type="button" className="link" onClick={clearFilters}>Clear filters</button></>
+            )}
+          </p>
+          {visibleCases.length === 0 ? (
+            <div className="empty card">
+              <h2>No cases match.</h2>
+              <p>Try a different search or clear the filters.</p>
+              <button className="primary" onClick={clearFilters}>Clear filters</button>
+            </div>
+          ) : (
+            <div className="case-list">
+              {visibleCases.map(c => (
+                <article className="case-card" key={c.id}>
+                  <div>
+                    <strong>{c.reference}</strong>
+                    <span className="channel">{c.channel}</span>
+                  </div>
+                  <div className="vehicle">{vehicleName(c)}</div>
+                  <div>{humanize(c.glass_request.glass_type)}</div>
+                  <div className="sell-price">
+                    {c.price_calculation ? (
+                      <strong>{formatCents(c.price_calculation.sell_price_cents)}</strong>
+                    ) : (
+                      <span className="muted">Not priced</span>
+                    )}
+                  </div>
+                  <div>
+                    <span className="state">{humanize(c.current_state)}</span>
+                    <small>{c.current_state}</small>
+                  </div>
+                  <button onClick={() => void openCase(c.id)}>Open</button>
+                </article>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </Shell>
   );
