@@ -112,6 +112,13 @@ export interface GlassIdentification {
   provider: string;
   candidates: GlassCandidate[];
   selected_candidate: GlassCandidate | null;
+  /**
+   * Interchangeable part numbers for the selected candidate (VIN method).
+   * Sourcing prices the primary plus every interchange and picks the
+   * cheapest in-stock offer — interchanges are often cheaper than the
+   * primary, sometimes pricier (MOPAR/OEM).
+   */
+  interchange_part_numbers: string[];
   created_at: string;
 }
 
@@ -164,6 +171,12 @@ export interface SupplierOffer {
   /** Why this offer was excluded from auto-selection; null if eligible. */
   excluded_reason: string | null;
   selected: boolean;
+  /**
+   * True when this offer is for an interchangeable part number rather
+   * than the primary identified part. The full set stays visible so
+   * staff can override the system pick when a job needs the OEM part.
+   */
+  is_interchange: boolean;
   created_at: string;
 }
 

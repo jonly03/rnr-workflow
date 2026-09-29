@@ -71,6 +71,8 @@ export interface SaveGlassIdentificationInput {
   provider: string;
   candidates: GlassCandidate[];
   selectedCandidate?: GlassCandidate | null;
+  /** Interchangeable part numbers for the selected candidate (VIN method). */
+  interchangePartNumbers?: string[];
 }
 
 /**
@@ -83,6 +85,10 @@ export interface VinLookupGlassResult {
   success: boolean;
   decoded?: { year: number; make: string; model: string; trim: string };
   candidates: GlassCandidate[];
+  /** Interchangeable part numbers from the VIN result, for sourcing. */
+  interchangePartNumbers?: string[];
+  /** OEM part numbers from the VIN result, for reference/staff override. */
+  oemPartNumbers?: string[];
   error?: string;
 }
 
@@ -116,6 +122,8 @@ export interface SaveSupplierOfferInput {
   leadTimeDays: number | null;
   excludedReason: string | null;
   selected: boolean;
+  /** True when the offer is for an interchange rather than the primary part. */
+  isInterchange: boolean;
 }
 
 export interface SavePriceCalculationInput {
@@ -418,6 +426,7 @@ export class JsonCaseStore implements CaseStore {
       provider: input.provider,
       candidates: input.candidates,
       selected_candidate: input.selectedCandidate ?? null,
+      interchange_part_numbers: input.interchangePartNumbers ?? [],
       created_at: now
     };
     const next = structuredClone(this.data);
@@ -519,6 +528,7 @@ export class JsonCaseStore implements CaseStore {
       lead_time_days: input.leadTimeDays,
       excluded_reason: input.excludedReason,
       selected: input.selected,
+      is_interchange: input.isInterchange,
       created_at: now
     };
     const next = structuredClone(this.data);

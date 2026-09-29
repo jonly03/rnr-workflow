@@ -138,6 +138,7 @@ function glassIdentificationRow(row: any): GlassIdentification {
     provider: row.provider,
     candidates: parseJson<GlassCandidate[]>(row.candidates, []),
     selected_candidate: parseJson<GlassCandidate | null>(row.selected_candidate, null),
+    interchange_part_numbers: parseJson<string[]>(row.interchange_part_numbers, []),
     created_at: iso(row.created_at)
   };
 }
@@ -166,6 +167,7 @@ function supplierOfferRow(row: any): SupplierOffer {
     lead_time_days: row.lead_time_days == null ? null : Number(row.lead_time_days),
     excluded_reason: row.excluded_reason,
     selected: Boolean(row.selected),
+    is_interchange: Boolean(row.is_interchange),
     created_at: iso(row.created_at)
   };
 }
@@ -433,8 +435,8 @@ export class PgCaseStore implements CaseStore {
     const now = new Date().toISOString();
     await this.pool.query(
       `insert into glass_identifications(id, case_id, glass_request_id, method, status,
-        provider, candidates, selected_candidate, created_at)
-       values ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9)`,
+        provider, candidates, selected_candidate, interchange_part_numbers, created_at)
+       values ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9::jsonb,$10)`,
       [
         id,
         input.caseId,
@@ -444,6 +446,7 @@ export class PgCaseStore implements CaseStore {
         input.provider,
         JSON.stringify(input.candidates),
         input.selectedCandidate ? JSON.stringify(input.selectedCandidate) : null,
+        JSON.stringify(input.interchangePartNumbers ?? []),
         now
       ]
     );
@@ -545,8 +548,8 @@ export class PgCaseStore implements CaseStore {
     await this.pool.query(
       `insert into supplier_offers(id, case_id, glass_request_id, supplier_name,
         supplier_type, part_number, price_cents, available, quantity,
-        lead_time_days, excluded_reason, selected, created_at)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        lead_time_days, excluded_reason, selected, is_interchange, created_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
       [
         id,
         input.caseId,
@@ -560,6 +563,7 @@ export class PgCaseStore implements CaseStore {
         input.leadTimeDays,
         input.excludedReason,
         input.selected,
+        input.isInterchange,
         now
       ]
     );

@@ -5,6 +5,11 @@ import {
   type VinLookupResult,
   type YmmSearchInput
 } from "./glass-catalog.js";
+import {
+  MockSourcingProvider,
+  type RawSupplierOffer,
+  type SourcingProvider
+} from "./sourcing.js";
 
 /**
  * Live MyGrant provider (web automation).
@@ -945,4 +950,78 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
       if (!this.transport) await transport.close();
     }
   }
+}
+
+/**
+ * Live MyGrant sourcing provider. Wraps the free part-number search and
+ * maps real MyGrant part offers onto the sourcing contract:
+ * - "in_stock" (stock_high "Yes" = 2+ units) -> available, quantity 2.
+ * - "call_to_verify" / "unknown" -> NOT confirmed in-stock: excluded from
+ *   auto-selection (the offer stays visible for staff review). There is no
+ *   policy yet that treats call-to-verify as confirmed stock.
+ * - supplier_type is NATIONAL so MyGrant offers are auto-quoteable.
+ * Fail-loud: a login, transport, or parser failure rejects — live mode
+ * never substitutes mock data.
+ */
+export class MyGrantSourcingProvider implements SourcingProvider {
+  readonly name = "mygrant-sourcing";
+
+  constructor(
+    private readonly catalog: MyGrantWebProvider,
+    private readonly warehouseCode = "B036"
+  ) {}
+
+  async searchOffers(partNumber: string): Promise<RawSupplierOffer[]> {
+    const results = await this.catalog.searchPartNumber(partNumber, this.warehouseCode);
+    const supplierName = warehouseDisplayName(results.warehouse);
+    return results.results.map(offer => {
+      const confirmed = offer.stock === "in_stock";
+      return {
+        supplier_name: supplierName,
+        supplier_type: "NATIONAL" as const,
+        part_number: offer.part_number,
+        price_cents: offer.price_cents,
+        available: confirmed,
+        quantity: confirmed ? 2 : 0,
+        lead_time_days: null,
+        is_interchange: false
+      };
+    });
+  }
+}
+
+/**
+ * "Search Results - Randolph, MA - ..." -> "MyGrant (Randolph, MA)".
+ * Falls back to plain "MyGrant" when the label is unparseable.
+ */
+function warehouseDisplayName(warehouseLabel: string): string {
+  const m = /search results\s*-\s*([^-\n]+?)\s*-/i.exec(warehouseLabel);
+  const place = m?.[1]?.trim();
+  return place ? `MyGrant (${place})` : "MyGrant";
+}
+
+/**
+ * Sourcing provider selection. Mirrors createGlassCatalogProvider:
+ * SOURCING_PROVIDER=mock (default) or mygrant. The mygrant path requires
+ * the same MYGRANT_USERNAME / MYGRANT_PASSWORD / MYGRANT_BASE_URL config
+ * as the catalog provider and fails loudly when it is missing.
+ */
+export function createSourcingProvider(
+  env: NodeJS.ProcessEnv = process.env
+): SourcingProvider {
+  const selection = (env.SOURCING_PROVIDER ?? "mock").trim().toLowerCase();
+  if (selection === "mygrant") {
+    return new MyGrantSourcingProvider(
+      new MyGrantWebProvider(loadMyGrantConfig(env)),
+      (env.MYGRANT_WAREHOUSE ?? "B036").trim()
+    );
+  }
+  if (selection === "mock") {
+    return new MockSourcingProvider();
+  }
+  throw new MyGrantError(
+    "MYGRANT_NOT_CONFIGURED",
+    `Unknown SOURCING_PROVIDER "${selection}". Expected "mock" or "mygrant".`,
+    500
+  );
 }
