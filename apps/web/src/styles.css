@@ -40,14 +40,36 @@ h2 { margin-top: 0; }
 button:not(.primary) { background: #172033; color: #f8fafc; border: 1px solid #334155; border-radius: 10px; padding: 10px 14px; }
 .case-list { display: grid; gap: 10px; }
 .case-card {
-  display: grid; grid-template-columns: 1.1fr 1.7fr 1fr 1.4fr auto; gap: 16px; align-items: center;
+  display: grid; grid-template-columns: 1.1fr 1.7fr 1fr 0.9fr 1.4fr auto; gap: 16px; align-items: center;
   background: #111827; border: 1px solid #334155; border-radius: 14px; padding: 16px;
 }
 .case-card > div:first-child { display: flex; gap: 8px; align-items: center; }
 .channel { color: #cbd5e1; border: 1px solid #334155; border-radius: 999px; padding: 2px 8px; font-size: .72rem; }
 .state { display: inline-flex; background: rgba(37,99,235,.18); border: 1px solid #2563eb; border-radius: 999px; padding: 4px 9px; font-weight: 650; }
+.sell-price strong { font-size: 1.05rem; }
 .case-card small { display: block; margin-top: 5px; font-family: ui-monospace, SFMono-Regular, monospace; }
 .empty { text-align: center; padding: 48px 20px; }
+
+/* Case Queue toolbar: search, pill filters, sort */
+.queue-toolbar { display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: flex-end; margin-bottom: 8px; }
+.queue-search {
+  flex: 1 1 220px; min-height: 44px; padding: 10px 14px; border-radius: 10px;
+  border: 1px solid #334155; background: #0f172a; color: #f8fafc; font-size: 0.95rem;
+}
+.filter-group { display: flex; flex-direction: column; gap: 6px; }
+.filter-label { font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; color: #94a3b8; }
+.pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.pill {
+  border: 1px solid #334155; border-radius: 999px; padding: 7px 14px;
+  background: #172033; color: #cbd5e1; font-size: .85rem; cursor: pointer;
+}
+.pill:hover { border-color: #64748b; }
+.pill.active { background: #2563eb; border-color: #2563eb; color: #fff; font-weight: 650; }
+.filter-group select {
+  min-height: 40px; padding: 8px 12px; border-radius: 10px;
+  border: 1px solid #334155; background: #172033; color: #f8fafc; font-size: .9rem;
+}
+.queue-count { margin: 4px 0 12px; }
 .form { max-width: 760px; margin: 0 auto; }
 label { display: grid; gap: 8px; margin-bottom: 18px; font-weight: 650; }
 input, select {
