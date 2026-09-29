@@ -18,12 +18,12 @@ import {
   selectGlassCandidate
 } from "./glass-identification.js";
 import {
-  MockSourcingProvider,
   overrideSupplierOffer,
   runSourcing,
   SourcingError,
   type SourcingProvider
 } from "./sourcing.js";
+import { createSourcingProvider } from "./mygrant.js";
 import {
   approvePrice,
   loadPricingConfig,
@@ -109,7 +109,7 @@ export function createApp(
   deps: AppDeps = {}
 ) {
   const glassCatalog = deps.glassCatalog ?? createGlassCatalogProvider();
-  const sourcingProvider = deps.sourcingProvider ?? new MockSourcingProvider();
+  const sourcingProvider = deps.sourcingProvider ?? createSourcingProvider();
   const pricingConfig = deps.pricingConfig ?? loadPricingConfig();
   const app = express();
 

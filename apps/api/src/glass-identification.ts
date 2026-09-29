@@ -365,7 +365,7 @@ export async function requestVinLookup(
       nextState: transition(caseRecord, "USE_SAVED_VIN_RESULT"),
       payload: { vin, cached: true, charged: false }
     });
-    await evaluateVinResult(store, caseId, glassRequest, cached.candidates, provider.name, actor, false);
+    await evaluateVinResult(store, caseId, glassRequest, cached.candidates, provider.name, actor, false, cached.interchangePartNumbers);
     return;
   }
 
@@ -382,7 +382,7 @@ export async function requestVinLookup(
         nextState: transition(caseRecord, "USE_SAVED_VIN_RESULT"),
         payload: { vin, cached: true, charged: false, shared_lookup: true }
       });
-      await evaluateVinResult(store, caseId, glassRequest, winnerResult.candidates, provider.name, actor, false);
+      await evaluateVinResult(store, caseId, glassRequest, winnerResult.candidates, provider.name, actor, false, winnerResult.interchangePartNumbers);
       return;
     }
     throw new IdentificationError(
@@ -421,7 +421,13 @@ export async function requestVinLookup(
     await store.saveVinLookup({
       vin,
       glassType: glassRequest.glass_type,
-      result: { success: true, decoded: lookup.decoded, candidates: lookup.candidates }
+      result: {
+        success: true,
+        decoded: lookup.decoded,
+        candidates: lookup.candidates,
+        interchangePartNumbers: lookup.interchangePartNumbers,
+        oemPartNumbers: lookup.oemPartNumbers
+      }
     });
     await store.appendEvent({
       caseId,
@@ -430,7 +436,7 @@ export async function requestVinLookup(
       nextState: transition({ ...caseRecord, current_state: "VIN_LOOKUP_IN_PROGRESS" }, "VIN_RESULT_RETURNED"),
       payload: { vin, charged: costCents > 0, provider: provider.name, candidate_count: lookup.candidates.length }
     });
-    await evaluateVinResult(store, caseId, glassRequest, lookup.candidates, provider.name, SYSTEM, true);
+    await evaluateVinResult(store, caseId, glassRequest, lookup.candidates, provider.name, SYSTEM, true, lookup.interchangePartNumbers);
   } catch (error) {
     // A failure after submission may still have consumed the $1 credit
     // (MyGrantError.charged). Record it so the cap stays conservative
@@ -471,7 +477,8 @@ async function evaluateVinResult(
   candidates: GlassCandidate[],
   providerName: string,
   actor: Actor,
-  charged: boolean
+  charged: boolean,
+  interchangePartNumbers?: string[]
 ): Promise<void> {
   await store.saveGlassIdentification({
     caseId,
@@ -480,7 +487,8 @@ async function evaluateVinResult(
     status: candidates.length === 1 ? "RESOLVED" : "AMBIGUOUS",
     provider: providerName,
     candidates,
-    selectedCandidate: candidates.length === 1 ? candidates[0] : null
+    selectedCandidate: candidates.length === 1 ? candidates[0] : null,
+    interchangePartNumbers
   });
 
   // The case is in GLASS_MATCH_EVALUATION after the VIN result event.
@@ -491,7 +499,7 @@ async function evaluateVinResult(
     await store.appendEvent({
       caseId, eventType: "GLASS_RESOLVED", actor,
       nextState: at("GLASS_RESOLVED"),
-      payload: { method: "VIN", charged, part_number: candidates[0].part_number }
+      payload: { method: "VIN", charged, part_number: candidates[0].part_number, interchange_count: interchangePartNumbers?.length ?? 0 }
     });
   } else {
     await store.appendEvent({

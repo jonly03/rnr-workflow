@@ -12,6 +12,12 @@ export interface RawSupplierOffer {
   available: boolean;
   quantity: number;
   lead_time_days: number | null;
+  /**
+   * True when this offer is for an interchangeable part number rather
+   * than the primary identified part. Set by runSourcing based on which
+   * part number the offer was searched for.
+   */
+  is_interchange: boolean;
 }
 
 /**
@@ -53,7 +59,8 @@ export class MockSourcingProvider implements SourcingProvider {
           price_cents: 18000,
           available: true,
           quantity: 4,
-          lead_time_days: 2
+          lead_time_days: 2,
+          is_interchange: false
         },
         {
           supplier_name: "Local Auto Glass",
@@ -62,16 +69,21 @@ export class MockSourcingProvider implements SourcingProvider {
           price_cents: 22000,
           available: false,
           quantity: 0,
-          lead_time_days: null
+          lead_time_days: null,
+          is_interchange: false
         }
       ];
     }
 
     // Base price derived deterministically from the part number so repeat
-    // searches of the same part return the same offers.
+    // searches of the same part return the same offers. Interchange part
+    // numbers (the mock catalog emits "<primary>-ALT1"/"-ALT2") price
+    // cheaper than the primary — mirroring real MyGrant behavior where
+    // interchanges are usually (not always) the cheaper option.
     let hash = 0;
     for (let i = 0; i < pn.length; i++) hash = (hash * 31 + pn.charCodeAt(i)) >>> 0;
-    const base = 20000 + (hash % 30000); // $200-$500
+    const isAlt = pn.includes("-ALT");
+    const base = isAlt ? 8000 + (hash % 12000) : 20000 + (hash % 30000); // $80-$200 vs $200-$500
 
     return [
       {
@@ -81,7 +93,8 @@ export class MockSourcingProvider implements SourcingProvider {
         price_cents: base,
         available: true,
         quantity: 6,
-        lead_time_days: 3
+        lead_time_days: 3,
+        is_interchange: false
       },
       {
         supplier_name: "Allied Auto Glass",
@@ -90,7 +103,8 @@ export class MockSourcingProvider implements SourcingProvider {
         price_cents: base + 2500,
         available: true,
         quantity: 3,
-        lead_time_days: 2
+        lead_time_days: 2,
+        is_interchange: false
       },
       {
         supplier_name: "Regional Glass Depot",
@@ -99,7 +113,8 @@ export class MockSourcingProvider implements SourcingProvider {
         price_cents: base - 3000,
         available: true,
         quantity: 8,
-        lead_time_days: 1
+        lead_time_days: 1,
+        is_interchange: false
       },
       {
         supplier_name: "Local Auto Glass",
@@ -108,7 +123,8 @@ export class MockSourcingProvider implements SourcingProvider {
         price_cents: base + 1000,
         available: false,
         quantity: 0,
-        lead_time_days: null
+        lead_time_days: null,
+        is_interchange: false
       }
     ];
   }
@@ -200,8 +216,10 @@ export function evaluateOfferEligibility(offer: RawSupplierOffer): string | null
  * Runs supplier sourcing. Automatic after GLASS_IDENTIFIED; also the handler
  * for the staff `retry_sourcing` action from NO_ELIGIBLE_INVENTORY.
  *
- * Selects the cheapest eligible available non-Regional offer. If no eligible
- * offer exists, the case moves to NO_ELIGIBLE_INVENTORY for R&R review.
+ * Prices the primary part plus every interchangeable part number from the
+ * VIN identification, and selects the cheapest eligible in-stock offer
+ * across the whole set. If no eligible offer exists, the case moves to
+ * NO_ELIGIBLE_INVENTORY for R&R review.
  */
 export async function runSourcing(
   store: CaseStore,
@@ -216,8 +234,8 @@ export async function runSourcing(
   if (!glassRequest) throw new Error("Case is missing glass request.");
 
   const identification = await store.getLatestGlassIdentification(glassRequest.id);
-  const partNumber = identification?.selected_candidate?.part_number;
-  if (!partNumber) {
+  const primaryPartNumber = identification?.selected_candidate?.part_number;
+  if (!primaryPartNumber) {
     throw new SourcingError(
       "NO_IDENTIFIED_GLASS",
       "Sourcing requires an identified glass part.",
@@ -225,17 +243,44 @@ export async function runSourcing(
     );
   }
 
+  // Primary plus every interchange, deduplicated case-insensitively.
+  // Interchanges are often cheaper than the primary (sometimes pricier
+  // MOPAR/OEM) — either way the vehicle gets the cheapest in-stock part.
+  const seen = new Set([primaryPartNumber.trim().toUpperCase()]);
+  const partNumbers = [primaryPartNumber];
+  for (const alt of identification?.interchange_part_numbers ?? []) {
+    const key = alt.trim().toUpperCase();
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      partNumbers.push(alt.trim());
+    }
+  }
+
   await store.appendEvent({
     caseId,
     eventType: initiatingEvent,
     actor,
     nextState: transition(caseRecord, initiatingEvent),
-    payload: { provider: provider.name, part_number: partNumber }
+    payload: {
+      provider: provider.name,
+      part_number: primaryPartNumber,
+      part_numbers_searched: partNumbers,
+      interchange_count: partNumbers.length - 1
+    }
   });
 
   let rawOffers: RawSupplierOffer[];
   try {
-    rawOffers = await provider.searchOffers(partNumber);
+    // Part-number searches are free; only VIN lookups cost money.
+    const perPart = await Promise.all(
+      partNumbers.map(async partNumber => {
+        const offers = await provider.searchOffers(partNumber);
+        const isInterchange =
+          partNumber.trim().toUpperCase() !== primaryPartNumber.trim().toUpperCase();
+        return offers.map(offer => ({ ...offer, is_interchange: isInterchange }));
+      })
+    );
+    rawOffers = perPart.flat();
   } catch (error) {
     await store.appendEvent({
       caseId,
@@ -255,7 +300,11 @@ export async function runSourcing(
     eventType: "SUPPLIER_OFFERS_RETURNED",
     actor: SYSTEM,
     nextState: transition({ ...caseRecord, current_state: "SOURCING_IN_PROGRESS" }, "SUPPLIER_OFFERS_RETURNED"),
-    payload: { provider: provider.name, offer_count: rawOffers.length }
+    payload: {
+      provider: provider.name,
+      offer_count: rawOffers.length,
+      part_numbers_searched: partNumbers
+    }
   });
 
   // Persist all offers with eligibility evaluation.
@@ -278,7 +327,8 @@ export async function runSourcing(
       quantity: offer.quantity,
       leadTimeDays: offer.lead_time_days,
       excludedReason,
-      selected: false
+      selected: false,
+      isInterchange: offer.is_interchange
     });
   }
 
@@ -309,10 +359,12 @@ export async function runSourcing(
     return;
   }
 
-  // Cheapest eligible offer wins. Deterministic tiebreak: supplier name.
+  // Cheapest eligible offer wins, across the primary and every
+  // interchange. Deterministic tiebreak: supplier name, then part number.
   eligible.sort((a, b) =>
     a.offer.price_cents - b.offer.price_cents ||
-    a.offer.supplier_name.localeCompare(b.offer.supplier_name)
+    a.offer.supplier_name.localeCompare(b.offer.supplier_name) ||
+    a.offer.part_number.localeCompare(b.offer.part_number)
   );
   const winner = eligible[0];
 
@@ -321,6 +373,7 @@ export async function runSourcing(
   const winnerRecord = persisted.find(
     o => o.supplier_name === winner.offer.supplier_name &&
          o.price_cents === winner.offer.price_cents &&
+         o.part_number === winner.offer.part_number &&
          !o.excluded_reason
   );
   if (winnerRecord) {
@@ -336,7 +389,8 @@ export async function runSourcing(
       provider: provider.name,
       supplier_name: winner.offer.supplier_name,
       price_cents: winner.offer.price_cents,
-      part_number: winner.offer.part_number
+      part_number: winner.offer.part_number,
+      is_interchange: winner.offer.is_interchange
     }
   });
 }
