@@ -30,3 +30,7 @@ apps/api/data/
 
 # macOS
 .DS_Store
+
+# Tesseract downloads its language data next to the package at test time;
+# the API bundles its own copy at apps/api/data/tessdata/eng.traineddata.gz.
+**/*.traineddata
