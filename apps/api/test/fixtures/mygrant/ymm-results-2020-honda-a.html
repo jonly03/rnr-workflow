@@ -1,0 +1,65 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<!--
+  SANITIZED FIXTURE — captured 2026-09-29 from the live MyGrant
+  make/model search results
+  (searchm.aspx?yr=2020&mk=Honda&md=A&smdo=Search).
+  PII redacted: login email, shop name, ship-to/account ID, street
+  address, analytics/tracking scripts, and password-manager injected
+  markup were removed or replaced with placeholders. Header nav, cart
+  sidebar, footer, and tips trimmed; the search form and the results
+  list (#cms_DivModels) are structurally verbatim.
+
+  Key transport facts (confirmed live):
+  - Results render in the element whose id is cms_DivModels, as an OL
+    of LI elements each holding an A (href carries yr/mk/md/v params).
+  - Clicking a vehicle shows its associated parts (a further drill-down
+    the provider can follow via the v= link).
+  - Model search is prefix-based and case-sensitive: md=A returned the
+    exhaustive 2020 Honda "A…" list below (4 vehicles).
+-->
+<html><head>
+		<title>Mygrant Glass - Make/Model Search</title>
+		<meta http-equiv="PRAGMA" content="NO-CACHE"><meta http-equiv="CACHE-CONTROL" content="NO-CACHE">
+	</head>
+	<body>
+		<div id="wrapper">
+			<div id="content">
+				<div class="left_partial">
+<div id="control_modelsearch">
+	<h2>Search by Make/Model</h2>
+	<form name="form_search" id="form_search" action="searchm.aspx" method="get">
+		<p>
+			<table id="table_search" cellspacing="0" cellpadding="2" border="0">
+				<tbody><tr class="mini">
+					<td>Year</td>
+					<td>Make (required)</td>
+					<td>Model</td>
+					<td></td>
+				</tr>
+				<tr>
+					<td>
+						<input class="mgctext" type="text" name="yr" value="2020" size="4" maxlength="4"></td>
+					<td>
+						<input class="mgctext" type="text" name="mk" value="Honda" size="12" maxlength="50"></td>
+					<td>
+						<input class="mgctext" type="text" name="md" value="A" size="12" maxlength="50"></td>
+					<td>
+						<input class="mgcbutton" id="smdo" name="smdo" type="submit" value="Search"></td>
+				</tr>
+			</tbody></table>
+		</p>
+	</form>
+	<div id="cms_DivModels">
+		<h3>Matching Vehicle List</h3>
+		<p>
+			<span id="cms_LabelModelResults">
+				Click on the name of a vehicle to see a list of associated parts.
+			</span>
+			</p><ol><li><a href="?yr=2020&amp;mk=Honda&amp;md=A&amp;v=Honda+Accord+2020+4+Door+Sedan">Honda Accord 2020 4 Door Sedan</a></li><li><a href="?yr=2020&amp;mk=Honda&amp;md=A&amp;v=Honda+Accord+ACCORD+HYBRID+2020+4+Door+Sedan">Honda Accord ACCORD HYBRID 2020 4 Door Sedan</a></li><li><a href="?yr=2020&amp;mk=Honda&amp;md=A&amp;v=Honda+Clarity+2020+4+Door+Sedan">Honda Clarity 2020 4 Door Sedan</a></li><li><a href="?yr=2020&amp;mk=Honda&amp;md=A&amp;v=Honda+Passport+2020+4+Door+Utility">Honda Passport 2020 4 Door Utility</a></li></ol>
+		<p></p>
+	</div>
+</div>
+				</div>
+			</div>
+		</div>
+</body></html>

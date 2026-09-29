@@ -17,6 +17,15 @@ export interface VinLookupResult {
   };
   /** Disambiguated candidates: the VIN pins down the exact option set. */
   candidates: GlassCandidate[];
+  /**
+   * Interchangeable part numbers from the VIN result ("Interchangeables:"
+   * list). The sourcing step prices every one of these and picks the
+   * cheapest in-stock option — interchanges are often cheaper than the
+   * primary, sometimes pricier (MOPAR/OEM).
+   */
+  interchangePartNumbers?: string[];
+  /** OEM part numbers from the VIN result, for reference/staff override. */
+  oemPartNumbers?: string[];
 }
 
 /**
@@ -120,18 +129,23 @@ export class MockGlassCatalogProvider implements GlassCatalogProvider {
     const trimCodes = ["LX", "EX", "Touring", "Sport"];
     const trim = trimCodes[normalized.charCodeAt(8) % trimCodes.length];
     const suffix = glassType === "WINDSHIELD" ? "WS" : glassType.slice(0, 2);
+    const primary = `VIN-${normalized.slice(0, 8)}-${suffix}`;
     return {
       vin: normalized,
       decoded: { year: 2020, make: "Honda", model: "Accord", trim },
       candidates: [
         {
-          part_number: `VIN-${normalized.slice(0, 8)}-${suffix}`,
+          part_number: primary,
           description: `VIN-decoded ${GLASS_LABEL[glassType]} (${trim} trim)`,
           features: ["rain-sensor", "acoustic"],
           position: glassType,
           list_price_cents: 52000
         }
-      ]
+      ],
+      // Same shape as the live MyGrant provider: the sourcing step prices
+      // the primary plus every interchange and picks the cheapest in-stock.
+      interchangePartNumbers: [`${primary}-ALT1`, `${primary}-ALT2`],
+      oemPartNumbers: [`OEM-${normalized.slice(0, 8)}-AA`]
     };
   }
 }

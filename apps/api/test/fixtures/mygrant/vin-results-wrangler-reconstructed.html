@@ -1,0 +1,83 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<!--
+  RECONSTRUCTED FIXTURE — NOT verbatim. Built 2026-09-29 from field notes
+  taken during the single authorized $1 VIN lookup
+  (VIN 1C4HJXEG3JW224862, glass type Windshield; credits 9 -> 8).
+  The real result page was not re-captured (that would cost another $1).
+  Every selector below was observed live and is real:
+    #cvs_DivModel, #cvs_LabelMake, #cvs_LabelModel, #cvs_LabelYear,
+    #cvs_LabelStyle, <lh> list headings ("Features:", "Interchangeables:",
+    "OEM Part Numbers:"), a.WsResult part/interchange anchors,
+    #cvs_lookupCredits.
+  The nesting/arrangement is the author's best reconstruction; parsers
+  MUST select by id/class, never by rigid nesting, until a verbatim
+  capture replaces this file. The vehicle/part data below is real:
+    2018 Jeep Wrangler — primary DW02415 GTY (Solar Glass, Acoustic
+    Glass, Willys Logo), interchange DW02416 GTY, OEM numbers
+    68291705AA, 68433234AA, 68433234AB, 68433234AC.
+-->
+<html><head>
+		<title>Mygrant Glass - Vehicle ID (VIN) Search</title>
+		<meta http-equiv="PRAGMA" content="NO-CACHE"><meta http-equiv="CACHE-CONTROL" content="NO-CACHE">
+	</head>
+	<body>
+		<div id="wrapper">
+			<div id="content">
+				<div class="left_partial">
+<div id="control_vinsearch">
+	<div id="cvs_DivSearchBar">
+	<div id="cvs_VinSearchAd" class="vinad vinad-lookup-credits vinad-centered">
+			<pre>VIN Lookups Remaining: <span id="cvs_lookupCredits">8</span></pre>
+	</div>
+	<h2>Search by Vehicle ID Number (VIN)</h2>
+	<form name="form_search" id="form_search" action="searchvin.aspx" method="get">
+		<table id="table_search" cellspacing="0" cellpadding="2" border="0" style="width:75%">
+			<tbody><tr class="mini">
+				<td>Vehicle ID Number</td>
+				<td>&nbsp;</td>
+			</tr>
+			<tr>
+	    		<td><input class="mgctext" type="text" name="vin" value="1C4HJXEG3JW224862" size="15" maxlength="17" style="width:100%"></td>
+				<td>
+					<select name="cvs:GlassTypeSelect" id="cvs_GlassTypeSelect" class="mgctext" style="width:100%">
+	<option value="Windshield" selected="">Windshield</option>
+	<option value="Back">Back Glass</option>
+</select></td>
+                <td><input class="mgcbutton" id="svindo" name="svindo" type="submit" value="Search"></td>
+			</tr>
+		</tbody></table>
+	</form>
+    </div>
+	<div id="cvs_DivModel">
+		<h3>
+			<span id="cvs_LabelYear">2018</span>
+			<span id="cvs_LabelMake">Jeep</span>
+			<span id="cvs_LabelModel">Wrangler</span>
+			<span id="cvs_LabelStyle">4 Door Utility</span>
+		</h3>
+		<div class="vinresult">
+			<a class="WsResult" href="search.aspx?q=DW02415+GTY">DW02415 GTY</a>
+			<ul>
+				<lh>Features:</lh>
+				<li>Solar Glass</li>
+				<li>Acoustic Glass</li>
+				<li>Willys Logo</li>
+			</ul>
+			<ul>
+				<lh>Interchangeables:</lh>
+				<li><a class="WsResult" href="search.aspx?q=DW02416+GTY">DW02416 GTY</a></li>
+			</ul>
+			<ul>
+				<lh>OEM Part Numbers:</lh>
+				<li>68291705AA</li>
+				<li>68433234AA</li>
+				<li>68433234AB</li>
+				<li>68433234AC</li>
+			</ul>
+		</div>
+	</div>
+</div>
+				</div>
+			</div>
+		</div>
+</body></html>

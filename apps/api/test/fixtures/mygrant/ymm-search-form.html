@@ -1,0 +1,71 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<!--
+  SANITIZED FIXTURE — captured 2026-09-29 from the live MyGrant
+  make/model (YMM) search form (searchm.aspx, loaded without submitting).
+  PII redacted: login email, shop name, ship-to/account ID, street
+  address, analytics/tracking scripts, and password-manager injected
+  markup were removed or replaced with placeholders. Header nav, cart
+  sidebar, footer, and tips trimmed; the search form is structurally
+  verbatim.
+
+  Key transport facts (confirmed live):
+  - Form submits via GET to searchm.aspx.
+  - Params: yr (year, 2 or 4 digits), mk (make, required), md (model;
+    prefix match, case-sensitive), smdo=Search (submit).
+  - Leave md blank to list all models for the year.
+  - YMM searches are FREE (no credits involved).
+-->
+<html><head>
+		<title>Mygrant Glass - Make/Model Search</title>
+		<meta http-equiv="PRAGMA" content="NO-CACHE"><meta http-equiv="CACHE-CONTROL" content="NO-CACHE">
+	</head>
+	<body>
+		<div id="wrapper">
+			<div id="content">
+				<div class="left_partial">
+<div id="control_modelsearch">
+	<div id="cms_VinSearchAd">
+	<div class="vinad">
+		<pre><span id="cms_vin_ad">Can't find the exact part you're looking for? Try our <a class="link" href="searchvin.aspx">VIN search!</a></span></pre>
+	</div>
+	</div>
+	<h2>Search by Make/Model</h2>
+	<form name="form_search" id="form_search" action="searchm.aspx" method="get">
+		<p>
+			<table id="table_search" cellspacing="0" cellpadding="2" border="0">
+				<tbody><tr class="mini">
+					<td>Year</td>
+					<td>Make (required)</td>
+					<td>Model</td>
+					<td></td>
+				</tr>
+				<tr>
+					<td>
+						<input class="mgctext" type="text" name="yr" value="" size="4" maxlength="4"></td>
+					<td>
+						<input class="mgctext" type="text" name="mk" value="" size="12" maxlength="50"></td>
+					<td>
+						<input class="mgctext" type="text" name="md" value="" size="12" maxlength="50"></td>
+					<td>
+						<input class="mgcbutton" id="smdo" name="smdo" type="submit" value="Search"></td>
+				</tr>
+				<tr class="example">
+					<td>Example:</td>
+					<td></td>
+					<td></td>
+					<td></td>
+				</tr>
+				<tr class="example">
+					<td>99</td>
+					<td>Toyota</td>
+					<td>Sienna</td>
+					<td></td>
+				</tr>
+			</tbody></table>
+		</p>
+	</form>
+</div>
+				</div>
+			</div>
+		</div>
+</body></html>

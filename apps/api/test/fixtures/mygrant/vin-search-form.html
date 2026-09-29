@@ -1,0 +1,58 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<!--
+  SANITIZED FIXTURE — captured 2026-09-29 from the live MyGrant VIN search
+  form (searchvin.aspx, loaded WITHOUT submitting — no lookup was charged).
+  PII redacted: login email, shop name, ship-to/account ID, street address,
+  analytics/tracking scripts, and password-manager injected markup were
+  removed or replaced with placeholders. Header nav, cart sidebar, footer,
+  and help text trimmed; the credits counter and search form are
+  structurally verbatim.
+
+  Key transport facts (confirmed live):
+  - Form submits via GET to searchvin.aspx.
+  - Params: vin (text, maxlength 17), cvs:GlassTypeSelect (select;
+    NOTE the colon in the field name — naive query-string splitting breaks
+    on it; URL-encode as cvs%3AGlassTypeSelect), svindo=Search (submit).
+  - Glass-type options: value="Windshield" (Windshield), value="Back"
+    (Back Glass).
+  - Credits counter: a PRE element reading "VIN Lookups Remaining: N"
+    where N sits in a SPAN whose id is cvs_lookupCredits, inside
+    the element whose id is cvs_VinSearchAd.
+-->
+<html><head>
+		<title>Mygrant Glass - Vehicle ID (VIN) Search</title>
+		<meta http-equiv="PRAGMA" content="NO-CACHE"><meta http-equiv="CACHE-CONTROL" content="NO-CACHE">
+	</head>
+	<body>
+		<div id="wrapper">
+			<div id="content">
+				<div class="left_partial">
+<div id="control_vinsearch">
+	<div id="cvs_DivSearchBar">
+	<div id="cvs_VinSearchAd" class="vinad vinad-lookup-credits vinad-centered">
+			<pre>VIN Lookups Remaining: <span id="cvs_lookupCredits">8</span></pre>
+	</div>
+	<h2>Search by Vehicle ID Number (VIN)</h2>
+	<form name="form_search" id="form_search" action="searchvin.aspx" method="get">
+		<table id="table_search" cellspacing="0" cellpadding="2" border="0" style="width:75%">
+			<tbody><tr class="mini">
+				<td>Vehicle ID Number</td>
+				<td>&nbsp;</td>
+			</tr>
+			<tr>
+	    		<td><input class="mgctext" type="text" name="vin" value="" size="15" maxlength="17" style="width:100%"></td>
+				<td>
+					<select name="cvs:GlassTypeSelect" id="cvs_GlassTypeSelect" class="mgctext" style="width:100%">
+	<option value="Windshield">Windshield</option>
+	<option value="Back">Back Glass</option>
+</select></td>
+                <td><input class="mgcbutton" id="svindo" name="svindo" type="submit" value="Search"></td>
+			</tr>
+		</tbody></table>
+	</form>
+    </div>
+</div>
+				</div>
+			</div>
+		</div>
+</body></html>

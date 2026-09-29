@@ -10,9 +10,9 @@ import {
  * Live MyGrant provider (web automation).
  *
  * MyGrant exposes no usable API, so this provider drives the MyGrant
- * website (plain ASP.NET WebForms postbacks) over HTTP: login once with
- * the shop's credentials, reuse the session cookie, submit the search
- * forms, and parse the results pages.
+ * website over HTTP: login once via the WebForms POST with the shop's
+ * credentials, reuse the session cookie, then submit the VIN/YMM/part
+ * search forms as authenticated GET requests, and parse the results pages.
  *
  * FAIL-LOUD CONTRACT (non-negotiable): in live mode this provider NEVER
  * substitutes mock data, empty results-as-success, or guesses. Any
@@ -27,11 +27,22 @@ import {
  * Charge-avoidance (cache first, single-flight claims) lives in
  * glass-identification.ts and applies to the paid VIN path.
  *
- * PARSING STATUS: the result-page parsers below are PROVISIONAL. They
- * were written against the logged-out page structure; the authenticated
- * results tables have not been captured yet. After a live capture run,
- * finalize the parsers against real HTML and reshape the mock to match.
- * Until then they throw MYGRANT_PARSE_ERROR rather than guess.
+ * PARSING STATUS (finalized 2026-09-29 against live captures; fixtures in
+ * test/fixtures/mygrant/):
+ * - VIN search form (searchvin.aspx): verbatim. GET with params vin,
+ *   cvs:GlassTypeSelect (Windshield|Back), svindo=Search. Credits counter
+ *   at #cvs_lookupCredits. Only Windshield and Back Glass exist on the site.
+ * - VIN results: RECONSTRUCTED from field notes of the single authorized $1
+ *   lookup (see vin-results-wrangler-reconstructed.html). All selectors are
+ *   real (#cvs_DivModel, #cvs_LabelMake/Model/Year/Style, <lh> headings,
+ *   a.WsResult); nesting is best-guess, so the parser selects by id/class
+ *   only. Replace with a verbatim capture on the next legitimate lookup.
+ * - YMM search form + vehicle results (searchm.aspx): verbatim. GET with
+ *   yr/mk/md/smdo=Search; results are vehicles in #cms_DivModels ol li a.
+ *   The vehicle→parts drill-down page has NOT been captured, so live YMM
+ *   cannot resolve glass candidates yet (fails loudly, see searchYmm).
+ * - Part-number search (search.aspx): verbatim. GET with q/sc/do=Search;
+ *   results in #table_searchparts with stock_high/stock_low spans.
  */
 
 export const MYGRANT_BASE_URL_DEFAULT = "https://www.mygrantglass.com";
@@ -49,7 +60,8 @@ export type MyGrantErrorCode =
   | "MYGRANT_NO_CREDITS"
   | "MYGRANT_UNAVAILABLE"
   | "MYGRANT_PARSE_ERROR"
-  | "MYGRANT_SPEND_CAP_EXCEEDED";
+  | "MYGRANT_SPEND_CAP_EXCEEDED"
+  | "MYGRANT_UNSUPPORTED_GLASS_TYPE";
 
 export class MyGrantError extends Error {
   /**
@@ -383,9 +395,11 @@ export class ReplayMyGrantTransport implements MyGrantTransport {
 }
 
 // ---------------------------------------------------------------------------
-// Provisional result parsers. Structure of the authenticated results pages
-// is still unknown — these parse conservatively and throw MYGRANT_PARSE_ERROR
-// instead of guessing. Finalize against a live capture.
+// Result parsers, finalized against live captures 2026-09-29
+// (fixtures in test/fixtures/mygrant/). Every parser selects by id/class,
+// never by rigid nesting, because the VIN results fixture is reconstructed
+// from field notes. Anything unrecognizable throws MYGRANT_PARSE_ERROR —
+// never a guess.
 // ---------------------------------------------------------------------------
 
 /** Strip tags and collapse whitespace for text extraction. */
@@ -395,11 +409,59 @@ function textOf(html: string): string {
     .trim();
 }
 
+/** Text of the element with the given id, or null when absent. */
+function textOfId(html: string, id: string): string | null {
+  const inner = innerHtmlOfId(html, id);
+  return inner === null ? null : textOf(inner);
+}
+
 /**
- * Read the "VIN Lookups Remaining:" counter. Returns null when the counter
- * cannot be found — the caller treats that as a loud failure, not as "plenty".
+ * Inner HTML of the element with the given id, or null when absent.
+ * Counts nested tags so containers with nested same-name elements
+ * (e.g. divs inside #cvs_DivModel) are extracted whole.
+ */
+function innerHtmlOfId(html: string, id: string): string | null {
+  const openRe = new RegExp(
+    `<([a-zA-Z][a-zA-Z0-9]*)\\b[^>]*\\bid\\s*=\\s*["']${id}["'][^>]*>`,
+    "i"
+  );
+  const open = openRe.exec(html);
+  if (!open) return null;
+  const tag = open[1].toLowerCase();
+  const start = open.index + open[0].length;
+  const tagRe = new RegExp(`<(/?)${tag}\\b[^>]*>`, "gi");
+  tagRe.lastIndex = start;
+  let depth = 1;
+  let m: RegExpExecArray | null;
+  while ((m = tagRe.exec(html)) !== null) {
+    if (m[0].endsWith("/>")) continue; // self-closing: no depth change
+    if (m[1] === "/") depth -= 1;
+    else depth += 1;
+    if (depth === 0) return html.slice(start, m.index);
+  }
+  return null;
+}
+
+function parseError(what: string): MyGrantError {
+  return new MyGrantError(
+    "MYGRANT_PARSE_ERROR",
+    `MyGrant page did not contain a recognizable ${what}. ` +
+      "The site may have changed; refusing to guess.",
+    502
+  );
+}
+
+/**
+ * Read the "VIN Lookups Remaining:" counter. Targets the #cvs_lookupCredits
+ * span first, falls back to the label text. Returns null when the counter
+ * cannot be found — the caller treats that as a loud failure, not "plenty".
  */
 export function parseVinLookupsRemaining(html: string): number | null {
+  const span = textOfId(html, "cvs_lookupCredits");
+  if (span !== null) {
+    const n = Number(span.replace(/,/g, ""));
+    return Number.isFinite(n) ? n : null;
+  }
   const m = /VIN Lookups Remaining:\s*([0-9,]+)/i.exec(textOf(html));
   if (!m) return null;
   return Number(m[1].replace(/,/g, ""));
@@ -415,30 +477,6 @@ export function isAuthenticatedPage(html: string): boolean {
   return /logout/i.test(html) && !isLoginPage(html);
 }
 
-/**
- * Extract <option> values from a <select>, matched by visible label text.
- * Used for the glass-type dropdown whose option *values* are unknown.
- */
-export function selectOptionValue(html: string, selectName: string, label: string): string | null {
-  const selectRe = new RegExp(
-    `<select\\b[^>]*\\bname\\s*=\\s*["']${selectName}["'][^>]*>([\\s\\S]*?)</select>`,
-    "i"
-  );
-  const body = selectRe.exec(html)?.[1];
-  if (!body) return null;
-  const optionRe = /<option\b[^>]*\bvalue\s*=\s*["']([^"']*)["'][^>]*>([\s\S]*?)<\/option\s*>/gi;
-  let m: RegExpExecArray | null;
-  while ((m = optionRe.exec(body)) !== null) {
-    if (textOf(m[2]).toLowerCase() === label.toLowerCase()) return decodeEntities(m[1]);
-  }
-  // Fallback: option without an explicit value attribute.
-  const bareRe = /<option\b[^>]*>([\s\S]*?)<\/option\s*>/gi;
-  while ((m = bareRe.exec(body)) !== null) {
-    if (textOf(m[1]).toLowerCase() === label.toLowerCase()) return textOf(m[1]);
-  }
-  return null;
-}
-
 const GLASS_TYPE_LABEL: Record<GlassType, string> = {
   WINDSHIELD: "Windshield",
   BACK_GLASS: "Back Glass",
@@ -448,117 +486,246 @@ const GLASS_TYPE_LABEL: Record<GlassType, string> = {
 };
 
 /**
- * PROVISIONAL: parse VIN search results into candidates. Throws
- * MYGRANT_PARSE_ERROR unless a recognizable results table is present.
+ * The MyGrant VIN form's glass-type dropdown (name="cvs:GlassTypeSelect")
+ * offers exactly two options, confirmed live: value="Windshield" and
+ * value="Back". Any other glass type cannot be looked up on the site.
+ */
+const GLASS_TYPE_SITE_VALUE: Partial<Record<GlassType, string>> = {
+  WINDSHIELD: "Windshield",
+  BACK_GLASS: "Back"
+};
+
+export function siteGlassTypeValue(glassType: GlassType): string {
+  const value = GLASS_TYPE_SITE_VALUE[glassType];
+  if (!value) {
+    throw new MyGrantError(
+      "MYGRANT_UNSUPPORTED_GLASS_TYPE",
+      `MyGrant's VIN lookup only offers Windshield and Back Glass; ` +
+        `cannot look up ${GLASS_TYPE_LABEL[glassType]}. No lookup was attempted.`,
+      422
+    );
+  }
+  return value;
+}
+
+/** One <a class="WsResult"> part anchor from a VIN results page. */
+interface WsResultAnchor {
+  partNumber: string;
+  href: string;
+}
+
+function extractWsResultAnchors(scopeHtml: string): WsResultAnchor[] {
+  const out: WsResultAnchor[] = [];
+  const re =
+    /<a\b[^>]*\bclass\s*=\s*["'][^"']*\bWsResult\b[^"']*["'][^>]*>([\s\S]*?)<\/a\s*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(scopeHtml)) !== null) {
+    const href = /\bhref\s*=\s*["']([^"']*)["']/i.exec(m[0])?.[1] ?? "";
+    const partNumber = textOf(m[1]);
+    if (partNumber) out.push({ partNumber, href: decodeEntities(href) });
+  }
+  return out;
+}
+
+/**
+ * Find the <ul> whose <lh> heading matches `heading` (e.g. "Features:"),
+ * and return the text of its <li> items. Returns null when no such list
+ * exists in the scope HTML.
+ */
+function listItemsUnderHeading(scopeHtml: string, heading: string): string[] | null {
+  const ulRe = /<ul\b[^>]*>([\s\S]*?)<\/ul\s*>/gi;
+  let ul: RegExpExecArray | null;
+  while ((ul = ulRe.exec(scopeHtml)) !== null) {
+    const lh = /<lh\b[^>]*>([\s\S]*?)<\/lh\s*>/i.exec(ul[1]);
+    if (lh && textOf(lh[1]).toLowerCase() === heading.toLowerCase()) {
+      const items: string[] = [];
+      const liRe = /<li\b[^>]*>([\s\S]*?)<\/li\s*>/gi;
+      let li: RegExpExecArray | null;
+      while ((li = liRe.exec(ul[1])) !== null) {
+        const t = textOf(li[1]);
+        if (t) items.push(t);
+      }
+      return items;
+    }
+  }
+  return null;
+}
+
+/** Inner HTML of the <ul> headed `heading`, or null when absent. */
+function listHtmlUnderHeading(scopeHtml: string, heading: string): string | null {
+  const ulRe = /<ul\b[^>]*>([\s\S]*?)<\/ul\s*>/gi;
+  let ul: RegExpExecArray | null;
+  while ((ul = ulRe.exec(scopeHtml)) !== null) {
+    const lh = /<lh\b[^>]*>([\s\S]*?)<\/lh\s*>/i.exec(ul[1]);
+    if (lh && textOf(lh[1]).toLowerCase() === heading.toLowerCase()) return ul[1];
+  }
+  return null;
+}
+
+function stripListHtml(scopeHtml: string, listInner: string): string {
+  return scopeHtml.replace(listInner, "");
+}
+
+/**
+ * Parse a VIN results page (#cvs_DivModel) into the decoded vehicle, the
+ * primary glass candidate, its features, interchangeable part numbers,
+ * and OEM part numbers. Selectors confirmed live 2026-09-29.
  */
 export function parseVinResults(
   html: string,
   vin: string,
   glassType: GlassType
 ): VinLookupResult {
-  const rows = extractResultRows(html);
-  if (rows.length === 0) {
-    throw new MyGrantError(
-      "MYGRANT_PARSE_ERROR",
-      "MyGrant VIN results page has no recognizable results table. " +
-        "The provisional parser needs finalizing against a live capture.",
-      502
-    );
+  const scope = innerHtmlOfId(html, "cvs_DivModel");
+  if (!scope) throw parseError("VIN results container (#cvs_DivModel)");
+
+  const yearText = textOfId(scope, "cvs_LabelYear") ?? "";
+  const year = Number(yearText);
+  if (!Number.isFinite(year) || year < 1900 || year > 2100) {
+    throw parseError("vehicle year (#cvs_LabelYear)");
   }
-  const candidates: GlassCandidate[] = rows.map(row => ({
-    part_number: row.partNumber,
-    description: row.description || `${GLASS_TYPE_LABEL[glassType]} (VIN ${vin})`,
-    features: row.features,
-    position: glassType,
-    // PROVISIONAL: price extraction finalized after live capture.
-    list_price_cents: row.listPriceCents ?? 0
-  }));
+  const decoded = {
+    year,
+    make: textOfId(scope, "cvs_LabelMake") ?? "",
+    model: textOfId(scope, "cvs_LabelModel") ?? "",
+    trim: textOfId(scope, "cvs_LabelStyle") ?? ""
+  };
+
+  // Interchange anchors live under the "Interchangeables:" list; the
+  // primary is any other .WsResult anchor in the results container.
+  const interchangeListHtml = listHtmlUnderHeading(scope, "Interchangeables:");
+  const interchangePartNumbers = interchangeListHtml
+    ? extractWsResultAnchors(interchangeListHtml).map(a => a.partNumber)
+    : [];
+  const primaryScope = interchangeListHtml
+    ? stripListHtml(scope, interchangeListHtml)
+    : scope;
+  const primary = extractWsResultAnchors(primaryScope)[0];
+  if (!primary) throw parseError("primary part link (a.WsResult)");
+
+  const features = listItemsUnderHeading(scope, "Features:") ?? [];
+  const oemPartNumbers = listItemsUnderHeading(scope, "OEM Part Numbers:") ?? [];
+
   return {
     vin,
-    decoded: extractDecodedVehicle(html),
-    candidates
+    decoded,
+    candidates: [
+      {
+        part_number: primary.partNumber,
+        description:
+          `${decoded.year} ${decoded.make} ${decoded.model}`.trim() +
+          ` ${GLASS_TYPE_LABEL[glassType]}`,
+        features,
+        position: glassType,
+        // The VIN results page carries no prices; pricing comes from the
+        // (free) part-number search in the sourcing step.
+        list_price_cents: 0
+      }
+    ],
+    interchangePartNumbers,
+    oemPartNumbers
   };
 }
 
-/** PROVISIONAL: parse YMM search results into candidates. */
-export function parseYmmResults(html: string, input: YmmSearchInput): GlassCandidate[] {
-  const rows = extractResultRows(html);
-  if (rows.length === 0) {
-    throw new MyGrantError(
-      "MYGRANT_PARSE_ERROR",
-      "MyGrant YMM results page has no recognizable results table. " +
-        "The provisional parser needs finalizing against a live capture.",
-      502
-    );
-  }
-  return rows.map(row => ({
-    part_number: row.partNumber,
-    description:
-      row.description ||
-      `${input.year} ${input.make} ${input.model} ${GLASS_TYPE_LABEL[input.glassType]}`,
-    features: row.features,
-    position: input.glassType,
-    list_price_cents: row.listPriceCents ?? 0
-  }));
-}
-
-interface ResultRow {
-  partNumber: string;
-  description: string;
-  features: string[];
-  listPriceCents: number | null;
+/** One vehicle match from a YMM (year/make/model) search. */
+export interface YmmVehicleMatch {
+  /** Display name, e.g. "Honda Accord 2020 4 Door Sedan". */
+  name: string;
+  /** Relative drill-down link, e.g. "?yr=2020&mk=Honda&md=A&v=...". */
+  detailPath: string;
 }
 
 /**
- * PROVISIONAL table extraction: finds table rows whose first cell looks
- * like a part number (letters/digits/dashes, reasonably long). Returns []
- * when nothing matches so callers can fail loudly.
+ * Parse a YMM results page: vehicles listed in #cms_DivModels as
+ * <ol><li><a href="...">. An empty list is a legitimate "no matches"
+ * result; a missing container is a parse error.
  */
-function extractResultRows(html: string): ResultRow[] {
-  const rows: ResultRow[] = [];
-  const trRe = /<tr\b[^>]*>([\s\S]*?)<\/tr\s*>/gi;
-  let tr: RegExpExecArray | null;
-  while ((tr = trRe.exec(html)) !== null) {
-    // Skip pure header rows (<th> with no <td>).
-    if (/<th\b/i.test(tr[1]) && !/<td\b/i.test(tr[1])) continue;
-    const cells: string[] = [];
-    const tdRe = /<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]\s*>/gi;
-    let td: RegExpExecArray | null;
-    while ((td = tdRe.exec(tr[1])) !== null) cells.push(textOf(td[1]));
-    if (cells.length === 0) continue;
-    const partNumber = cells.find(c => /^[A-Z0-9][A-Z0-9\-/]{5,}$/i.test(c.trim()));
-    if (!partNumber) continue;
-    rows.push({
-      partNumber: partNumber.trim(),
-      description: cells.filter(c => c !== partNumber).join(" ").slice(0, 200),
-      features: [],
-      listPriceCents: extractPrice(cells.join(" "))
-    });
+export function parseYmmVehicleList(html: string): YmmVehicleMatch[] {
+  const scope = innerHtmlOfId(html, "cms_DivModels");
+  if (!scope) throw parseError("YMM results container (#cms_DivModels)");
+  const out: YmmVehicleMatch[] = [];
+  const re = /<li\b[^>]*>\s*<a\b[^>]*\bhref\s*=\s*["']([^"']*)["'][^>]*>([\s\S]*?)<\/a\s*>\s*<\/li\s*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(scope)) !== null) {
+    const name = textOf(m[2]);
+    if (name) out.push({ name, detailPath: decodeEntities(m[1]) });
   }
-  return rows;
+  return out;
 }
 
-function extractPrice(text: string): number | null {
+export type PartStock = "in_stock" | "call_to_verify" | "unknown";
+
+export interface PartOffer {
+  /** Part number as displayed, including the brand suffix (e.g. "DW02416 GTY FYG"). */
+  part_number: string;
+  stock: PartStock;
+  price_cents: number;
+}
+
+export interface PartSearchResults {
+  /** Warehouse label from the results header, e.g. "Search Results - Randolph, MA - ...". */
+  warehouse: string;
+  results: PartOffer[];
+}
+
+function extractPriceCents(text: string): number | null {
   const m = /\$\s*([0-9,]+(?:\.[0-9]{2})?)/.exec(text);
   if (!m) return null;
   return Math.round(Number(m[1].replace(/,/g, "")) * 100);
 }
 
-/** PROVISIONAL: pull decoded YMM from the VIN results page, if present. */
-function extractDecodedVehicle(html: string): VinLookupResult["decoded"] {
-  const text = textOf(html);
-  const year = /\b(19|20)\d{2}\b/.exec(text)?.[0];
-  if (!year) {
-    throw new MyGrantError(
-      "MYGRANT_PARSE_ERROR",
-      "MyGrant VIN results page shows no recognizable model year. " +
-        "The provisional parser needs finalizing against a live capture.",
-      502
-    );
-  }
-  return { year: Number(year), make: "", model: "", trim: "" };
-}
+/**
+ * Parse a part-number search page (#table_searchparts). Each data row
+ * carries a stock span (stock_high "Yes" = 2+ units, stock_low "Call" =
+ * 1 unit, call to verify), a .partnumber cell (hidden srkey input holds
+ * "WAREHOUSE_PART BRAND", link shows the display number), and a .price
+ * cell. Rows without a parseable price are skipped — a price is required
+ * for sourcing decisions.
+ */
+export function parsePartSearchResults(html: string): PartSearchResults {
+  const scope = innerHtmlOfId(html, "cpsr_DivParts");
+  if (!scope) throw parseError("part results container (#cpsr_DivParts)");
+  const table = innerHtmlOfId(scope, "table_searchparts");
+  if (!table) throw parseError("part results table (#table_searchparts)");
 
+  const warehouse = textOfId(scope, "cpsr_LabelResultsHeader") ?? "";
+  const results: PartOffer[] = [];
+  const trRe = /<tr\b[^>]*>([\s\S]*?)<\/tr\s*>/gi;
+  let tr: RegExpExecArray | null;
+  while ((tr = trRe.exec(table)) !== null) {
+    const rowHtml = tr[1];
+    // Skip the header row (<th>, no <td>).
+    if (/<th\b/i.test(rowHtml) && !/<td\b/i.test(rowHtml)) continue;
+
+    const stockCell = /<span\b[^>]*\bclass\s*=\s*["']([^"']*)["'][^>]*>([\s\S]*?)<\/span\s*>/i.exec(rowHtml);
+    const stockClass = stockCell?.[1] ?? "";
+    const stockText = stockCell ? textOf(stockCell[2]).toLowerCase() : "";
+    const stock: PartStock = /\bstock_high\b/.test(stockClass) || stockText === "yes"
+      ? "in_stock"
+      : /\bstock_low\b/.test(stockClass) || stockText === "call"
+        ? "call_to_verify"
+        : "unknown";
+
+    const partCell = /<td\b[^>]*\bclass\s*=\s*["'][^"']*\bpartnumber\b[^"']*["'][^>]*>([\s\S]*?)<\/td\s*>/i.exec(rowHtml)?.[1];
+    if (!partCell) continue;
+    // Prefer the hidden srkey ("B036_DW02416 GTY FYG"); strip the warehouse prefix.
+    const srkey = /<input\b[^>]*\bname\s*=\s*["']srkey\d*["'][^>]*\bvalue\s*=\s*["']([^"']*)["']/i.exec(partCell)?.[1];
+    const linkText = /<a\b[^>]*>([\s\S]*?)<\/a\s*>/i.exec(partCell)?.[1];
+    const partNumber = srkey
+      ? decodeEntities(srkey).replace(/^[^_]+_/, "")
+      : linkText
+        ? textOf(linkText)
+        : "";
+    if (!partNumber) continue;
+
+    const priceCell = /<td\b[^>]*\bclass\s*=\s*["'][^"']*\bprice\b[^"']*["'][^>]*>([\s\S]*?)<\/td\s*>/i.exec(rowHtml)?.[1];
+    const priceCents = priceCell ? extractPriceCents(textOf(priceCell)) : null;
+    if (priceCents === null) continue;
+
+    results.push({ part_number: partNumber, stock, price_cents: priceCents });
+  }
+  return { warehouse, results };
+}
 // ---------------------------------------------------------------------------
 // Provider: same GlassCatalogProvider interface as the mock.
 // ---------------------------------------------------------------------------
@@ -638,33 +805,56 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
   }
 
   /**
-   * FREE path: YMM search costs the shop nothing. Still goes through the
-   * session, still fails loudly on any anomaly.
+   * FREE path: YMM vehicle search costs the shop nothing. The site answers
+   * with matching *vehicles* (#cms_DivModels), not glass parts — resolving
+   * a vehicle to its parts needs the vehicle→parts drill-down page, which
+   * has not been captured yet. Returns the vehicle matches.
    */
-  async searchYmm(input: YmmSearchInput): Promise<GlassCandidate[]> {
+  async searchYmmVehicles(input: YmmSearchInput): Promise<YmmVehicleMatch[]> {
     const transport = this.getTransport();
     try {
-      const url = this.baseUrl + MYGRANT_YMM_SEARCH_PATH;
-      await this.authenticatedGet(transport, url);
-      const html = await transport.postForm(url, {
+      const params = new URLSearchParams({
         yr: String(input.year),
         mk: input.make,
-        // MyGrant's model search is case-sensitive: a single first
-        // character returns the exhaustive model list.
-        md: input.model.slice(0, 1),
-        search: "Search"
+        // MyGrant's model search is case-sensitive prefix matching: a
+        // single first character returns the exhaustive model list.
+        md: input.model,
+        smdo: "Search"
       });
-      return parseYmmResults(html, input);
+      const html = await this.authenticatedGet(
+        transport,
+        this.baseUrl + MYGRANT_YMM_SEARCH_PATH + "?" + params.toString()
+      );
+      return parseYmmVehicleList(html);
     } finally {
       if (!this.transport) await transport.close();
     }
   }
 
   /**
+   * Interface method. The live site returns vehicles for a YMM search, not
+   * glass candidates, and the vehicle→parts drill-down page has not been
+   * captured — so this fails loudly rather than inventing candidates. Use
+   * lookupVin for live identification, or searchYmmVehicles for the raw
+   * vehicle matches.
+   */
+  async searchYmm(input: YmmSearchInput): Promise<GlassCandidate[]> {
+    const vehicles = await this.searchYmmVehicles(input);
+    throw new MyGrantError(
+      "MYGRANT_PARSE_ERROR",
+      `MyGrant YMM search matched ${vehicles.length} vehicle(s), but the ` +
+        "vehicle→parts drill-down page has not been captured yet, so no " +
+        "glass candidates can be produced. Use the $1 VIN lookup for live " +
+        "identification instead. No charge was made (YMM is free).",
+      502
+    );
+  }
+
+  /**
    * PAID path: every call spends one $1 VIN lookup credit. Callers MUST
    * check the VIN cache first (glass-identification.ts does). The credits
    * counter is read before submitting: zero credits fails loudly WITHOUT
-   * attempting the lookup.
+   * attempting the lookup. The form submits via GET (confirmed live).
    */
   async lookupVin(vin: string, glassType: GlassType): Promise<VinLookupResult> {
     const transport = this.getTransport();
@@ -690,19 +880,27 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
         );
       }
 
-      const optionValue = selectOptionValue(
-        searchPage,
-        "glassType",
-        GLASS_TYPE_LABEL[glassType]
-      );
+      // Throws MYGRANT_UNSUPPORTED_GLASS_TYPE before anything is submitted.
+      const glassTypeValue = siteGlassTypeValue(glassType);
+
       // From here on the $1 lookup is submitted: any failure may have
       // consumed the credit, so mark it charged (conservative with real money).
       try {
-        const html = await transport.postForm(url, {
+        const params = new URLSearchParams({
           [VIN_FIELD]: vin,
-          ...(optionValue !== null ? { glassType: optionValue } : {}),
-          search: "Search"
+          // NOTE: the field name contains a colon; URLSearchParams encodes
+          // it as cvs%3AGlassTypeSelect, which is what the site expects.
+          "cvs:GlassTypeSelect": glassTypeValue,
+          svindo: "Search"
         });
+        const submitUrl = url + "?" + params.toString();
+        let html = await transport.get(submitUrl);
+        if (isLoginPage(html)) {
+          // Session expired between the form read and the submission.
+          this.loggedIn = false;
+          await this.ensureLoggedIn(transport);
+          html = await transport.get(submitUrl);
+        }
         return parseVinResults(html, vin, glassType);
       } catch (error) {
         throw markCharged(error);
@@ -713,29 +911,36 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
   }
 
   /**
-   * FREE path: part-number search (e.g. re-verifying a part before
-   * ordering). Not part of the GlassCatalogProvider interface; used by
-   * future sourcing/order flows.
+   * FREE path: part-number search (pricing/stock for the sourcing flow).
+   * Not part of the GlassCatalogProvider interface. Warehouse codes
+   * observed live: B036 (Randolph, MA), B040 (Methuen, MA), B054
+   * (Bloomfield, CT), r (regional), n (national).
    */
   async searchPartNumber(
     partNumber: string,
-    warehouse = "Randolph MA Default"
-  ): Promise<GlassCandidate[]> {
+    warehouseCode = "B036"
+  ): Promise<PartSearchResults> {
+    const knownWarehouses = new Set(["B036", "B040", "B054", "r", "n"]);
+    if (!knownWarehouses.has(warehouseCode)) {
+      throw new MyGrantError(
+        "MYGRANT_PARSE_ERROR",
+        `Unknown MyGrant warehouse code "${warehouseCode}". ` +
+          "Known codes: B036, B040, B054, r, n.",
+        500
+      );
+    }
     const transport = this.getTransport();
     try {
-      const url = this.baseUrl + MYGRANT_PART_SEARCH_PATH;
-      await this.authenticatedGet(transport, url);
-      const html = await transport.postForm(url, {
+      const params = new URLSearchParams({
         q: partNumber,
-        warehouse,
-        search: "Search"
+        sc: warehouseCode,
+        do: "Search"
       });
-      return parseYmmResults(html, {
-        year: 0,
-        make: "",
-        model: "",
-        glassType: "WINDSHIELD"
-      });
+      const html = await this.authenticatedGet(
+        transport,
+        this.baseUrl + MYGRANT_PART_SEARCH_PATH + "?" + params.toString()
+      );
+      return parsePartSearchResults(html);
     } finally {
       if (!this.transport) await transport.close();
     }
