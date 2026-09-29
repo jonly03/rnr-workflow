@@ -442,7 +442,7 @@ export function App() {
                       </div>
                       {expanded && (
                         <div className="case-card-body">
-                          <IdentificationSummary
+                          <SourcingSummary
                             item={c}
                             events={caseEvents[c.id] ?? []}
                             onRefresh={() => refreshExpandedCase(c.id)}
