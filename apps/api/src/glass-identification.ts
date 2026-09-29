@@ -263,14 +263,32 @@ function startOfTodayUtcIso(): string {
 }
 
 /**
- * Throws VIN_SPEND_CAP_EXCEEDED (loud, 402) when another paid lookup would
- * exceed today's cap. Only called for providers with a nonzero
- * vinLookupCostCents, so free providers and cached lookups never hit this.
+ * Reserves one paid lookup against the daily cap BEFORE submitting it.
+ * Throws VIN_SPEND_CAP_EXCEEDED (loud, 402) when the reservation would
+ * exceed today's cap — no lookup is submitted and no charge is incurred.
+ * The reservation is the spend record: it stands on success and on failures
+ * that may have been charged; the caller releases it on proven pre-submission
+ * failures via releaseVinLookupSpend.
  */
-async function enforceVinSpendCap(store: CaseStore, costCents: number): Promise<void> {
+async function reserveVinSpendOrThrow(
+  store: CaseStore,
+  vin: string,
+  glassType: GlassRequest["glass_type"],
+  costCents: number,
+  providerName: string
+): Promise<string> {
   const capCents = getVinSpendCapCents();
-  const spentCents = await store.getVinLookupSpendCentsSince(startOfTodayUtcIso());
-  if (spentCents + costCents > capCents) {
+  const sinceIso = startOfTodayUtcIso();
+  const reservation = await store.reserveVinLookupSpend({
+    vin,
+    glassType,
+    costCents,
+    provider: providerName,
+    capCents,
+    sinceIso
+  });
+  if (!reservation.reserved || !reservation.spendId) {
+    const spentCents = await store.getVinLookupSpendCentsSince(sinceIso);
     throw new IdentificationError(
       "VIN_SPEND_CAP_EXCEEDED",
       `Daily paid VIN lookup spend cap reached ($${(spentCents / 100).toFixed(2)} of ` +
@@ -279,6 +297,7 @@ async function enforceVinSpendCap(store: CaseStore, costCents: number): Promise<
       402
     );
   }
+  return reservation.spendId;
 }
 
 /**
@@ -392,13 +411,19 @@ export async function requestVinLookup(
     );
   }
 
+  // Provenance for the spend reservation: declared outside try so the catch
+  // block can release it on proven-no-charge failures.
+  let spendId: string | null = null;
   try {
     // Paid-provider guardrails: cache and single-flight already guarantee
     // this lookup is genuinely new, so a nonzero cost means real money is
-    // about to be spent. Enforce the daily cap BEFORE submitting.
+    // about to be spent. Reserve the charge against the daily cap atomically
+    // BEFORE submitting — the cap check and the ledger insert are one step,
+    // so concurrent paid lookups cannot race under the cap.
     const costCents = provider.vinLookupCostCents ?? 0;
-    if (costCents > 0) {
-      await enforceVinSpendCap(store, costCents);
+    const paidLookup = costCents > 0;
+    if (paidLookup) {
+      spendId = await reserveVinSpendOrThrow(store, vin, glassRequest.glass_type, costCents, provider.name);
     }
 
     await store.appendEvent({
@@ -406,18 +431,12 @@ export async function requestVinLookup(
       eventType: "START_VIN_LOOKUP",
       actor,
       nextState: transition(caseRecord, "START_VIN_LOOKUP"),
-      payload: { vin, charged: costCents > 0, provider: provider.name }
+      payload: { vin, charged: paidLookup, provider: provider.name }
     });
 
     const lookup = await provider.lookupVin(vin, glassRequest.glass_type);
-    if (costCents > 0) {
-      await store.recordVinLookupSpend({
-        vin,
-        glassType: glassRequest.glass_type,
-        costCents,
-        provider: provider.name
-      });
-    }
+    // The reservation above is already the spend record: success needs no
+    // second insert, and neither does a failure that may have been charged.
     await store.saveVinLookup({
       vin,
       glassType: glassRequest.glass_type,
@@ -434,20 +453,16 @@ export async function requestVinLookup(
       eventType: "VIN_RESULT_RETURNED",
       actor: SYSTEM,
       nextState: transition({ ...caseRecord, current_state: "VIN_LOOKUP_IN_PROGRESS" }, "VIN_RESULT_RETURNED"),
-      payload: { vin, charged: costCents > 0, provider: provider.name, candidate_count: lookup.candidates.length }
+      payload: { vin, charged: paidLookup, provider: provider.name, candidate_count: lookup.candidates.length }
     });
-    await evaluateVinResult(store, caseId, glassRequest, lookup.candidates, provider.name, SYSTEM, true, lookup.interchangePartNumbers);
+    await evaluateVinResult(store, caseId, glassRequest, lookup.candidates, provider.name, SYSTEM, paidLookup, lookup.interchangePartNumbers);
   } catch (error) {
     // A failure after submission may still have consumed the $1 credit
-    // (MyGrantError.charged). Record it so the cap stays conservative
-    // with real money; pre-submission failures record nothing.
-    if ((provider.vinLookupCostCents ?? 0) > 0 && lookupMayHaveBeenCharged(error)) {
-      await store.recordVinLookupSpend({
-        vin,
-        glassType: glassRequest.glass_type,
-        costCents: provider.vinLookupCostCents ?? 0,
-        provider: provider.name
-      });
+    // (MyGrantError.charged): the reservation stands as the conservative
+    // record, keeping the cap honest about real money. A proven
+    // pre-submission failure releases the reservation instead.
+    if (spendId && !lookupMayHaveBeenCharged(error)) {
+      await store.releaseVinLookupSpend(spendId);
     }
     await store.saveVinLookup({
       vin,

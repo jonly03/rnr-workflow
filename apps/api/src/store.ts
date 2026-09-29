@@ -103,11 +103,21 @@ export interface SaveVinLookupInput {
   result: VinLookupGlassResult;
 }
 
-export interface RecordVinLookupSpendInput {
+export interface ReserveVinLookupSpendInput {
   vin: string;
   glassType: GlassType;
   costCents: number;
   provider: string;
+  /** Daily cap in cents: the reservation is refused when it would exceed this. */
+  capCents: number;
+  /** ISO start of the cap window (UTC day). */
+  sinceIso: string;
+}
+
+export interface ReserveVinLookupSpendResult {
+  reserved: boolean;
+  /** Spend-ledger row id when reserved; null when the cap refused the reservation. */
+  spendId: string | null;
 }
 
 export interface SaveSupplierOfferInput {
@@ -170,11 +180,17 @@ export interface CaseStore {
   /** Releases a claim taken by claimVinLookup. Always call in a finally. */
   releaseVinLookup(vin: string, glassType: GlassType): Promise<void>;
   /**
-   * Records one paid VIN-lookup charge (cents). Called when a paid lookup
-   * is submitted, or when it fails after submission where the charge is
-   * uncertain but possible. Never called for free (mock) providers.
+   * Atomically reserves one paid VIN-lookup charge (cents) against the daily
+   * cap: the cap check and the ledger insert happen in a single step, so two
+   * concurrent paid lookups cannot both slip under the cap. Call BEFORE
+   * submitting the lookup; on success or on a failure that may have been
+   * charged, the reservation stands as the spend record. On a proven
+   * pre-submission failure (no charge possible), call releaseVinLookupSpend
+   * to return the budget. Never called for free (mock) providers.
    */
-  recordVinLookupSpend(input: RecordVinLookupSpendInput): Promise<void>;
+  reserveVinLookupSpend(input: ReserveVinLookupSpendInput): Promise<ReserveVinLookupSpendResult>;
+  /** Releases a spend reservation (proven-no-charge failure). Deletes the ledger row. */
+  releaseVinLookupSpend(spendId: string): Promise<void>;
   /** Total recorded VIN-lookup spend in cents since the given ISO timestamp. */
   getVinLookupSpendCentsSince(sinceIso: string): Promise<number>;
   saveSupplierOffer(input: SaveSupplierOfferInput): Promise<SupplierOffer>;
@@ -494,16 +510,30 @@ export class JsonCaseStore implements CaseStore {
     this.vinLookupClaims.delete(JsonCaseStore.vinClaimKey(vin, glassType));
   }
 
-  async recordVinLookupSpend(input: RecordVinLookupSpendInput): Promise<void> {
+  async reserveVinLookupSpend(input: ReserveVinLookupSpendInput): Promise<ReserveVinLookupSpendResult> {
     const next = structuredClone(this.data);
+    const spentCents = next.vin_lookup_spend
+      .filter(s => s.spent_at >= input.sinceIso)
+      .reduce((total, s) => total + s.cost_cents, 0);
+    if (spentCents + input.costCents > input.capCents) {
+      return { reserved: false, spendId: null };
+    }
+    const spendId = randomUUID();
     next.vin_lookup_spend.push({
-      id: randomUUID(),
+      id: spendId,
       vin: input.vin.trim().toUpperCase(),
       glass_type: input.glassType,
       cost_cents: input.costCents,
       provider: input.provider,
       spent_at: new Date().toISOString()
     });
+    this.persist(next);
+    return { reserved: true, spendId };
+  }
+
+  async releaseVinLookupSpend(spendId: string): Promise<void> {
+    const next = structuredClone(this.data);
+    next.vin_lookup_spend = next.vin_lookup_spend.filter(s => s.id !== spendId);
     this.persist(next);
   }
 
