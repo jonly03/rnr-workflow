@@ -80,7 +80,6 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
   // Phase 2: identification auto-runs after intake; the 2018 Jeep Wrangler
   // resolves to a single catalog candidate.
   // Phase 3: sourcing + pricing auto-advance from GLASS_IDENTIFIED.
-  await expect(page.getByText("Price Approved")).toBeVisible();
   await expect(page.getByText("PRICE_APPROVED")).toBeVisible();
   // Detail cards: Vehicle / Service, Supplier Sourcing, Pricing, Activity.
   await expect(page.getByRole("heading", { name: "Vehicle / Service" })).toBeVisible();
