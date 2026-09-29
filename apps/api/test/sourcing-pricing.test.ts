@@ -143,7 +143,8 @@ describe("Sourcing + Pricing", () => {
             price_cents: 3000, // $30 — cheap, but policy is $250 profit regardless
             available: true,
             quantity: 5,
-            lead_time_days: 2
+            lead_time_days: 2,
+            is_interchange: false
           }
         ];
       }
@@ -308,7 +309,8 @@ describe("Sourcing + Pricing", () => {
             price_cents: -100, // negative: invalid
             available: true,
             quantity: 5,
-            lead_time_days: 2
+            lead_time_days: 2,
+            is_interchange: false
           },
           {
             supplier_name: "Good Supplier",
@@ -317,7 +319,8 @@ describe("Sourcing + Pricing", () => {
             price_cents: 25000,
             available: true,
             quantity: 5,
-            lead_time_days: 2
+            lead_time_days: 2,
+            is_interchange: false
           }
         ];
       }
@@ -393,5 +396,115 @@ describe("Sourcing + Pricing", () => {
     // retry_sourcing is not legal from PRICE_APPROVED either.
     const bad2 = await act(f, caseId, "retry_sourcing").expect(409);
     expect(bad2.body.error.code).toBe("INVALID_TRANSITION");
+  });
+
+  it("prices the primary plus every interchange and picks the cheapest in-stock offer", async () => {
+    const f = await fixture();
+    // Ambiguous YMM routes to VIN lookup; the mock VIN result carries two
+    // interchange part numbers (<primary>-ALT1 / -ALT2).
+    const created = await f.createCase({ model: "Ambiguous" }).expect(201);
+    expect(created.body.current_state).toBe("VIN_LOOKUP_REQUIRED");
+
+    const res = await act(f, created.body.id, "request_vin_lookup").expect(200);
+    expect(res.body.current_state).toBe("PRICE_APPROVED");
+
+    // The identification persists the interchange list for sourcing.
+    const identification = res.body.glass_identification;
+    expect(identification.method).toBe("VIN");
+    expect(identification.interchange_part_numbers).toHaveLength(2);
+    const primary = identification.selected_candidate.part_number as string;
+    expect(identification.interchange_part_numbers).toEqual([
+      `${primary}-ALT1`,
+      `${primary}-ALT2`
+    ]);
+
+    // One search per part number: primary + both interchanges.
+    expect(f.sourcing.offerSearches).toBe(3);
+
+    // 4 mock offers per part number, all persisted with primary/interchange
+    // labeling intact.
+    const offers = res.body.supplier_offers as any[];
+    expect(offers).toHaveLength(12);
+    const primaryOffers = offers.filter(o => o.part_number === primary);
+    const interchangeOffers = offers.filter(o => o.part_number !== primary);
+    expect(primaryOffers).toHaveLength(4);
+    expect(interchangeOffers).toHaveLength(8);
+    expect(primaryOffers.every((o: any) => o.is_interchange === false)).toBe(true);
+    expect(interchangeOffers.every((o: any) => o.is_interchange === true)).toBe(true);
+
+    // Cheapest eligible in-stock offer wins across the whole set. The mock
+    // prices interchange parts cheaper than the primary (mirroring real
+    // MyGrant), so the system pick is an interchange.
+    const selected = offers.find(o => o.selected);
+    expect(selected).toBeDefined();
+    const eligiblePrices = offers
+      .filter(o => !o.excluded_reason)
+      .map(o => o.price_cents);
+    expect(selected.price_cents).toBe(Math.min(...eligiblePrices));
+    expect(selected.is_interchange).toBe(true);
+    expect(selected.part_number).not.toBe(primary);
+
+    // Pricing follows the system pick.
+    expect(res.body.price_calculation.glass_cost_cents).toBe(selected.price_cents);
+  });
+
+  it("falls back to the primary when interchanges have no eligible offers", async () => {
+    const f = await fixture();
+    // Provider that returns only ineligible offers for interchange parts.
+    const picky = new MockSourcingProvider();
+    const origSearch = picky.searchOffers.bind(picky);
+    picky.searchOffers = async (partNumber: string) => {
+      const offers = await origSearch(partNumber);
+      if (partNumber.includes("-ALT")) {
+        return offers.map(o => ({ ...o, available: false, quantity: 0 }));
+      }
+      return offers;
+    };
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rnr-alt-nostock-"));
+    const store = new JsonCaseStore(path.join(dir, "cases.json"));
+    await store.createStaffUser({
+      email: "staff@example.com",
+      name: "Test Staff",
+      role: "staff",
+      passwordHash: await hashPassword("password123")
+    });
+    const app = createApp(
+      store,
+      { authSecret: TEST_AUTH_SECRET },
+      {},
+      {
+        glassCatalog: new MockGlassCatalogProvider(),
+        sourcingProvider: picky,
+        pricingConfig: PRICING
+      }
+    );
+    const login = await request(app)
+      .post("/api/v1/auth/login")
+      .send({ email: "staff@example.com", password: "password123" })
+      .expect(200);
+    const token = login.body.token as string;
+    const created = await request(app)
+      .post("/api/v1/cases")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        channel: "DIRECT",
+        vehicle: { year: 2020, make: "Honda", model: "Ambiguous", vin: VIN_17 },
+        glass_request: { glass_type: "WINDSHIELD" }
+      })
+      .expect(201);
+    const res = await request(app)
+      .post(`/api/v1/cases/${created.body.id}/actions`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ action: "request_vin_lookup" })
+      .expect(200);
+
+    const offers = res.body.supplier_offers as any[];
+    const selected = offers.find(o => o.selected);
+    expect(selected).toBeDefined();
+    // All interchange offers are unavailable: the primary still wins.
+    expect(selected.is_interchange).toBe(false);
+    expect(selected.part_number).toBe(
+      res.body.glass_identification.selected_candidate.part_number
+    );
   });
 });

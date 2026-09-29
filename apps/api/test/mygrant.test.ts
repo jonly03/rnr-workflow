@@ -2,12 +2,14 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
   createGlassCatalogProvider,
+  createSourcingProvider,
   extractHiddenFields,
   HttpMyGrantTransport,
   loadMyGrantConfig,
   loadMyGrantFixtures,
   MYGRANT_VIN_LOOKUP_COST_USD,
   MyGrantError,
+  MyGrantSourcingProvider,
   MyGrantWebProvider,
   parsePartSearchResults,
   parseVinLookupsRemaining,
@@ -487,5 +489,134 @@ describe("HttpMyGrantTransport", () => {
     await expect(slow.get("https://mygrant.test/a")).rejects.toMatchObject({
       code: "MYGRANT_UNAVAILABLE"
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MyGrant sourcing provider: free part searches mapped onto the sourcing
+// contract, with call-to-verify excluded from auto-selection.
+// ---------------------------------------------------------------------------
+
+describe("MyGrantSourcingProvider", () => {
+  function partSearchStub() {
+    return new StubTransport(
+      (url: string) => {
+        const q = new URL(url).searchParams.get("q") ?? "";
+        if (q.includes("DW02416")) return fixture("part-search-dw02416-gty.html");
+        if (q.includes("CALLVERIFY")) return callVerifyHtml();
+        return fixture("part-search-dw02415-gty.html");
+      },
+      (url: string) => {
+        if (url.includes("login.aspx")) return authedChrome("<p>Welcome</p>");
+        throw new Error(`unexpected POST ${url}`);
+      }
+    );
+  }
+
+  /** Minimal part-results page with a single "Call" (call_to_verify) row. */
+  function callVerifyHtml(): string {
+    return `<div id="cpsr_DivParts">
+      <h3><span id="cpsr_LabelResultsHeader">Search Results - Randolph, MA - [REDACTED]</span></h3>
+      <table id="table_searchparts">
+        <tr class="rowstd"><td><span class="stock_low">Call</span></td>
+        <td class="partnumber"><input type="hidden" name="srkey0" value="B036_DW99999 GTY TST"><a href="#">DW99999 GTY TST</a></td>
+        <td class="price">&nbsp;$150.00</td></tr>
+      </table>
+    </div>`;
+  }
+
+  function provider() {
+    return new MyGrantSourcingProvider(
+      new MyGrantWebProvider(CONFIG, partSearchStub())
+    );
+  }
+
+  it("maps an in-stock part row to an auto-quoteable offer", async () => {
+    const offers = await provider().searchOffers("DW02415 GTY");
+    expect(offers).toEqual([
+      {
+        supplier_name: "MyGrant (Randolph, MA)",
+        supplier_type: "NATIONAL",
+        part_number: "DW02415 GTY MOP",
+        price_cents: 27450,
+        available: true,
+        quantity: 2,
+        lead_time_days: null,
+        is_interchange: false
+      }
+    ]);
+  });
+
+  it("picks up the cheaper interchange part from the verified live example", async () => {
+    const offers = await provider().searchOffers("DW02416 GTY");
+    expect(offers).toEqual([
+      {
+        supplier_name: "MyGrant (Randolph, MA)",
+        supplier_type: "NATIONAL",
+        part_number: "DW02416 GTY FYG",
+        price_cents: 9225,
+        available: true,
+        quantity: 2,
+        lead_time_days: null,
+        is_interchange: false
+      }
+    ]);
+  });
+
+  it("excludes call-to-verify stock from auto-selection without hiding it", async () => {
+    const offers = await provider().searchOffers("CALLVERIFY");
+    expect(offers).toHaveLength(1);
+    // Not confirmed in-stock: unavailable so the eligibility rules exclude
+    // it from the system pick, but the offer is still persisted for staff.
+    expect(offers[0]).toMatchObject({
+      part_number: "DW99999 GTY TST",
+      price_cents: 15000,
+      available: false,
+      quantity: 0
+    });
+  });
+
+  it("fails loudly when the part search page is unreachable", async () => {
+    const broken = new MyGrantSourcingProvider(
+      new MyGrantWebProvider(
+        CONFIG,
+        new StubTransport(
+          () => {
+            throw new MyGrantError("MYGRANT_UNAVAILABLE", "down", 502);
+          },
+          (url: string) => authedChrome("")
+        )
+      )
+    );
+    await expect(broken.searchOffers("DW02415 GTY")).rejects.toMatchObject({
+      code: "MYGRANT_UNAVAILABLE"
+    });
+  });
+});
+
+describe("createSourcingProvider", () => {
+  it("defaults to the mock provider", () => {
+    expect(createSourcingProvider({} as NodeJS.ProcessEnv).name).toBe("mock-sourcing");
+  });
+
+  it("builds the MyGrant provider when selected with config", () => {
+    const p = createSourcingProvider({
+      SOURCING_PROVIDER: "mygrant",
+      MYGRANT_USERNAME: "shop",
+      MYGRANT_PASSWORD: "secret"
+    } as NodeJS.ProcessEnv);
+    expect(p.name).toBe("mygrant-sourcing");
+  });
+
+  it("fails loudly when mygrant is selected without credentials", () => {
+    expect(() =>
+      createSourcingProvider({ SOURCING_PROVIDER: "mygrant" } as NodeJS.ProcessEnv)
+    ).toThrowError(expect.objectContaining({ code: "MYGRANT_NOT_CONFIGURED" }));
+  });
+
+  it("rejects an unknown provider name", () => {
+    expect(() =>
+      createSourcingProvider({ SOURCING_PROVIDER: "acme" } as NodeJS.ProcessEnv)
+    ).toThrowError(expect.objectContaining({ code: "MYGRANT_NOT_CONFIGURED" }));
   });
 });
