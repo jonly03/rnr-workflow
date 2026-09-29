@@ -42,9 +42,9 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
   await page.getByRole("button", { name: /New Case/i }).click();
 
   // VIN-first flow: paste VIN, decode via NHTSA, pick glass, create.
-  // Use the textbox role: the mic button ("Dictate VIN by voice") and the
-  // photo button ("Upload a photo of the VIN") accessible names also
-  // contain "VIN", which breaks getByLabel("VIN") strict mode.
+  // Use the textbox role: the photo button ("Upload a photo of the VIN")
+  // accessible name also contains "VIN", which breaks getByLabel("VIN")
+  // strict mode.
   await page.getByRole("textbox", { name: "VIN" }).fill("1C4HJXEG3JW224862");
   await page.getByRole("button", { name: "Decode VIN" }).click();
   // NHTSA decodes this VIN to 2018 Jeep Wrangler (make arrives uppercase).

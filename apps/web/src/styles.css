@@ -100,7 +100,7 @@ dd { margin: 0; }
 .card dd { margin: 0; }
 .workspace-actions { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 
-/* Voice VIN intake */
+/* VIN input methods (photo scan) */
 .vin-input-methods { display: flex; gap: 0.75rem; margin-bottom: 0.75rem; }
 .input-method {
   display: inline-flex;
@@ -117,28 +117,7 @@ dd { margin: 0; }
 }
 .input-method:disabled { opacity: 0.6; cursor: default; }
 .input-method-icon { font-size: 1.25rem; line-height: 1; }
-.input-method.listening {
-  background: #7f1d1d;
-  border-color: #ef4444;
-  animation: mic-pulse 1.2s ease-in-out infinite;
-}
 .vin-decode-btn { width: 100%; margin-top: 0.75rem; padding: 0.8rem; font-size: 1rem; }
-@keyframes mic-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.55; }
-}
-.interim { font-style: italic; margin-top: 0.5rem; }
-.vin-confirm { margin-top: 1rem; }
-.vin-groups { display: flex; gap: 0.9rem; margin: 0.75rem 0; flex-wrap: wrap; }
-.vin-group { display: flex; gap: 4px; }
-.vin-char {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 1.05rem;
-  min-width: 2.1rem;
-  padding: 6px 4px;
-}
-.vin-char.selected { outline: 3px solid #818cf8; outline-offset: 1px; }
-.vin-correction { margin: 0.5rem 0; }
 .override-note { font-size: .9rem; color: #fbbf24; margin: 8px 0; }
 .override-form { margin-top: 12px; border-top: 1px solid #1e293b; padding-top: 12px; display: grid; gap: 8px; }
 .override-form label { display: grid; gap: 4px; font-size: .9rem; }
