@@ -291,7 +291,14 @@ export function App() {
 
   if (screen === "new") {
     return (
-      <Shell staff={staff} onSignOut={signOut}>
+      <Shell
+        staff={staff}
+        onSignOut={signOut}
+        crumbs={[
+          { label: "Case queue", onClick: () => setScreen("queue") },
+          { label: "New case" }
+        ]}
+      >
         <NewCase
           onCancel={() => setScreen("queue")}
           onCreated={async c => {
@@ -305,11 +312,17 @@ export function App() {
 
   if (screen === "detail" && selected) {
     return (
-      <Shell staff={staff} onSignOut={signOut}>
+      <Shell
+        staff={staff}
+        onSignOut={signOut}
+        crumbs={[
+          { label: "Case queue", onClick: () => setScreen("queue") },
+          { label: selected.reference }
+        ]}
+      >
         <CaseDetail
           item={selected}
           events={events}
-          onBack={() => setScreen("queue")}
           onRefresh={() => openCase(selected.id)}
           onNewCase={() => setScreen("new")}
           loading={loading}
@@ -320,28 +333,22 @@ export function App() {
   }
 
   return (
-    <Shell staff={staff} onSignOut={signOut}>
+    <Shell staff={staff} onSignOut={signOut} crumbs={[{ label: "Case queue" }]}>
       <section className="page-head">
         <div>
           <p className="eyebrow">R&R Operations</p>
           <h1>Case Queue</h1>
           <p className="muted">One operational truth across Direct, Auction, and Insurance.</p>
         </div>
-        <button className="primary" onClick={() => setScreen("new")}>+ New Case</button>
       </section>
 
       {message && <div className="alert">{message}</div>}
       {loading ? (
         <div className="card">Loading cases…</div>
-      ) : cases.length === 0 ? (
-        <div className="empty card">
-          <h2>No cases yet.</h2>
-          <p>Create the first case to start the operational record.</p>
-          <button className="primary" onClick={() => setScreen("new")}>Create first case</button>
-        </div>
       ) : (
         <div className="queue-layout">
           <aside className="queue-sidebar" aria-label="Case filters">
+            <button type="button" className="primary sidebar-new" onClick={() => setScreen("new")}>+ New Case</button>
             <div className="queue-toolbar">
               <div className="toolbar-section">
                 <input
@@ -391,6 +398,14 @@ export function App() {
             </div>
           </aside>
           <div className="queue-main">
+            {cases.length === 0 ? (
+              <div className="empty card">
+                <h2>No cases yet.</h2>
+                <p>Create the first case to start the operational record.</p>
+                <button className="primary" onClick={() => setScreen("new")}>Create first case</button>
+              </div>
+            ) : (
+              <>
             <p className="muted queue-count">
               {visibleCases.length} of {cases.length} {cases.length === 1 ? "case" : "cases"}
               {filtersActive && (
@@ -456,6 +471,8 @@ export function App() {
                 })}
               </div>
             )}
+              </>
+            )}
           </div>
         </div>
       )}
@@ -463,20 +480,43 @@ export function App() {
   );
 }
 
+export interface Crumb {
+  label: string;
+  onClick?: () => void;
+}
+
 function Shell({
   children,
   staff,
-  onSignOut
+  onSignOut,
+  crumbs = []
 }: {
   children: React.ReactNode;
   staff: StaffUser | null;
   onSignOut: () => void;
+  crumbs?: Crumb[];
 }) {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="brand">R&R</div>
-        <span>Case Operations</span>
+        <div className="brand-wrap">
+          <div className="brand">R&R</div>
+          <span>Case Operations</span>
+        </div>
+        {crumbs.length > 0 && (
+          <nav className="crumbs" aria-label="Breadcrumb">
+            {crumbs.map((c, i) => (
+              <span key={i} className="crumb">
+                {i > 0 && <span className="crumb-sep" aria-hidden="true">/</span>}
+                {c.onClick ? (
+                  <button type="button" className="link" onClick={c.onClick}>{c.label}</button>
+                ) : (
+                  <span aria-current="page">{c.label}</span>
+                )}
+              </span>
+            ))}
+          </nav>
+        )}
         {staff && (
           <span className="staff-line">
             {staff.name} · {staff.email}
@@ -1067,7 +1107,6 @@ function SortableCardList({
 function CaseDetail({
   item,
   events,
-  onBack,
   onRefresh,
   onNewCase,
   loading,
@@ -1075,7 +1114,6 @@ function CaseDetail({
 }: {
   item: CaseRecord;
   events: CaseEvent[];
-  onBack: () => void;
   onRefresh: () => Promise<void>;
   onNewCase: () => void;
   loading: boolean;
@@ -1108,7 +1146,6 @@ function CaseDetail({
 
   return (
     <>
-      <button className="back" onClick={onBack}>← Case Queue</button>
       <section className="page-head">
         <div>
           <p className="eyebrow" data-testid="case-channel">{item.channel}</p>
