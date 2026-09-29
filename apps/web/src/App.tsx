@@ -291,7 +291,14 @@ export function App() {
 
   if (screen === "new") {
     return (
-      <Shell staff={staff} onSignOut={signOut}>
+      <Shell
+        staff={staff}
+        onSignOut={signOut}
+        crumbs={[
+          { label: "Case queue", onClick: () => setScreen("queue") },
+          { label: "New case" }
+        ]}
+      >
         <NewCase
           onCancel={() => setScreen("queue")}
           onCreated={async c => {
@@ -305,7 +312,14 @@ export function App() {
 
   if (screen === "detail" && selected) {
     return (
-      <Shell staff={staff} onSignOut={signOut}>
+      <Shell
+        staff={staff}
+        onSignOut={signOut}
+        crumbs={[
+          { label: "Case queue", onClick: () => setScreen("queue") },
+          { label: selected.reference }
+        ]}
+      >
         <CaseDetail
           item={selected}
           events={events}
@@ -320,14 +334,13 @@ export function App() {
   }
 
   return (
-    <Shell staff={staff} onSignOut={signOut}>
+    <Shell staff={staff} onSignOut={signOut} crumbs={[{ label: "Case queue" }]}>
       <section className="page-head">
         <div>
           <p className="eyebrow">R&R Operations</p>
           <h1>Case Queue</h1>
           <p className="muted">One operational truth across Direct, Auction, and Insurance.</p>
         </div>
-        <button className="primary" onClick={() => setScreen("new")}>+ New Case</button>
       </section>
 
       {message && <div className="alert">{message}</div>}
@@ -342,6 +355,7 @@ export function App() {
       ) : (
         <div className="queue-layout">
           <aside className="queue-sidebar" aria-label="Case filters">
+            <button type="button" className="primary sidebar-new" onClick={() => setScreen("new")}>+ New Case</button>
             <div className="queue-toolbar">
               <div className="toolbar-section">
                 <input
@@ -463,20 +477,43 @@ export function App() {
   );
 }
 
+export interface Crumb {
+  label: string;
+  onClick?: () => void;
+}
+
 function Shell({
   children,
   staff,
-  onSignOut
+  onSignOut,
+  crumbs = []
 }: {
   children: React.ReactNode;
   staff: StaffUser | null;
   onSignOut: () => void;
+  crumbs?: Crumb[];
 }) {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="brand">R&R</div>
-        <span>Case Operations</span>
+        <div className="brand-wrap">
+          <div className="brand">R&R</div>
+          <span>Case Operations</span>
+        </div>
+        {crumbs.length > 0 && (
+          <nav className="crumbs" aria-label="Breadcrumb">
+            {crumbs.map((c, i) => (
+              <span key={i} className="crumb">
+                {i > 0 && <span className="crumb-sep" aria-hidden="true">/</span>}
+                {c.onClick ? (
+                  <button type="button" className="link" onClick={c.onClick}>{c.label}</button>
+                ) : (
+                  <span aria-current="page">{c.label}</span>
+                )}
+              </span>
+            ))}
+          </nav>
+        )}
         {staff && (
           <span className="staff-line">
             {staff.name} · {staff.email}
