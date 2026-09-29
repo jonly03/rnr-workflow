@@ -1111,7 +1111,6 @@ function CaseDetail({
           <p className="eyebrow" data-testid="case-channel">{item.channel}</p>
           <h1>{item.reference}</h1>
           <div className="state-line">
-            <span className="state">{humanize(item.current_state)}</span>
             <code>{item.current_state}</code>
           </div>
         </div>
