@@ -624,19 +624,19 @@ function Shell({
         <div className="brand-wrap">
           <div className="brand">R&R</div>
           <span className="brand-title">Case Operations</span>
+          {catalog && (
+            <span
+              className={`catalog-badge ${catalog === "mygrant-web" ? "live" : "mock"}`}
+              title={
+                catalog === "mygrant-web"
+                  ? "Live MyGrant sourcing: each VIN lookup costs $1"
+                  : "Mock catalog: no live sourcing, no charges"
+              }
+            >
+              {catalog === "mygrant-web" ? "LIVE · MyGrant" : "Mock catalog"}
+            </span>
+          )}
         </div>
-        {catalog && (
-          <span
-            className={`catalog-badge ${catalog === "mygrant-web" ? "live" : "mock"}`}
-            title={
-              catalog === "mygrant-web"
-                ? "Live MyGrant sourcing: each VIN lookup costs $1"
-                : "Mock catalog: no live sourcing, no charges"
-            }
-          >
-            {catalog === "mygrant-web" ? "LIVE · MyGrant" : "Mock catalog"}
-          </span>
-        )}
         {crumbs.length > 0 && (
           <nav className="crumbs" aria-label="Breadcrumb">
             {crumbs.map((c, i) => (
