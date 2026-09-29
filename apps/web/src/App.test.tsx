@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { App, cardOrderKey, DEFAULT_CARD_ORDER, describeEvent, filterQueueCases, isStaffActionRequired, loadCardOrder, scanProgressForElapsed, sortQueueCases } from "./App";
+import { App, cardOrderKey, DEFAULT_CARD_ORDER, describeEvent, filterQueueCases, isStaffActionRequired, loadCardOrder, scanProgressForElapsed, shouldShowOverrideWarning, sortQueueCases } from "./App";
 import type { CaseRecord, CaseEvent } from "./types";
 
 vi.stubGlobal("fetch", vi.fn(async () => ({
@@ -22,8 +22,8 @@ describe("case card ordering", () => {
   const email = "tech@rr.test";
   const key = cardOrderKey(email);
 
-  it("defaults to sourcing, pricing, activity below the vehicle card", () => {
-    expect(DEFAULT_CARD_ORDER).toEqual(["vehicle", "sourcing", "pricing", "activity"]);
+  it("defaults to pricing, sourcing, activity below the vehicle card", () => {
+    expect(DEFAULT_CARD_ORDER).toEqual(["vehicle", "pricing", "sourcing", "activity"]);
   });
 
   it("returns the default order when nothing is stored", () => {
@@ -49,7 +49,7 @@ describe("case card ordering", () => {
 
   it("drops retired cards from saved orders", () => {
     localStorage.setItem(key, JSON.stringify(["action", "identification", "vehicle"]));
-    expect(loadCardOrder(email)).toEqual(["vehicle", "sourcing", "pricing", "activity"]);
+    expect(loadCardOrder(email)).toEqual(["vehicle", "pricing", "sourcing", "activity"]);
     localStorage.removeItem(key);
   });
 
@@ -190,13 +190,31 @@ describe("staff action alert", () => {
     }
   });
 
-  it("orders detail cards: vehicle, sourcing, pricing, activity", () => {
-    expect(DEFAULT_CARD_ORDER).toEqual(["vehicle", "sourcing", "pricing", "activity"]);
+  it("orders detail cards: vehicle, pricing, sourcing, activity", () => {
+    expect(DEFAULT_CARD_ORDER).toEqual(["vehicle", "pricing", "sourcing", "activity"]);
   });
 
   it("migrates saved orders that reference retired cards", () => {
     localStorage.setItem(cardOrderKey("sam@example.com"), JSON.stringify(["action", "vehicle", "pricing"]));
     expect(loadCardOrder("sam@example.com")).toEqual(["vehicle", "pricing", "sourcing", "activity"]);
+  });
+});
+
+describe("staff override warning", () => {
+  it("shows while staff's pick differs from the system's pick", () => {
+    expect(shouldShowOverrideWarning("National Glass Supply", "Allied Auto Glass", 1)).toBe(true);
+  });
+
+  it("is silenced when staff reverts to the system choice", () => {
+    // National -> Allied -> National: two overrides, but the current pick
+    // matches the system's original pick, so no warning.
+    expect(shouldShowOverrideWarning("National Glass Supply", "National Glass Supply", 2)).toBe(false);
+  });
+
+  it("stays hidden without an override or without a system baseline", () => {
+    expect(shouldShowOverrideWarning("National Glass Supply", "Allied Auto Glass", 0)).toBe(false);
+    expect(shouldShowOverrideWarning(null, "Allied Auto Glass", 1)).toBe(false);
+    expect(shouldShowOverrideWarning("National Glass Supply", null, 1)).toBe(false);
   });
 });
 

@@ -442,12 +442,12 @@ export function App() {
                       </div>
                       {expanded && (
                         <div className="case-card-body">
+                          <PricingSummary item={c} />
                           <SourcingSummary
                             item={c}
                             events={caseEvents[c.id] ?? []}
                             onRefresh={() => refreshExpandedCase(c.id)}
                           />
-                          <PricingSummary item={c} />
                         </div>
                       )}
                     </article>
@@ -918,9 +918,9 @@ function ManualCaseForm({
  *  staff member in localStorage so each person sees their preferred layout.
  *  The "Staff action required" alert is separate: it pins itself above the
  *  cards only while the case waits on staff, then disappears. */
-export const CASE_CARDS = ["vehicle", "sourcing", "pricing", "activity"] as const;
+export const CASE_CARDS = ["vehicle", "pricing", "sourcing", "activity"] as const;
 export type CaseCardId = (typeof CASE_CARDS)[number];
-export const DEFAULT_CARD_ORDER: CaseCardId[] = ["vehicle", "sourcing", "pricing", "activity"];
+export const DEFAULT_CARD_ORDER: CaseCardId[] = ["vehicle", "pricing", "sourcing", "activity"];
 
 /** Case states where the workflow is blocked waiting on a person. */
 const STAFF_ACTION_STATES = [
@@ -1094,10 +1094,10 @@ function CaseDetail({
             </dl>
           </section>
         );
-      case "sourcing":
-        return <SourcingSummary item={item} events={events} onRefresh={onRefresh} />;
       case "pricing":
         return <PricingSummary item={item} />;
+      case "sourcing":
+        return <SourcingSummary item={item} events={events} onRefresh={onRefresh} />;
       case "activity":
         return <ActivityTimeline events={events} loading={loading} />;
     }
@@ -1614,6 +1614,22 @@ function IdentificationSummary({ item, events, onRefresh }: {
   );
 }
 
+/** True when the staff-override warning should show: an override happened
+ *  and the current pick differs from the system's pick. If staff reverts
+ *  back to the system's original choice, the warning is silenced. */
+export function shouldShowOverrideWarning(
+  systemSupplierName: string | null,
+  selectedSupplierName: string | null,
+  overrideCount: number
+): boolean {
+  return (
+    overrideCount > 0 &&
+    !!systemSupplierName &&
+    !!selectedSupplierName &&
+    selectedSupplierName !== systemSupplierName
+  );
+}
+
 function SourcingSummary({ item, events, onRefresh }: {
   item: CaseRecord;
   events: CaseEvent[];
@@ -1630,6 +1646,24 @@ function SourcingSummary({ item, events, onRefresh }: {
   const eligible = offers.filter(o => !o.selected && !o.excluded_reason);
   const overrideEvents = events.filter(e => e.event_type === "SUPPLIER_OFFER_OVERRIDDEN");
   const lastOverride = overrideEvents[overrideEvents.length - 1];
+  // The system's baseline is its most recent pick; staff overriding back to
+  // that pick silences the warning.
+  const systemPickEvents = events.filter(e => e.event_type === "ELIGIBLE_OFFER_SELECTED");
+  const lastSystemPick = systemPickEvents[systemPickEvents.length - 1];
+  const systemSupplierName = lastSystemPick
+    ? String(lastSystemPick.payload.supplier_name)
+    : null;
+  const overrideWarning =
+    lastOverride &&
+    shouldShowOverrideWarning(systemSupplierName, selected?.supplier_name ?? null, overrideEvents.length)
+      ? (
+        <p className="override-note">
+          Staff override: system selected <strong>{systemSupplierName}</strong>,
+          {" "}staff chose <strong>{selected!.supplier_name}</strong>{" "}
+          ({new Date(lastOverride.occurred_at).toLocaleString()})
+        </p>
+      )
+      : null;
 
   async function submitOverride() {
     if (!offerId) return;
@@ -1657,13 +1691,7 @@ function SourcingSummary({ item, events, onRefresh }: {
           {selected.lead_time_days !== null && ` (${selected.lead_time_days}d lead)`}
         </p>
       )}
-      {lastOverride && (
-        <p className="override-note">
-          Staff override: system selected <strong>{String(lastOverride.payload.old_supplier_name)}</strong>,
-          {" "}staff chose <strong>{String(lastOverride.payload.new_supplier_name)}</strong>{" "}
-          ({new Date(lastOverride.occurred_at).toLocaleString()})
-        </p>
-      )}
+      {overrideWarning}
       <h3>Offers ({offers.length})</h3>
       <ul className="candidate-list">
         {offers.map(o => (
