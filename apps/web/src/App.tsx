@@ -346,12 +346,6 @@ export function App() {
       {message && <div className="alert">{message}</div>}
       {loading ? (
         <div className="card">Loading cases…</div>
-      ) : cases.length === 0 ? (
-        <div className="empty card">
-          <h2>No cases yet.</h2>
-          <p>Create the first case to start the operational record.</p>
-          <button className="primary" onClick={() => setScreen("new")}>Create first case</button>
-        </div>
       ) : (
         <div className="queue-layout">
           <aside className="queue-sidebar" aria-label="Case filters">
@@ -405,6 +399,14 @@ export function App() {
             </div>
           </aside>
           <div className="queue-main">
+            {cases.length === 0 ? (
+              <div className="empty card">
+                <h2>No cases yet.</h2>
+                <p>Create the first case to start the operational record.</p>
+                <button className="primary" onClick={() => setScreen("new")}>Create first case</button>
+              </div>
+            ) : (
+              <>
             <p className="muted queue-count">
               {visibleCases.length} of {cases.length} {cases.length === 1 ? "case" : "cases"}
               {filtersActive && (
@@ -469,6 +471,8 @@ export function App() {
                   );
                 })}
               </div>
+            )}
+              </>
             )}
           </div>
         </div>
