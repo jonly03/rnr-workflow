@@ -73,7 +73,12 @@ function baseCandidate(
 }
 
 export class MockGlassCatalogProvider implements GlassCatalogProvider {
-  readonly name = "mock-catalog";
+  readonly name: string = "mock-catalog";
+  /**
+   * Declared (but unset) so tests can subclass with a paid cost without
+   * tripping the `override` modifier. The mock itself is always free.
+   */
+  readonly vinLookupCostCents?: number;
   /** Call counters so tests can prove the VIN cache prevents repeat charges. */
   ymmSearches = 0;
   vinLookups = 0;
