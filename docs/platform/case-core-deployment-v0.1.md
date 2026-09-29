@@ -90,6 +90,32 @@ Variables:
 - `VERCEL_WEB_PROJECT_ID`
 - `VERCEL_API_PROJECT_ID`
 
+### Glass catalog provider (MyGrant live sourcing)
+
+The API sources glass data through a provider selected by `GLASS_CATALOG_PROVIDER`
+(a repo/environment variable, **not** a secret):
+
+- `mock` (default): deterministic mock catalog. No network, no charges. Safe
+  for CI, staging demos, and client walkthroughs.
+- `mygrant`: live MyGrant web automation. Requires secrets `MYGRANT_USERNAME`
+  and `MYGRANT_PASSWORD` (the shop's MyGrant login, stored like the staff-auth
+  secrets). Live mode fails LOUD: any auth, credit, site, or parse problem is
+  a hard error — mock data is never served as live data.
+
+MyGrant cost model: VIN lookups cost **$1 each**; YMM and part-number searches
+are free. Guardrails (VIN path only):
+
+- `MYGRANT_DAILY_SPEND_CAP_USD` (variable, default `25`): hard daily cap on
+  recorded VIN-lookup spend (UTC day, DB-backed so it survives serverless
+  cold starts). Breaches block the lookup before submission and surface as
+  `SYSTEM_ATTENTION_REQUIRED` on the case.
+- The VIN cache + single-flight claims already prevent duplicate charges for
+  the same VIN + glass type; the spend ledger records every submitted paid
+  lookup (including failures after submission, where the $1 may be consumed).
+
+Optional: `MYGRANT_BASE_URL` (default `https://www.mygrantglass.com`),
+`MYGRANT_TIMEOUT_MS` (default `30000`).
+
 ### production
 Same names, but `DATABASE_URL` points to the production database.
 

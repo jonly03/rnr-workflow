@@ -248,3 +248,37 @@ describe("describeEvent", () => {
     expect(describeEvent(evt("SOME_FUTURE_EVENT"))).toBe("Some Future Event.");
   });
 });
+
+describe("glass catalog mode badge", () => {
+  function stubHealth(glassCatalog: string) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request) => {
+        if (String(url).endsWith("/health")) {
+          return {
+            ok: true,
+            json: async () => ({ ok: true, storage: "json", glass_catalog: glassCatalog })
+          };
+        }
+        return { ok: true, json: async () => [] };
+      })
+    );
+  }
+
+  it("shows a LIVE badge when the API sources from MyGrant", async () => {
+    stubHealth("mygrant-web");
+    render(<App />);
+    const badge = await screen.findByText("LIVE · MyGrant");
+    expect(badge).toBeInTheDocument();
+    expect(badge).toHaveClass("live");
+    expect(badge).toHaveAttribute("title", expect.stringContaining("$1"));
+  });
+
+  it("shows a mock badge when the API uses the mock catalog", async () => {
+    stubHealth("mock-catalog");
+    render(<App />);
+    const badge = await screen.findByText("Mock catalog");
+    expect(badge).toBeInTheDocument();
+    expect(badge).toHaveClass("mock");
+  });
+});

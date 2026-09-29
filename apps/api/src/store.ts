@@ -97,6 +97,13 @@ export interface SaveVinLookupInput {
   result: VinLookupGlassResult;
 }
 
+export interface RecordVinLookupSpendInput {
+  vin: string;
+  glassType: GlassType;
+  costCents: number;
+  provider: string;
+}
+
 export interface SaveSupplierOfferInput {
   caseId: string;
   glassRequestId: string;
@@ -154,6 +161,14 @@ export interface CaseStore {
   claimVinLookup(vin: string, glassType: GlassType): Promise<boolean>;
   /** Releases a claim taken by claimVinLookup. Always call in a finally. */
   releaseVinLookup(vin: string, glassType: GlassType): Promise<void>;
+  /**
+   * Records one paid VIN-lookup charge (cents). Called when a paid lookup
+   * is submitted, or when it fails after submission where the charge is
+   * uncertain but possible. Never called for free (mock) providers.
+   */
+  recordVinLookupSpend(input: RecordVinLookupSpendInput): Promise<void>;
+  /** Total recorded VIN-lookup spend in cents since the given ISO timestamp. */
+  getVinLookupSpendCentsSince(sinceIso: string): Promise<number>;
   saveSupplierOffer(input: SaveSupplierOfferInput): Promise<SupplierOffer>;
   listSupplierOffers(glassRequestId: string): Promise<SupplierOffer[]>;
   selectSupplierOffer(offerId: string): Promise<void>;
@@ -173,6 +188,7 @@ const emptyStore = (): StoreShape => ({
   approval_tokens: [],
   glass_identifications: [],
   vin_lookups: [],
+  vin_lookup_spend: [],
   supplier_offers: [],
   price_calculations: []
 });
@@ -467,6 +483,25 @@ export class JsonCaseStore implements CaseStore {
 
   async releaseVinLookup(vin: string, glassType: GlassType): Promise<void> {
     this.vinLookupClaims.delete(JsonCaseStore.vinClaimKey(vin, glassType));
+  }
+
+  async recordVinLookupSpend(input: RecordVinLookupSpendInput): Promise<void> {
+    const next = structuredClone(this.data);
+    next.vin_lookup_spend.push({
+      id: randomUUID(),
+      vin: input.vin.trim().toUpperCase(),
+      glass_type: input.glassType,
+      cost_cents: input.costCents,
+      provider: input.provider,
+      spent_at: new Date().toISOString()
+    });
+    this.persist(next);
+  }
+
+  async getVinLookupSpendCentsSince(sinceIso: string): Promise<number> {
+    return this.data.vin_lookup_spend
+      .filter(s => s.spent_at >= sinceIso)
+      .reduce((total, s) => total + s.cost_cents, 0);
   }
 
   async saveSupplierOffer(input: SaveSupplierOfferInput): Promise<SupplierOffer> {

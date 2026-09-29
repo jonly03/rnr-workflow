@@ -26,6 +26,13 @@ export interface VinLookupResult {
  */
 export interface GlassCatalogProvider {
   readonly name: string;
+  /**
+   * What the shop pays per VIN lookup, in cents. 0/undefined = free
+   * (mock provider, or a future free API). Only a nonzero cost triggers
+   * spend-cap enforcement and charge tracking. YMM and part-number
+   * searches are always free regardless of this value.
+   */
+  readonly vinLookupCostCents?: number;
   searchYmm(input: YmmSearchInput): Promise<GlassCandidate[]>;
   /**
    * Paid VIN lookup. The glass type is required: a lookup resolves the
@@ -66,7 +73,12 @@ function baseCandidate(
 }
 
 export class MockGlassCatalogProvider implements GlassCatalogProvider {
-  readonly name = "mock-catalog";
+  readonly name: string = "mock-catalog";
+  /**
+   * Declared (but unset) so tests can subclass with a paid cost without
+   * tripping the `override` modifier. The mock itself is always free.
+   */
+  readonly vinLookupCostCents?: number;
   /** Call counters so tests can prove the VIN cache prevents repeat charges. */
   ymmSearches = 0;
   vinLookups = 0;

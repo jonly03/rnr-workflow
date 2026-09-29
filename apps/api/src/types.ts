@@ -129,6 +129,22 @@ export interface VinLookupRecord {
   created_at: string;
 }
 
+/**
+ * One recorded VIN-lookup charge. The shop pays per VIN lookup on live
+ * providers (MyGrant: $1); YMM and part-number searches are free and are
+ * never recorded here. Written when a paid lookup is submitted (or when a
+ * failure happens after submission, where the charge is uncertain but
+ * possible) so the daily spend cap is conservative with real money.
+ */
+export interface VinLookupSpendRecord {
+  id: string;
+  vin: string;
+  glass_type: GlassType;
+  cost_cents: number;
+  provider: string;
+  spent_at: string;
+}
+
 export type SupplierType = "NATIONAL" | "REGIONAL" | "LOCAL";
 
 /** One supplier offer for an identified glass part. Regional suppliers and
@@ -180,6 +196,7 @@ export interface StoreShape {
   approval_tokens: ApprovalTokenRecord[];
   glass_identifications: GlassIdentification[];
   vin_lookups: VinLookupRecord[];
+  vin_lookup_spend: VinLookupSpendRecord[];
   supplier_offers: SupplierOffer[];
   price_calculations: PriceCalculation[];
 }
