@@ -82,11 +82,18 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
   // Phase 3: sourcing + pricing auto-advance from GLASS_IDENTIFIED.
   await expect(page.getByText("Price Approved")).toBeVisible();
   await expect(page.getByText("PRICE_APPROVED")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Glass identification" })).toBeVisible();
+  // Detail cards: Vehicle / Service, Supplier Sourcing, Pricing, Activity.
+  await expect(page.getByRole("heading", { name: "Vehicle / Service" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Supplier sourcing" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Pricing" })).toBeVisible();
+  // No staff action is required on an auto-advanced case: no alert card.
+  await expect(page.getByRole("alert")).not.toBeVisible();
 
   await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible();
+  // Each activity entry shows a plain-English summary; expand it for the raw event.
+  const createdEntry = page.getByRole("button", { name: /Case opened in the Direct channel/ });
+  await expect(createdEntry).toBeVisible();
+  await createdEntry.click();
   await expect(page.getByText("CASE_CREATED")).toBeVisible();
 
   const reference = await page.locator("h1").textContent();
