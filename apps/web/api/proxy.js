@@ -1,3 +1,23 @@
+// Vercel Serverless Function: proxy /api/v1/* to the upstream API.
+//
+// Body parsing is disabled so file uploads (multipart/form-data) stream
+// through byte-for-byte. We forward the raw request body untouched for
+// every method that can carry one, preserving the original content-type
+// (including the multipart boundary). JSON requests pass through
+// identically to before.
+export const config = {
+  api: { bodyParser: false }
+};
+
+function readRawBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
 export default async function handler(req, res) {
   const upstream = process.env.UPSTREAM_API_URL;
   const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
@@ -27,14 +47,8 @@ export default async function handler(req, res) {
 
   let body;
   if (!["GET", "HEAD"].includes(String(req.method || "GET").toUpperCase())) {
-    if (req.body === undefined || req.body === null) {
-      body = undefined;
-    } else if (typeof req.body === "string" || Buffer.isBuffer(req.body)) {
-      body = req.body;
-    } else {
-      body = JSON.stringify(req.body);
-      headers["content-type"] = headers["content-type"] || "application/json";
-    }
+    const raw = await readRawBody(req);
+    body = raw.length > 0 ? raw : undefined;
   }
 
   try {
