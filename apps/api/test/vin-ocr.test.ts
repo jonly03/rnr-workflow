@@ -65,6 +65,13 @@ describe("ocrVinFromImage", () => {
       })
     ).rejects.toThrow(OcrError);
   });
+
+  it("fails fast when recognition hangs", async () => {
+    const never = new Promise<{ text: string }>(() => {});
+    await expect(ocrVinFromImage(fakeImage, () => never, 50)).rejects.toThrow(
+      /timed out/
+    );
+  }, 10000);
 });
 
 describe("POST /api/v1/vin/ocr", () => {
