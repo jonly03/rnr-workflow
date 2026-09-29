@@ -143,6 +143,12 @@ describe("Staff auth", () => {
     await request(app).get("/health").expect(200);
   });
 
+  it("serves the same health payload at /api/v1/health for the web proxy", async () => {
+    const { app } = await fixture();
+    const res = await request(app).get("/api/v1/health").expect(200);
+    expect(res.body).toMatchObject({ ok: true, glass_catalog: "mock-catalog" });
+  });
+
   it("seeds the staff admin on first login when seed env vars are set", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rnr-auth-seed-"));
     const store = new JsonCaseStore(path.join(dir, "cases.json"));

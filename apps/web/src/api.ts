@@ -68,8 +68,10 @@ export interface HealthStatus {
 /** Public endpoint; returns null when unreachable. Never throws. */
 export async function getHealth(): Promise<HealthStatus | null> {
   try {
-    const base = API_BASE.replace(/\/api\/v1\/?$/, "");
-    const response = await fetch(`${base}/health`);
+    // NOTE: keep this under /api/v1 so it goes through the web app's
+    // same-origin API proxy on staging/production. Fetching /health on the
+    // web origin would return the SPA shell instead of the API.
+    const response = await fetch(`${API_BASE}/health`);
     if (!response.ok) return null;
     return (await response.json()) as HealthStatus;
   } catch {
