@@ -29,6 +29,12 @@ jobs:
       AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
       STAFF_ADMIN_EMAIL: ${{ secrets.STAFF_ADMIN_EMAIL }}
       STAFF_ADMIN_PASSWORD: ${{ secrets.STAFF_ADMIN_PASSWORD }}
+      # MyGrant live-mode config (optional; mock is the default). Production
+      # has no MyGrant secrets yet — empty values are safe while mock is on.
+      MYGRANT_USERNAME: ${{ secrets.MYGRANT_USERNAME }}
+      MYGRANT_PASSWORD: ${{ secrets.MYGRANT_PASSWORD }}
+      GLASS_CATALOG_PROVIDER: ${{ vars.GLASS_CATALOG_PROVIDER }}
+      SOURCING_PROVIDER: ${{ vars.SOURCING_PROVIDER }}
 
     steps:
       - uses: actions/checkout@v4
@@ -84,7 +90,7 @@ jobs:
         run: |
           set -euo pipefail
           vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
-          api_url="$(vercel deploy --prod --yes --token="$VERCEL_TOKEN" --env DATABASE_URL="$DATABASE_URL" --env PG_POOL_MAX=3 --env AUTH_SECRET="$AUTH_SECRET" --env STAFF_ADMIN_EMAIL="$STAFF_ADMIN_EMAIL" --env STAFF_ADMIN_PASSWORD="$STAFF_ADMIN_PASSWORD" --env CORS_ORIGIN="${{ vars.PRODUCTION_WEB_URL }}" | tail -n1)"
+          api_url="$(vercel deploy --prod --yes --token="$VERCEL_TOKEN" --env DATABASE_URL="$DATABASE_URL" --env PG_POOL_MAX=3 --env AUTH_SECRET="$AUTH_SECRET" --env STAFF_ADMIN_EMAIL="$STAFF_ADMIN_EMAIL" --env STAFF_ADMIN_PASSWORD="$STAFF_ADMIN_PASSWORD" --env CORS_ORIGIN="${{ vars.PRODUCTION_WEB_URL }}" --env MYGRANT_USERNAME="$MYGRANT_USERNAME" --env MYGRANT_PASSWORD="$MYGRANT_PASSWORD" --env GLASS_CATALOG_PROVIDER="${GLASS_CATALOG_PROVIDER:-mock}" --env SOURCING_PROVIDER="${SOURCING_PROVIDER:-mock}" | tail -n1)"
           echo "url=$api_url" >> "$GITHUB_OUTPUT"
           echo "Production API: $api_url" >> "$GITHUB_STEP_SUMMARY"
 

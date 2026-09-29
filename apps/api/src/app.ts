@@ -197,7 +197,12 @@ export function createApp(
     res.json({
       ok: true,
       storage: process.env.DATABASE_URL ? "postgres" : "json",
-      glass_catalog: glassCatalog.name
+      glass_catalog: glassCatalog.name,
+      sourcing_provider: sourcingProvider.name,
+      // Boolean only: proves the MyGrant secrets reached the runtime without
+      // ever exposing their values. Live mode additionally requires
+      // GLASS_CATALOG_PROVIDER/SOURCING_PROVIDER=mygrant.
+      mygrant_configured: Boolean(process.env.MYGRANT_USERNAME && process.env.MYGRANT_PASSWORD)
     });
   };
   app.get("/health", healthHandler);
