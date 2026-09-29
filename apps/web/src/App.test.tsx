@@ -333,4 +333,17 @@ describe("activity timeline layout", () => {
       expect(rules.some(r => r.includes(sel))).toBe(true);
     }
   });
+
+  // Regression: expanded payload <pre> blocks (e.g. long single-line error
+  // JSON) truncated at the viewport edge instead of wrapping, forcing a
+  // pinch-zoom to read them — which in turn broke the top banner's rendering
+  // on iOS. Pin the wrapping declarations in the stylesheet source directly.
+  it("wraps long payload lines instead of truncating them", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const css = readFileSync(join(process.cwd(), "src", "styles.css"), "utf8");
+    const block = css.split(".timeline-details pre")[1]?.split("}")[0] ?? "";
+    expect(block).toMatch(/white-space\s*:\s*pre-wrap/);
+    expect(block).toMatch(/overflow-wrap\s*:\s*anywhere/);
+  });
 });
