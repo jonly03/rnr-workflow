@@ -146,7 +146,7 @@ dd { margin: 0; }
   padding: 10px; overflow: auto; font-size: .78rem; margin: 8px 0 0;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 950px) {
   main { width: min(100% - 24px, 1120px); padding-top: 20px; }
   .topbar { padding: 0 12px; }
   .crumbs { max-width: 34vw; font-size: 0.85rem; }
