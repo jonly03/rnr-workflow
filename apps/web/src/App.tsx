@@ -482,19 +482,21 @@ export function App() {
               </div>
             ) : (
               <>
-            {visibleCases.length > 0 && (
-              <div className="queue-bulk">
-                <button type="button" className="link" onClick={toggleExpandAll}>
-                  {allVisibleExpanded ? "Collapse all" : "Expand all"}
-                </button>
-              </div>
-            )}
-            <p className="muted queue-count">
+            <div className="queue-list-head">
+              {visibleCases.length > 0 && (
+                <div className="queue-bulk">
+                  <button type="button" className="link" onClick={toggleExpandAll}>
+                    {allVisibleExpanded ? "Collapse all" : "Expand all"}
+                  </button>
+                </div>
+              )}
+              <p className="muted queue-count">
               {visibleCases.length} of {cases.length} {cases.length === 1 ? "case" : "cases"}
               {filtersActive && (
                 <> — <button type="button" className="link" onClick={clearFilters}>Clear filters</button></>
               )}
             </p>
+            </div>
             {visibleCases.length === 0 ? (
               <div className="empty card">
                 <h2>No cases match.</h2>
