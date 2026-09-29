@@ -145,19 +145,62 @@ export function decodeVin(vin: string) {
 }
 
 const OCR_FETCH_TIMEOUT_MS = 60_000;
+/** Full-res phone photos carry 6-12x the pixels OCR needs — downscale first. */
+const OCR_MAX_DIMENSION = 1600;
+
+/**
+ * Downscale a photo before upload so uploads are fast and OCR finishes
+ * well within its timeout. Falls back to the original file when the
+ * browser can't downscale (the API still accepts full-res).
+ */
+async function downscalePhoto(file: File): Promise<File | Blob> {
+  try {
+    if (typeof createImageBitmap !== "function") return file;
+    const bitmap = await createImageBitmap(file, {
+      imageOrientation: "from-image"
+    });
+    try {
+      const scale = Math.min(
+        1,
+        OCR_MAX_DIMENSION / Math.max(bitmap.width, bitmap.height)
+      );
+      if (scale === 1) return file;
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(bitmap.width * scale);
+      canvas.height = Math.round(bitmap.height * scale);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return file;
+      ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise<Blob | null>(resolve =>
+        canvas.toBlob(resolve, "image/jpeg", 0.85)
+      );
+      if (!blob) return file;
+      return new File([blob], file.name.replace(/\.[^.]*$/, "") + ".jpg", {
+        type: "image/jpeg"
+      });
+    } finally {
+      bitmap.close();
+    }
+  } catch {
+    return file;
+  }
+}
 
 export function ocrVinPhoto(photo: File) {
-  const form = new FormData();
-  form.append("photo", photo);
   const token = getToken();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), OCR_FETCH_TIMEOUT_MS);
-  return fetch(`${API_BASE}/vin/ocr`, {
-    method: "POST",
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-    body: form,
-    signal: controller.signal
-  })
+  return downscalePhoto(photo)
+    .then(upload => {
+      const form = new FormData();
+      form.append("photo", upload);
+      return fetch(`${API_BASE}/vin/ocr`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: form,
+        signal: controller.signal
+      });
+    })
     .then(json<{ vin: string }>)
     .catch(err => {
       if (err instanceof DOMException && err.name === "AbortError") {
