@@ -18,7 +18,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Hard bound on a single OCR attempt (worker boot + recognition). */
-export const OCR_TIMEOUT_MS = 30_000;
+export const OCR_TIMEOUT_MS = 60_000;
 
 function tessdataDir(): string {
   // src/vin-ocr.ts -> <api>/data/tessdata (also correct if compiled to dist/).
