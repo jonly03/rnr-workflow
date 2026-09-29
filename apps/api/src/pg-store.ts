@@ -20,6 +20,7 @@ import type {
   CreateApprovalTokenInput,
   CreateCaseStoreInput,
   CreateStaffUserInput,
+  RecordVinLookupSpendInput,
   SaveGlassIdentificationInput,
   SavePriceCalculationInput,
   SaveSupplierOfferInput,
@@ -520,6 +521,22 @@ export class PgCaseStore implements CaseStore {
       "delete from vin_lookup_claims where vin = $1 and glass_type = $2",
       [vin.trim().toUpperCase(), glassType]
     );
+  }
+
+  async recordVinLookupSpend(input: RecordVinLookupSpendInput): Promise<void> {
+    await this.pool.query(
+      `insert into vin_lookup_spend(id, vin, glass_type, cost_cents, provider, spent_at)
+       values ($1,$2,$3,$4,$5,now())`,
+      [randomUUID(), input.vin.trim().toUpperCase(), input.glassType, input.costCents, input.provider]
+    );
+  }
+
+  async getVinLookupSpendCentsSince(sinceIso: string): Promise<number> {
+    const result = await this.pool.query(
+      "select coalesce(sum(cost_cents),0)::int as total from vin_lookup_spend where spent_at >= $1",
+      [sinceIso]
+    );
+    return result.rows[0]?.total ?? 0;
   }
 
   async saveSupplierOffer(input: SaveSupplierOfferInput): Promise<SupplierOffer> {

@@ -59,6 +59,24 @@ function authHeaders(extra: Record<string, string> = {}): Record<string, string>
   return token ? { ...extra, Authorization: `Bearer ${token}` } : { ...extra };
 }
 
+export interface HealthStatus {
+  ok: boolean;
+  storage: string;
+  glass_catalog: string;
+}
+
+/** Public endpoint; returns null when unreachable. Never throws. */
+export async function getHealth(): Promise<HealthStatus | null> {
+  try {
+    const base = API_BASE.replace(/\/api\/v1\/?$/, "");
+    const response = await fetch(`${base}/health`);
+    if (!response.ok) return null;
+    return (await response.json()) as HealthStatus;
+  } catch {
+    return null;
+  }
+}
+
 export async function login(email: string, password: string): Promise<StaffUser> {
   const response = await fetch(`${API_BASE}/auth/login`, {
     method: "POST",

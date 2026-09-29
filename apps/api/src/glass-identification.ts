@@ -1,6 +1,7 @@
 import type { GlassCatalogProvider } from "./glass-catalog.js";
 import type { CaseStore } from "./store.js";
 import { assertValidVin, VinValidationError } from "./vin-validation.js";
+import { getVinSpendCapCents, MyGrantError } from "./mygrant.js";
 import type {
   CaseRecord,
   GlassCandidate,
@@ -58,6 +59,7 @@ export type IdentificationErrorCode =
   | "INVALID_TRANSITION"
   | "VIN_NOT_ELIGIBLE"
   | "VIN_LOOKUP_IN_PROGRESS"
+  | "VIN_SPEND_CAP_EXCEEDED"
   | "INVALID_CANDIDATE"
   | "IDENTIFICATION_NOT_FOUND";
 
@@ -254,6 +256,44 @@ async function evaluateCandidates(
 const VIN_LOOKUP_WAIT_MS = 10_000;
 const VIN_LOOKUP_POLL_MS = 250;
 
+/** ISO timestamp for 00:00:00 UTC today: the spend-cap window is a UTC day. */
+function startOfTodayUtcIso(): string {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+}
+
+/**
+ * Throws VIN_SPEND_CAP_EXCEEDED (loud, 402) when another paid lookup would
+ * exceed today's cap. Only called for providers with a nonzero
+ * vinLookupCostCents, so free providers and cached lookups never hit this.
+ */
+async function enforceVinSpendCap(store: CaseStore, costCents: number): Promise<void> {
+  const capCents = getVinSpendCapCents();
+  const spentCents = await store.getVinLookupSpendCentsSince(startOfTodayUtcIso());
+  if (spentCents + costCents > capCents) {
+    throw new IdentificationError(
+      "VIN_SPEND_CAP_EXCEEDED",
+      `Daily paid VIN lookup spend cap reached ($${(spentCents / 100).toFixed(2)} of ` +
+        `$${(capCents / 100).toFixed(2)} spent today). No lookup was submitted and no ` +
+        `charge was incurred. Raise MYGRANT_DAILY_SPEND_CAP_USD to continue.`,
+      402
+    );
+  }
+}
+
+/**
+ * Conservative charge accounting: assume a paid lookup was charged unless
+ * the error proves it was never submitted. Our own pre-submission gates
+ * (IdentificationError: spend cap, transitions) never charge; MyGrantError
+ * carries an exact charged flag; unknown errors from a paid provider
+ * default to charged.
+ */
+function lookupMayHaveBeenCharged(error: unknown): boolean {
+  if (error instanceof IdentificationError) return false;
+  if (error instanceof MyGrantError) return error.charged;
+  return true;
+}
+
 async function waitForVinLookupResult(
   store: CaseStore,
   vin: string,
@@ -353,15 +393,31 @@ export async function requestVinLookup(
   }
 
   try {
+    // Paid-provider guardrails: cache and single-flight already guarantee
+    // this lookup is genuinely new, so a nonzero cost means real money is
+    // about to be spent. Enforce the daily cap BEFORE submitting.
+    const costCents = provider.vinLookupCostCents ?? 0;
+    if (costCents > 0) {
+      await enforceVinSpendCap(store, costCents);
+    }
+
     await store.appendEvent({
       caseId,
       eventType: "START_VIN_LOOKUP",
       actor,
       nextState: transition(caseRecord, "START_VIN_LOOKUP"),
-      payload: { vin, charged: true, provider: provider.name }
+      payload: { vin, charged: costCents > 0, provider: provider.name }
     });
 
     const lookup = await provider.lookupVin(vin, glassRequest.glass_type);
+    if (costCents > 0) {
+      await store.recordVinLookupSpend({
+        vin,
+        glassType: glassRequest.glass_type,
+        costCents,
+        provider: provider.name
+      });
+    }
     await store.saveVinLookup({
       vin,
       glassType: glassRequest.glass_type,
@@ -372,10 +428,21 @@ export async function requestVinLookup(
       eventType: "VIN_RESULT_RETURNED",
       actor: SYSTEM,
       nextState: transition({ ...caseRecord, current_state: "VIN_LOOKUP_IN_PROGRESS" }, "VIN_RESULT_RETURNED"),
-      payload: { vin, charged: true, provider: provider.name, candidate_count: lookup.candidates.length }
+      payload: { vin, charged: costCents > 0, provider: provider.name, candidate_count: lookup.candidates.length }
     });
     await evaluateVinResult(store, caseId, glassRequest, lookup.candidates, provider.name, SYSTEM, true);
   } catch (error) {
+    // A failure after submission may still have consumed the $1 credit
+    // (MyGrantError.charged). Record it so the cap stays conservative
+    // with real money; pre-submission failures record nothing.
+    if ((provider.vinLookupCostCents ?? 0) > 0 && lookupMayHaveBeenCharged(error)) {
+      await store.recordVinLookupSpend({
+        vin,
+        glassType: glassRequest.glass_type,
+        costCents: provider.vinLookupCostCents ?? 0,
+        provider: provider.name
+      });
+    }
     await store.saveVinLookup({
       vin,
       glassType: glassRequest.glass_type,

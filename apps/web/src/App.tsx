@@ -4,6 +4,7 @@ import {
   decodeVin,
   getCase,
   getCaseEvents,
+  getHealth,
   getMe,
   getToken,
   listCases,
@@ -582,12 +583,24 @@ function Shell({
   crumbs?: Crumb[];
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [catalog, setCatalog] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const closeMenu = () => setMenuOpen(false);
   const handleSignOut = () => {
     closeMenu();
     onSignOut();
   };
+  // Live-mode indicator: which glass catalog the API is sourcing from.
+  // "mygrant-web" = live MyGrant ($1 per VIN lookup); anything else = mock.
+  useEffect(() => {
+    let cancelled = false;
+    getHealth().then(health => {
+      if (!cancelled && health) setCatalog(health.glass_catalog);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   useEffect(() => {
     if (!menuOpen) return;
     const onPointerDown = (e: PointerEvent) => {
@@ -612,6 +625,18 @@ function Shell({
           <div className="brand">R&R</div>
           <span className="brand-title">Case Operations</span>
         </div>
+        {catalog && (
+          <span
+            className={`catalog-badge ${catalog === "mygrant-web" ? "live" : "mock"}`}
+            title={
+              catalog === "mygrant-web"
+                ? "Live MyGrant sourcing: each VIN lookup costs $1"
+                : "Mock catalog: no live sourcing, no charges"
+            }
+          >
+            {catalog === "mygrant-web" ? "LIVE · MyGrant" : "Mock catalog"}
+          </span>
+        )}
         {crumbs.length > 0 && (
           <nav className="crumbs" aria-label="Breadcrumb">
             {crumbs.map((c, i) => (

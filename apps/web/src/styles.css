@@ -25,6 +25,16 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .topbar .menu-btn,
 .topbar .crumbs .link { background: none; border: none; padding: 0; box-shadow: none; }
 .brand-wrap { display: flex; align-items: center; gap: 12px; justify-self: start; }
+/* Glass catalog mode badge: live MyGrant ($1/VIN) vs mock catalog. */
+.catalog-badge {
+  font-size: 0.7rem; font-weight: 700; letter-spacing: 0.04em;
+  padding: 3px 10px; border-radius: 999px; white-space: nowrap;
+}
+.catalog-badge.live { background: #fbbf24; color: #451a03; }
+.catalog-badge.mock {
+  background: rgba(255, 255, 255, 0.16); color: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
 .crumbs {
   justify-self: center; display: flex; align-items: center;
   color: #94a3b8; font-size: 0.95rem; min-width: 0; max-width: 40vw;
