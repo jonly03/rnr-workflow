@@ -146,7 +146,30 @@ describe("Staff auth", () => {
   it("serves the same health payload at /api/v1/health for the web proxy", async () => {
     const { app } = await fixture();
     const res = await request(app).get("/api/v1/health").expect(200);
-    expect(res.body).toMatchObject({ ok: true, glass_catalog: "mock-catalog" });
+    expect(res.body).toMatchObject({
+      ok: true,
+      glass_catalog: "mock-catalog",
+      sourcing_provider: "mock-sourcing",
+      // No MyGrant secrets in the test env: the flag is false and no
+      // secret values ever appear in the payload.
+      mygrant_configured: false
+    });
+    expect(JSON.stringify(res.body)).not.toMatch(/password|secret/i);
+  });
+
+  it("reports mygrant_configured when the secrets are present (boolean only)", async () => {
+    process.env.MYGRANT_USERNAME = "shop";
+    process.env.MYGRANT_PASSWORD = "s3cret";
+    try {
+      const { app } = await fixture();
+      const res = await request(app).get("/health").expect(200);
+      expect(res.body.mygrant_configured).toBe(true);
+      // The flag is a boolean; the values themselves never leak.
+      expect(JSON.stringify(res.body)).not.toContain("s3cret");
+    } finally {
+      delete process.env.MYGRANT_USERNAME;
+      delete process.env.MYGRANT_PASSWORD;
+    }
   });
 
   it("seeds the staff admin on first login when seed env vars are set", async () => {
