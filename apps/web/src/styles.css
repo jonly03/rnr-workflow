@@ -57,6 +57,9 @@ input, select {
 .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 .actions { display: flex; justify-content: flex-end; gap: 10px; }
 .alert { border: 1px solid #d97706; background: rgba(217,119,6,.15); border-radius: 10px; padding: 12px; margin-bottom: 18px; }
+.scan-progress { position: relative; overflow: hidden; }
+.scan-progress-fill { position: absolute; top: 0; bottom: 0; left: 0; background: rgba(217,119,6,.35); transition: width 200ms linear; }
+.scan-progress-text { position: relative; }
 .back { margin-bottom: 16px; }
 .state-line { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 code { color: #cbd5e1; font-size: .85em; }

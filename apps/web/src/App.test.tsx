@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { App, cardOrderKey, DEFAULT_CARD_ORDER, loadCardOrder } from "./App";
+import { App, cardOrderKey, DEFAULT_CARD_ORDER, loadCardOrder, scanProgressForElapsed } from "./App";
 
 vi.stubGlobal("fetch", vi.fn(async () => ({
   ok: true,
@@ -54,5 +54,23 @@ describe("case card ordering", () => {
 
   it("scopes the order per staff member", () => {
     expect(cardOrderKey("a@rr.test")).not.toBe(cardOrderKey("b@rr.test"));
+  });
+});
+
+describe("scan progress", () => {
+  it("starts at 0 and eases toward 90 without exceeding it", () => {
+    expect(scanProgressForElapsed(0)).toBe(0);
+    expect(scanProgressForElapsed(8)).toBeGreaterThan(0);
+    expect(scanProgressForElapsed(8)).toBeLessThan(90);
+    expect(scanProgressForElapsed(1000)).toBe(90);
+  });
+
+  it("is monotonic", () => {
+    let prev = -1;
+    for (let s = 0; s <= 60; s += 2) {
+      const pct = scanProgressForElapsed(s);
+      expect(pct).toBeGreaterThanOrEqual(prev);
+      prev = pct;
+    }
   });
 });
