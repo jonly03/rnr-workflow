@@ -144,7 +144,7 @@ export function decodeVin(vin: string) {
   }).then(json<{ vin: string; vehicle: DecodedVehicle }>);
 }
 
-const OCR_FETCH_TIMEOUT_MS = 60_000;
+const OCR_FETCH_TIMEOUT_MS = 90_000;
 /** Full-res phone photos carry 6-12x the pixels OCR needs — downscale first. */
 const OCR_MAX_DIMENSION = 1600;
 
