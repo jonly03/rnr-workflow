@@ -369,8 +369,28 @@ function VinFirstCase({
 
   // Photo OCR state: a VIN read from an uploaded photo, awaiting confirmation.
   const [ocrScanning, setOcrScanning] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState(0);
   const [ocrVin, setOcrVin] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const scanTimerRef = useRef<number | null>(null);
+
+  // Simulated scan progress: eases toward 90% while the request is in
+  // flight, then snaps to 100% when it resolves. The OCR engine doesn't
+  // report real progress, so this reflects elapsed time, not engine state.
+  const startScanProgress = () => {
+    setOcrProgress(0);
+    const startedAt = Date.now();
+    scanTimerRef.current = window.setInterval(() => {
+      setOcrProgress(scanProgressForElapsed((Date.now() - startedAt) / 1000));
+    }, 200);
+  };
+
+  const stopScanProgress = () => {
+    if (scanTimerRef.current !== null) {
+      window.clearInterval(scanTimerRef.current);
+      scanTimerRef.current = null;
+    }
+  };
 
   const handlePhotoSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -379,13 +399,18 @@ function VinFirstCase({
     setError("");
     setOcrVin(null);
     setOcrScanning(true);
+    startScanProgress();
     try {
       const result = await ocrVinPhoto(file);
+      setOcrProgress(100);
       setOcrVin(result.vin);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not read VIN from photo.");
     } finally {
+      stopScanProgress();
       setOcrScanning(false);
+      // Let the bar settle at 100% (or freeze on error) before hiding it.
+      window.setTimeout(() => setOcrProgress(0), 800);
     }
   };
 
@@ -452,7 +477,7 @@ function VinFirstCase({
               <span className="input-method-icon" aria-hidden="true">
                 {ocrScanning ? "…" : "📷"}
               </span>
-              <span>{ocrScanning ? "Scanning…" : "Scan"}</span>
+              <span>{ocrScanning ? `Scanning ${ocrProgress}%` : "Scan"}</span>
             </button>
             <input
               ref={fileInputRef}
@@ -543,7 +568,12 @@ function VinFirstCase({
             </div>
           )}
           {ocrScanning && (
-            <div className="alert" role="status">Reading VIN from photo…</div>
+            <div className="alert scan-progress" role="status" aria-live="polite">
+              <div className="scan-progress-fill" style={{ width: `${ocrProgress}%` }} />
+              <span className="scan-progress-text">
+                Reading VIN from photo… Scanning {ocrProgress}%
+              </span>
+            </div>
           )}
           {ocrVin && (
             <div className="card" style={{ marginTop: "0.75rem", padding: "0.75rem 1rem" }}>
@@ -746,6 +776,13 @@ export const DEFAULT_CARD_ORDER: CaseCardId[] = ["vehicle", "pricing", "identifi
 
 export function cardOrderKey(staffEmail: string) {
   return `rnr:card-order:${staffEmail}`;
+}
+
+/** Simulated VIN-scan progress for elapsed seconds: eases toward 90%.
+ * The OCR engine doesn't report real progress, so the bar reflects
+ * elapsed time and snaps to 100% when the request resolves. */
+export function scanProgressForElapsed(elapsedSec: number): number {
+  return Math.min(90, Math.round(90 * (1 - Math.exp(-elapsedSec / 8))));
 }
 
 export function loadCardOrder(staffEmail: string): CaseCardId[] {
