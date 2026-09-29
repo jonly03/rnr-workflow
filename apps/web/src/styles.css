@@ -152,10 +152,6 @@ code { color: #cbd5e1; font-size: .85em; }
 dl { display: grid; grid-template-columns: 120px 1fr; gap: 10px 16px; margin: 0; }
 dt { color: #94a3b8; }
 dd { margin: 0; }
-.timeline ol { list-style: none; padding: 0; margin: 0; }
-.timeline li { display: grid; grid-template-columns: 1fr auto; gap: 5px 16px; border-top: 1px solid #334155; padding: 14px 0; }
-.timeline li:first-child { border-top: 0; }
-.timeline small { grid-column: 1 / -1; }
 
 /* Staff action alert: pinned warning above the detail cards */
 .alert-card {

@@ -310,3 +310,27 @@ describe("glass catalog mode badge", () => {
     ).toEqual(["R&R Operations", "badge", "Case Queue"]);
   });
 });
+
+describe("activity timeline layout", () => {
+  // Regression: a stale `.timeline li { display: grid; grid-template-columns:
+  // 1fr auto }` rule (written for a previous markup) still matched the new
+  // `li.timeline-item` elements. Collapsed entries looked fine, but expanding
+  // one squeezed the toggle button into the 1fr column and crammed the
+  // details beside it instead of below — "jacking up" the entry heading.
+  // jsdom never applies stylesheets, so pin the stylesheet source directly.
+  it("has no bare .timeline element selectors that fight .timeline-item", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const css = readFileSync(join(process.cwd(), "src", "styles.css"), "utf8");
+    const rules = css.split("}").map(r => r.split("{")[0]);
+    const bare = rules.filter(sel =>
+      /(^|[\s,])\.timeline\s+(ol|li|small)\b/.test(sel) ||
+      /(^|[\s,])\.timeline\s+li\s*:/.test(sel)
+    );
+    expect(bare).toEqual([]);
+    // The current structure's own rules must still be there.
+    for (const sel of [".timeline-list", ".timeline-item", ".timeline-toggle", ".timeline-details"]) {
+      expect(rules.some(r => r.includes(sel))).toBe(true);
+    }
+  });
+});
