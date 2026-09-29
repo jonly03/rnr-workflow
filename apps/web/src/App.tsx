@@ -311,6 +311,7 @@ export function App() {
           events={events}
           onBack={() => setScreen("queue")}
           onRefresh={() => openCase(selected.id)}
+          onNewCase={() => setScreen("new")}
           loading={loading}
           staffEmail={staff.email}
         />
@@ -1068,6 +1069,7 @@ function CaseDetail({
   events,
   onBack,
   onRefresh,
+  onNewCase,
   loading,
   staffEmail
 }: {
@@ -1075,6 +1077,7 @@ function CaseDetail({
   events: CaseEvent[];
   onBack: () => void;
   onRefresh: () => Promise<void>;
+  onNewCase: () => void;
   loading: boolean;
   staffEmail: string;
 }) {
@@ -1111,10 +1114,10 @@ function CaseDetail({
           <p className="eyebrow" data-testid="case-channel">{item.channel}</p>
           <h1>{item.reference}</h1>
           <div className="state-line">
-            <span className="state">{humanize(item.current_state)}</span>
             <code>{item.current_state}</code>
           </div>
         </div>
+        <button className="primary" onClick={onNewCase}>+ New Case</button>
       </section>
 
       {isStaffActionRequired(item.current_state) && (
