@@ -581,12 +581,26 @@ function Shell({
   onSignOut: () => void;
   crumbs?: Crumb[];
 }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const closeMenu = () => setMenuOpen(false);
+  const handleSignOut = () => {
+    closeMenu();
+    onSignOut();
+  };
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenuOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [menuOpen]);
   return (
     <div className="app-shell">
       <header className="topbar">
         <div className="brand-wrap">
           <div className="brand">R&R</div>
-          <span>Case Operations</span>
+          <span className="brand-title">Case Operations</span>
         </div>
         {crumbs.length > 0 && (
           <nav className="crumbs" aria-label="Breadcrumb">
@@ -603,10 +617,38 @@ function Shell({
           </nav>
         )}
         {staff && (
-          <span className="staff-line">
-            {staff.name} · {staff.email}
-            <button className="link" onClick={onSignOut}>Sign out</button>
-          </span>
+          <div className="topbar-right">
+            <span className="staff-line">
+              {staff.name} · {staff.email}
+              <button className="link" onClick={onSignOut}>Sign out</button>
+            </span>
+            <div className="menu-wrap">
+              <button
+                type="button"
+                className="menu-btn"
+                aria-label="Account menu"
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                onClick={() => setMenuOpen(o => !o)}
+              >
+                ☰
+              </button>
+              {menuOpen && (
+                <>
+                  <button type="button" className="menu-backdrop" aria-hidden="true" tabIndex={-1} onClick={closeMenu} />
+                  <div className="user-menu" role="menu">
+                    <p className="user-menu-id">
+                      <strong>{staff.name}</strong>
+                      <span className="muted">{staff.email}</span>
+                    </p>
+                    <button type="button" className="link" role="menuitem" onClick={handleSignOut}>
+                      Sign out
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
         )}
       </header>
       <main>{children}</main>
