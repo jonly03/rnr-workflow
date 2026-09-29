@@ -27,6 +27,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .crumbs [aria-current="page"] { color: #e2e8f0; font-weight: 600; }
 .staff-line { justify-self: end; display: flex; align-items: center; gap: 12px; color: #94a3b8; font-size: 0.9rem; }
 .sidebar-new { width: 100%; margin-bottom: 20px; }
+.toolbar-selects { display: none; }
 button.link { background: none; border: none; color: #818cf8; padding: 0; text-decoration: underline; }
 .brand {
   display: grid; place-items: center; width: 40px; height: 40px;
@@ -148,9 +149,19 @@ dd { margin: 0; }
 @media (max-width: 760px) {
   main { width: min(100% - 24px, 1120px); padding-top: 20px; }
   .topbar { padding: 0 12px; }
+  .crumbs { max-width: 34vw; font-size: 0.85rem; }
+  .staff-line { font-size: 0.8rem; }
   .page-head { flex-direction: column; }
   .queue-layout { grid-template-columns: 1fr; }
   .queue-sidebar { position: static; }
+  .toolbar-pills { display: none; }
+  .toolbar-selects {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 10px; margin-top: 16px;
+  }
+  .toolbar-selects > label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .toolbar-selects select { width: 100%; min-width: 0; }
+  .case-card-head { grid-template-columns: 1fr; }
   .case-card-head { grid-template-columns: 1fr; }
   .grid, .detail-grid { grid-template-columns: 1fr; }
   dl { grid-template-columns: 1fr; gap: 4px; }

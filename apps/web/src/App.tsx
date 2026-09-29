@@ -139,6 +139,9 @@ export function App() {
   const [staff, setStaff] = useState<StaffUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [screen, setScreen] = useState<Screen>("queue");
+  const [newCaseOrigin, setNewCaseOrigin] = useState<
+    { screen: "queue" } | { screen: "detail"; caseId: string; reference: string }
+  >({ screen: "queue" });
   const [cases, setCases] = useState<CaseRecord[]>([]);
   const [selected, setSelected] = useState<CaseRecord | null>(null);
   const [events, setEvents] = useState<CaseEvent[]>([]);
@@ -296,11 +299,20 @@ export function App() {
         onSignOut={signOut}
         crumbs={[
           { label: "Case queue", onClick: () => setScreen("queue") },
+          ...(newCaseOrigin.screen === "detail"
+            ? [{
+                label: newCaseOrigin.reference,
+                onClick: () => { void openCase(newCaseOrigin.caseId); }
+              }]
+            : []),
           { label: "New case" }
         ]}
       >
         <NewCase
-          onCancel={() => setScreen("queue")}
+          onCancel={() => {
+            if (newCaseOrigin.screen === "detail") void openCase(newCaseOrigin.caseId);
+            else setScreen("queue");
+          }}
           onCreated={async c => {
             await refreshQueue();
             await openCase(c.id);
@@ -324,7 +336,10 @@ export function App() {
           item={selected}
           events={events}
           onRefresh={() => openCase(selected.id)}
-          onNewCase={() => setScreen("new")}
+          onNewCase={() => {
+            setNewCaseOrigin({ screen: "detail", caseId: selected.id, reference: selected.reference });
+            setScreen("new");
+          }}
           loading={loading}
           staffEmail={staff.email}
         />
@@ -348,7 +363,7 @@ export function App() {
       ) : (
         <div className="queue-layout">
           <aside className="queue-sidebar" aria-label="Case filters">
-            <button type="button" className="primary sidebar-new" onClick={() => setScreen("new")}>+ New Case</button>
+            <button type="button" className="primary sidebar-new" onClick={() => { setNewCaseOrigin({ screen: "queue" }); setScreen("new"); }}>+ New Case</button>
             <div className="queue-toolbar">
               <div className="toolbar-section">
                 <input
@@ -370,6 +385,45 @@ export function App() {
                       <option key={s.id} value={s.id}>{s.label}</option>
                     ))}
                   </select>
+                </div>
+                <div className="toolbar-selects" aria-label="Case filters">
+                  <label>
+                    <span className="filter-label">Channel</span>
+                    <select
+                      value={channelFilter}
+                      onChange={e => setChannelFilter(e.target.value as "ALL" | Channel)}
+                      aria-label="Channel filter"
+                    >
+                      {CHANNEL_OPTIONS.map(o => (
+                        <option key={o.id} value={o.id}>{o.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span className="filter-label">Glass</span>
+                    <select
+                      value={glassFilter}
+                      onChange={e => setGlassFilter(e.target.value as "ALL" | GlassType)}
+                      aria-label="Glass filter"
+                    >
+                      {GLASS_OPTIONS.map(o => (
+                        <option key={o.id} value={o.id}>{o.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span className="filter-label">Status</span>
+                    <select
+                      value={statusFilter}
+                      onChange={e => setStatusFilter(e.target.value)}
+                      aria-label="Status filter"
+                    >
+                      <option value="ALL">All</option>
+                      {statusOptions.map(s => (
+                        <option key={s} value={s}>{humanize(s)}</option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
               </div>
               <div className="toolbar-section toolbar-pills">
