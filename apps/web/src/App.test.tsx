@@ -281,4 +281,14 @@ describe("glass catalog mode badge", () => {
     expect(badge).toBeInTheDocument();
     expect(badge).toHaveClass("mock");
   });
+
+  it("keeps the badge inside the brand cluster so the 3-column header grid holds", async () => {
+    stubHealth("mock-catalog");
+    render(<App />);
+    const badge = await screen.findByText("Mock catalog");
+    // The topbar is grid-template-columns: 1fr auto 1fr; the badge must not
+    // become a fourth grid child (that wrapped sign-out below the header).
+    expect(badge.parentElement).toHaveClass("brand-wrap");
+    expect(badge.parentElement?.tagName.toLowerCase()).not.toBe("header");
+  });
 });
