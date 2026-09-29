@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
   createGlassCatalogProvider,
@@ -8,11 +9,14 @@ import {
   MYGRANT_VIN_LOOKUP_COST_USD,
   MyGrantError,
   MyGrantWebProvider,
+  parsePartSearchResults,
   parseVinLookupsRemaining,
+  parseVinResults,
+  parseYmmVehicleList,
   RecordingMyGrantTransport,
   ReplayMyGrantTransport,
-  selectOptionValue,
   serializeMyGrantFixtures,
+  siteGlassTypeValue,
   type MyGrantConfig,
   type MyGrantTransport
 } from "../src/mygrant.js";
@@ -26,8 +30,14 @@ const CONFIG: MyGrantConfig = {
 };
 
 // ---------------------------------------------------------------------------
-// Synthetic pages (provisional structures; replaced by live captures).
+// Real fixtures: sanitized live captures 2026-09-29 (see
+// test/fixtures/mygrant/README.md). The VIN results page is reconstructed
+// from field notes of the single authorized $1 lookup.
 // ---------------------------------------------------------------------------
+
+function fixture(name: string): string {
+  return readFileSync(new URL(`./fixtures/mygrant/${name}`, import.meta.url), "utf-8");
+}
 
 function loginPageHtml(): string {
   return `<html><body><form>
@@ -39,35 +49,18 @@ function loginPageHtml(): string {
 }
 
 function authedChrome(inner: string): string {
-  return `<html><body><a href="/logout">Logout</a> R&amp;R's Finest ${inner}</body></html>`;
+  return `<html><body><a href="logout.aspx">Logout</a> ${inner}</body></html>`;
 }
 
-function vinSearchPageHtml(remaining: number | null): string {
-  const counter =
-    remaining === null ? "" : `<div>VIN Lookups Remaining: ${remaining}</div>`;
-  return authedChrome(`
-    ${counter}
-    <form>
-      <input type="hidden" name="__VIEWSTATE" value="vs456" />
-      <input type="hidden" name="__EVENTVALIDATION" value="ev789" />
-      <input type="text" name="vin" />
-      <select name="glassType">
-        <option value="WS">Windshield</option>
-        <option value="BG">Back Glass</option>
-      </select>
-      <input type="submit" name="search" value="Search" />
-    </form>`);
+/** VIN form fixture with the credits counter set to `remaining`. */
+function vinFormHtml(remaining: number): string {
+  return fixture("vin-search-form.html").replace(
+    '<span id="cvs_lookupCredits">8</span>',
+    `<span id="cvs_lookupCredits">${remaining}</span>`
+  );
 }
 
-function vinResultsHtml(): string {
-  return authedChrome(`
-    <h1>2020 Honda Accord EX</h1>
-    <table><tr><th>Part #</th><th>Description</th><th>Price</th></tr>
-    <tr><td>FW02345GTY</td><td>Windshield acoustic rain-sensor</td><td>$512.00</td></tr>
-    </table>`);
-}
-
-/** Scripted transport stub with a call log. */
+/** Scripted transport stub with a call log. Routes on the request URL. */
 class StubTransport implements MyGrantTransport {
   calls: Array<{ op: string; url: string; fields?: Record<string, string> }> = [];
   constructor(
@@ -85,15 +78,31 @@ class StubTransport implements MyGrantTransport {
   async close(): Promise<void> {}
 }
 
-function authedVinTransport(resultsHtml: string, remaining: number | null): StubTransport {
+/**
+ * Full stub of the live site: login POST, VIN form GET (credits counter),
+ * VIN submission GET (query has vin=...), YMM GET, part-search GET.
+ */
+function liveSiteTransport(overrides: { credits?: number } = {}): StubTransport {
+  const credits = overrides.credits ?? 8;
   return new StubTransport(
-    url => (url.endsWith("/pages/searchvin.aspx") ? vinSearchPageHtml(remaining) : loginPageHtml()),
-    (url, fields) => {
-      if (url.endsWith("/pages/login.aspx")) return authedChrome("<p>home</p>");
-      if (fields.vin) return resultsHtml;
-      return vinSearchPageHtml(remaining);
+    url => {
+      if (url.includes("/pages/login.aspx")) return loginPageHtml();
+      if (url.includes("/pages/searchvin.aspx")) {
+        return url.includes("vin=") ? fixture("vin-results-wrangler-reconstructed.html") : vinFormHtml(credits);
+      }
+      if (url.includes("/pages/searchm.aspx")) return fixture("ymm-results-2020-honda-a.html");
+      if (url.includes("/pages/search.aspx")) return fixture("part-search-dw02416-gty.html");
+      throw new Error(`unexpected GET ${url}`);
+    },
+    url => {
+      if (url.includes("/pages/login.aspx")) return authedChrome("<p>home</p>");
+      throw new Error(`unexpected POST ${url}`);
     }
   );
+}
+
+function submittedVinUrls(transport: StubTransport): string[] {
+  return transport.calls.filter(c => c.op === "get" && c.url.includes("vin=")).map(c => c.url);
 }
 
 // ---------------------------------------------------------------------------
@@ -170,71 +179,203 @@ describe("MyGrantWebProvider fail-loud contract", () => {
   });
 
   it("refuses the $1 lookup when credits are exhausted — without submitting", async () => {
-    const transport = authedVinTransport(vinResultsHtml(), 0);
+    const transport = liveSiteTransport({ credits: 0 });
     const provider = new MyGrantWebProvider(CONFIG, transport);
     await expect(
       provider.lookupVin("1HGCM82633A004352", "WINDSHIELD")
     ).rejects.toMatchObject({ code: "MYGRANT_NO_CREDITS" });
-    // No charge attempted: the VIN was never submitted.
-    expect(transport.calls.some(c => c.op === "postForm" && c.fields?.vin)).toBe(false);
+    // The VIN was never submitted.
+    expect(submittedVinUrls(transport)).toHaveLength(0);
   });
 
   it("refuses to spend when the credits counter cannot be read", async () => {
-    const transport = authedVinTransport(vinResultsHtml(), null);
+    const transport = new StubTransport(
+      url => (url.includes("login.aspx") ? loginPageHtml() : "<html><body>no counter here</body></html>"),
+      () => authedChrome("<p>home</p>")
+    );
     const provider = new MyGrantWebProvider(CONFIG, transport);
     await expect(
       provider.lookupVin("1HGCM82633A004352", "WINDSHIELD")
     ).rejects.toMatchObject({ code: "MYGRANT_PARSE_ERROR" });
-    expect(transport.calls.some(c => c.op === "postForm" && c.fields?.vin)).toBe(false);
+    expect(submittedVinUrls(transport)).toHaveLength(0);
   });
 
-  it("spends the lookup when credits remain and returns parsed candidates", async () => {
-    const transport = authedVinTransport(vinResultsHtml(), 5);
+  it("submits the VIN via GET with the real form params and parses the result", async () => {
+    const transport = liveSiteTransport({ credits: 5 });
     const provider = new MyGrantWebProvider(CONFIG, transport);
-    const result = await provider.lookupVin("1HGCM82633A004352", "WINDSHIELD");
-    expect(result.vin).toBe("1HGCM82633A004352");
-    expect(result.decoded.year).toBe(2020);
+    const result = await provider.lookupVin("1C4HJXEG3JW224862", "WINDSHIELD");
+
+    // Real form transport: GET searchvin.aspx?vin=...&cvs:GlassTypeSelect=...&svindo=Search
+    const submitted = submittedVinUrls(transport);
+    expect(submitted).toHaveLength(1);
+    const query = new URL(submitted[0]).searchParams;
+    expect(query.get("vin")).toBe("1C4HJXEG3JW224862");
+    expect(query.get("cvs:GlassTypeSelect")).toBe("Windshield");
+    expect(query.get("svindo")).toBe("Search");
+
+    // Real parsed content (2018 Jeep Wrangler capture).
+    expect(result.vin).toBe("1C4HJXEG3JW224862");
+    expect(result.decoded).toMatchObject({ year: 2018, make: "Jeep", model: "Wrangler" });
     expect(result.candidates).toHaveLength(1);
-    expect(result.candidates[0].part_number).toBe("FW02345GTY");
+    expect(result.candidates[0].part_number).toBe("DW02415 GTY");
     expect(result.candidates[0].position).toBe("WINDSHIELD");
-    expect(result.candidates[0].list_price_cents).toBe(51200);
-    // The VIN was actually submitted this time.
-    expect(transport.calls.some(c => c.op === "postForm" && c.fields?.vin)).toBe(true);
+    expect(result.candidates[0].features).toEqual(["Solar Glass", "Acoustic Glass", "Willys Logo"]);
+    expect(result.interchangePartNumbers).toEqual(["DW02416 GTY"]);
+    expect(result.oemPartNumbers).toEqual(["68291705AA", "68433234AA", "68433234AB", "68433234AC"]);
   });
 
-  it("maps Back Glass to the site's Back Glass dropdown option", async () => {
-    const transport = authedVinTransport(vinResultsHtml(), 3);
+  it("maps Back Glass to the site's Back option value", async () => {
+    const transport = liveSiteTransport({ credits: 3 });
     const provider = new MyGrantWebProvider(CONFIG, transport);
-    await provider.lookupVin("1HGCM82633A004352", "BACK_GLASS");
-    const searchCall = transport.calls.find(c => c.op === "postForm" && c.fields?.vin);
-    expect(searchCall?.fields?.glassType).toBe("BG");
+    await provider.lookupVin("1C4HJXEG3JW224862", "BACK_GLASS");
+    const submitted = submittedVinUrls(transport);
+    expect(submitted).toHaveLength(1);
+    expect(new URL(submitted[0]).searchParams.get("cvs:GlassTypeSelect")).toBe("Back");
+  });
+
+  it("refuses unsupported glass types without submitting (site only offers Windshield/Back)", async () => {
+    const transport = liveSiteTransport({ credits: 8 });
+    const provider = new MyGrantWebProvider(CONFIG, transport);
+    await expect(provider.lookupVin("1C4HJXEG3JW224862", "DOOR_GLASS")).rejects.toMatchObject({
+      code: "MYGRANT_UNSUPPORTED_GLASS_TYPE"
+    });
+    expect(submittedVinUrls(transport)).toHaveLength(0);
+  });
+
+  it("resolves YMM to the real vehicle list via GET", async () => {
+    const transport = liveSiteTransport();
+    const provider = new MyGrantWebProvider(CONFIG, transport);
+    const vehicles = await provider.searchYmmVehicles({ year: 2020, make: "Honda", model: "A", glassType: "WINDSHIELD" });
+    expect(vehicles).toHaveLength(4);
+    expect(vehicles[0].name).toBe("Honda Accord 2020 4 Door Sedan");
+    expect(vehicles[0].detailPath).toContain("v=Honda+Accord+2020+4+Door+Sedan");
+    const ymmCall = transport.calls.find(c => c.op === "get" && c.url.includes("/pages/searchm.aspx?"));
+    expect(ymmCall).toBeDefined();
+    const query = new URL(ymmCall!.url).searchParams;
+    expect(query.get("yr")).toBe("2020");
+    expect(query.get("mk")).toBe("Honda");
+    expect(query.get("md")).toBe("A");
+    expect(query.get("smdo")).toBe("Search");
+  });
+
+  it("fails YMM-to-candidates loudly: the vehicle→parts drill-down is not captured", async () => {
+    const transport = liveSiteTransport();
+    const provider = new MyGrantWebProvider(CONFIG, transport);
+    await expect(
+      provider.searchYmm({ year: 2020, make: "Honda", model: "A", glassType: "WINDSHIELD" })
+    ).rejects.toMatchObject({ code: "MYGRANT_PARSE_ERROR" });
+  });
+
+  it("searches part numbers via GET and parses stock/price", async () => {
+    const transport = liveSiteTransport();
+    const provider = new MyGrantWebProvider(CONFIG, transport);
+    const results = await provider.searchPartNumber("DW02416 GTY");
+    expect(results.warehouse).toContain("Randolph, MA");
+    expect(results.results).toHaveLength(1);
+    expect(results.results[0]).toMatchObject({
+      part_number: "DW02416 GTY FYG",
+      stock: "in_stock",
+      price_cents: 9225
+    });
+    const partCall = transport.calls.find(c => c.op === "get" && c.url.includes("/pages/search.aspx?"));
+    expect(partCall).toBeDefined();
+    const query = new URL(partCall!.url).searchParams;
+    expect(query.get("q")).toBe("DW02416 GTY");
+    expect(query.get("sc")).toBe("B036");
+    expect(query.get("do")).toBe("Search");
+  });
+
+  it("rejects unknown warehouse codes without searching", async () => {
+    const transport = liveSiteTransport();
+    const provider = new MyGrantWebProvider(CONFIG, transport);
+    await expect(provider.searchPartNumber("DW02416 GTY", "XX99")).rejects.toMatchObject({
+      code: "MYGRANT_PARSE_ERROR"
+    });
+    expect(transport.calls.some(c => c.url.includes("/pages/search.aspx?"))).toBe(false);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Parsers.
+// Parsers against the real fixtures.
 // ---------------------------------------------------------------------------
 
 describe("MyGrant page parsers", () => {
-  it("reads the VIN lookups remaining counter", () => {
-    expect(parseVinLookupsRemaining(vinSearchPageHtml(12))).toBe(12);
-    expect(parseVinLookupsRemaining(vinSearchPageHtml(0))).toBe(0);
-    expect(parseVinLookupsRemaining(vinSearchPageHtml(null))).toBeNull();
+  it("reads the VIN lookups remaining counter from #cvs_lookupCredits", () => {
+    expect(parseVinLookupsRemaining(fixture("vin-search-form.html"))).toBe(8);
+    expect(parseVinLookupsRemaining(vinFormHtml(0))).toBe(0);
+    expect(parseVinLookupsRemaining("<html><body>no counter</body></html>")).toBeNull();
+  });
+
+  it("parses the reconstructed VIN results page (selectors confirmed live)", () => {
+    const result = parseVinResults(
+      fixture("vin-results-wrangler-reconstructed.html"),
+      "1C4HJXEG3JW224862",
+      "WINDSHIELD"
+    );
+    expect(result.decoded).toEqual({ year: 2018, make: "Jeep", model: "Wrangler", trim: "4 Door Utility" });
+    expect(result.candidates).toHaveLength(1);
+    const primary = result.candidates[0];
+    expect(primary.part_number).toBe("DW02415 GTY");
+    expect(primary.position).toBe("WINDSHIELD");
+    expect(primary.features).toEqual(["Solar Glass", "Acoustic Glass", "Willys Logo"]);
+    // The VIN page carries no prices; pricing comes from part search.
+    expect(primary.list_price_cents).toBe(0);
+    // The interchange is NOT mistaken for the primary.
+    expect(result.interchangePartNumbers).toEqual(["DW02416 GTY"]);
+    expect(result.oemPartNumbers).toEqual(["68291705AA", "68433234AA", "68433234AB", "68433234AC"]);
+  });
+
+  it("throws MYGRANT_PARSE_ERROR when the VIN results container is missing", () => {
+    expect(() => parseVinResults("<html><body>garbage</body></html>", "1C4HJXEG3JW224862", "WINDSHIELD"))
+      .toThrowError(expect.objectContaining({ code: "MYGRANT_PARSE_ERROR" }));
+  });
+
+  it("parses the YMM vehicle list", () => {
+    const vehicles = parseYmmVehicleList(fixture("ymm-results-2020-honda-a.html"));
+    expect(vehicles.map(v => v.name)).toEqual([
+      "Honda Accord 2020 4 Door Sedan",
+      "Honda Accord ACCORD HYBRID 2020 4 Door Sedan",
+      "Honda Clarity 2020 4 Door Sedan",
+      "Honda Passport 2020 4 Door Utility"
+    ]);
+    expect(vehicles[3].detailPath).toBe("?yr=2020&mk=Honda&md=A&v=Honda+Passport+2020+4+Door+Utility");
+  });
+
+  it("treats an empty YMM list as no matches, not a parse failure", () => {
+    const empty = fixture("ymm-results-2020-honda-a.html").replace(/<ol>[\s\S]*?<\/ol>/, "<ol></ol>");
+    expect(parseYmmVehicleList(empty)).toEqual([]);
+  });
+
+  it("parses the interchange part search (cheaper option)", () => {
+    const parsed = parsePartSearchResults(fixture("part-search-dw02416-gty.html"));
+    expect(parsed.warehouse).toContain("Randolph, MA");
+    expect(parsed.results).toEqual([
+      { part_number: "DW02416 GTY FYG", stock: "in_stock", price_cents: 9225 }
+    ]);
+  });
+
+  it("parses the primary part search (pricier MOPAR option)", () => {
+    const parsed = parsePartSearchResults(fixture("part-search-dw02415-gty.html"));
+    expect(parsed.results).toEqual([
+      { part_number: "DW02415 GTY MOP", stock: "in_stock", price_cents: 27450 }
+    ]);
   });
 
   it("extracts hidden WebForms fields", () => {
-    expect(extractHiddenFields(vinSearchPageHtml(1))).toEqual({
-      __VIEWSTATE: "vs456",
-      __EVENTVALIDATION: "ev789"
-    });
+    expect(
+      extractHiddenFields(
+        '<form><input type="hidden" name="__VIEWSTATE" value="vs1" />' +
+          '<input type="hidden" name="__EVENTVALIDATION" value="ev2" /></form>'
+      )
+    ).toEqual({ __VIEWSTATE: "vs1", __EVENTVALIDATION: "ev2" });
   });
 
-  it("matches dropdown options by visible label", () => {
-    const html = vinSearchPageHtml(1);
-    expect(selectOptionValue(html, "glassType", "Windshield")).toBe("WS");
-    expect(selectOptionValue(html, "glassType", "Back Glass")).toBe("BG");
-    expect(selectOptionValue(html, "glassType", "Door Glass")).toBeNull();
-    expect(selectOptionValue(html, "nope", "Windshield")).toBeNull();
+  it("maps glass types to the site's dropdown values", () => {
+    expect(siteGlassTypeValue("WINDSHIELD")).toBe("Windshield");
+    expect(siteGlassTypeValue("BACK_GLASS")).toBe("Back");
+    expect(() => siteGlassTypeValue("DOOR_GLASS")).toThrowError(
+      expect.objectContaining({ code: "MYGRANT_UNSUPPORTED_GLASS_TYPE" })
+    );
   });
 });
 
@@ -244,16 +385,16 @@ describe("MyGrant page parsers", () => {
 
 describe("fixture record/replay", () => {
   it("records and replays a lookup round-trip deterministically", async () => {
-    const stub = authedVinTransport(vinResultsHtml(), 5);
+    const stub = liveSiteTransport({ credits: 5 });
     const recording = new RecordingMyGrantTransport(stub);
     const provider = new MyGrantWebProvider(CONFIG, recording);
-    const live = await provider.lookupVin("1HGCM82633A004352", "WINDSHIELD");
+    const live = await provider.lookupVin("1C4HJXEG3JW224862", "WINDSHIELD");
     expect(recording.fixtures.length).toBeGreaterThan(0);
 
     const json = serializeMyGrantFixtures(recording.fixtures);
     const replay = new ReplayMyGrantTransport(loadMyGrantFixtures(json));
     const replayed = await new MyGrantWebProvider(CONFIG, replay).lookupVin(
-      "1HGCM82633A004352",
+      "1C4HJXEG3JW224862",
       "WINDSHIELD"
     );
     expect(replayed).toEqual(live);
@@ -275,7 +416,7 @@ describe("fixture record/replay", () => {
 });
 
 // ---------------------------------------------------------------------------
-// HTTP transport: WebForms postback mechanics.
+// HTTP transport: WebForms postback mechanics (login still POSTs).
 // ---------------------------------------------------------------------------
 
 describe("HttpMyGrantTransport", () => {
@@ -298,12 +439,12 @@ describe("HttpMyGrantTransport", () => {
       }
       const body = String(init.body);
       expect(body).toContain("__VIEWSTATE=abc%2Bdef%3D%3D");
-      expect(body).toContain("vin=1HGCM82633A004352");
+      expect(body).toContain("clogin%3ATxtUsername=shop");
       return textResponse("<p>ok</p>");
     });
     const transport = new HttpMyGrantTransport(5000, fetchImpl as unknown as typeof fetch);
-    await transport.postForm("https://mygrant.test/pages/searchvin.aspx", {
-      vin: "1HGCM82633A004352"
+    await transport.postForm("https://mygrant.test/pages/login.aspx", {
+      "clogin:TxtUsername": "shop"
     });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
