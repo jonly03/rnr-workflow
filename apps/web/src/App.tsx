@@ -104,35 +104,7 @@ const GLASS_OPTIONS: { id: "ALL" | GlassType; label: string }[] = [
   { id: "VENT_GLASS", label: "Vent Glass" }
 ];
 
-export function SupplierOffersPreview({ item }: { item: CaseRecord }) {
-  const offers = item.supplier_offers ?? [];
-  if (offers.length === 0) return null;
-  const selected = offers.find(o => o.selected);
-  return (
-    <section className="card">
-      <h2>Supplier sourcing</h2>
-      {selected && (
-        <p>
-          Selected: <strong>{selected.supplier_name}</strong> —{" "}
-          <code>{selected.part_number}</code> at {formatCents(selected.price_cents)}
-          {selected.lead_time_days !== null && ` (${selected.lead_time_days}d lead)`}
-        </p>
-      )}
-      <ul className="candidate-list">
-        {offers.map(o => (
-          <li key={o.id}>
-            <strong>{o.supplier_name}</strong>{" "}
-            <small>({o.supplier_type})</small> — {formatCents(o.price_cents)}
-            {o.available ? ` · ${o.quantity} in stock` : " · unavailable"}
-            {o.selected && " ✓ selected"}
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-function FilterPills<T extends string>({
+export function FilterPills<T extends string>({
   label,
   options,
   value,
@@ -180,14 +152,30 @@ export function App() {
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [sortBy, setSortBy] = useState<QueueSort>("newest");
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [caseEvents, setCaseEvents] = useState<Record<string, CaseEvent[]>>({});
 
-  const toggleExpanded = (id: string) =>
+  /** Refresh one expanded card's detail + events without flashing the queue loader. */
+  const refreshExpandedCase = async (id: string) => {
+    try {
+      const [detail, activity] = await Promise.all([getCase(id), getCaseEvents(id)]);
+      setCases(prev => prev.map(x => (x.id === id ? detail : x)));
+      setCaseEvents(prev => ({ ...prev, [id]: activity }));
+    } catch (error) {
+      loadError(error);
+    }
+  };
+
+  const toggleExpanded = (id: string) => {
+    const willExpand = !expandedIds.has(id);
     setExpandedIds(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
+    // Pull fresh detail + events so the editable part card always acts on current data.
+    if (willExpand) void refreshExpandedCase(id);
+  };
 
   const statusOptions = useMemo(
     () => [...new Set(cases.map(c => c.current_state))].sort(),
@@ -354,46 +342,50 @@ export function App() {
         <div className="queue-layout">
           <aside className="queue-sidebar" aria-label="Case filters">
             <div className="queue-toolbar">
-              <input
-                className="queue-search"
-                type="search"
-                placeholder="Search reference, VIN, vehicle…"
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                aria-label="Search cases"
-              />
-              <FilterPills
-                label="Channel"
-                options={CHANNEL_OPTIONS}
-                value={channelFilter}
-                onChange={setChannelFilter}
-              />
-              <FilterPills
-                label="Glass"
-                options={GLASS_OPTIONS}
-                value={glassFilter}
-                onChange={setGlassFilter}
-              />
-              <FilterPills
-                label="Status"
-                options={[
-                  { id: "ALL", label: "All" },
-                  ...statusOptions.map(s => ({ id: s, label: humanize(s) }))
-                ]}
-                value={statusFilter}
-                onChange={setStatusFilter}
-              />
-              <div className="filter-group">
-                <label className="filter-label" htmlFor="queue-sort">Sort</label>
-                <select
-                  id="queue-sort"
-                  value={sortBy}
-                  onChange={e => setSortBy(e.target.value as QueueSort)}
-                >
-                  {QUEUE_SORTS.map(s => (
-                    <option key={s.id} value={s.id}>{s.label}</option>
-                  ))}
-                </select>
+              <div className="toolbar-section">
+                <input
+                  className="queue-search"
+                  type="search"
+                  placeholder="Search reference, VIN, vehicle…"
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  aria-label="Search cases"
+                />
+                <div className="filter-group">
+                  <label className="filter-label" htmlFor="queue-sort">Sort</label>
+                  <select
+                    id="queue-sort"
+                    value={sortBy}
+                    onChange={e => setSortBy(e.target.value as QueueSort)}
+                  >
+                    {QUEUE_SORTS.map(s => (
+                      <option key={s.id} value={s.id}>{s.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="toolbar-section toolbar-pills">
+                <FilterPills
+                  label="Channel"
+                  options={CHANNEL_OPTIONS}
+                  value={channelFilter}
+                  onChange={setChannelFilter}
+                />
+                <FilterPills
+                  label="Glass"
+                  options={GLASS_OPTIONS}
+                  value={glassFilter}
+                  onChange={setGlassFilter}
+                />
+                <FilterPills
+                  label="Status"
+                  options={[
+                    { id: "ALL", label: "All" },
+                    ...statusOptions.map(s => ({ id: s, label: humanize(s) }))
+                  ]}
+                  value={statusFilter}
+                  onChange={setStatusFilter}
+                />
               </div>
             </div>
           </aside>
@@ -431,7 +423,6 @@ export function App() {
                           )}
                         </div>
                         <div>
-                          <span className="state">{humanize(c.current_state)}</span>
                           <small>{c.current_state}</small>
                         </div>
                         <div className="case-card-actions">
@@ -451,8 +442,12 @@ export function App() {
                       </div>
                       {expanded && (
                         <div className="case-card-body">
+                          <IdentificationSummary
+                            item={c}
+                            events={caseEvents[c.id] ?? []}
+                            onRefresh={() => refreshExpandedCase(c.id)}
+                          />
                           <PricingSummary item={c} />
-                          <SupplierOffersPreview item={c} />
                         </div>
                       )}
                     </article>

@@ -63,7 +63,9 @@ button:not(.primary) { background: #172033; color: #f8fafc; border: 1px solid #3
 /* Case Queue: filters sidebar (4) + case list (8) */
 .queue-layout { display: grid; grid-template-columns: 4fr 8fr; gap: 20px; align-items: start; }
 .queue-sidebar { position: sticky; top: 16px; }
-.queue-toolbar { display: flex; flex-direction: column; gap: 14px; align-items: stretch; }
+.queue-toolbar { display: flex; flex-direction: column; }
+.toolbar-section { display: flex; flex-direction: column; gap: 14px; }
+.toolbar-pills { margin-top: 28px; }
 .queue-search {
   width: 100%; min-height: 44px; padding: 10px 14px; border-radius: 10px;
   border: 1px solid #334155; background: #0f172a; color: #f8fafc; font-size: 0.95rem;
@@ -164,11 +166,11 @@ dd { margin: 0; }
 /* Reorderable case detail cards */
 .sortable-cards { display: grid; gap: 0; }
 .sortable-card { position: relative; }
-.sortable-card .card { margin-bottom: 18px; }
+.sortable-card .card { margin-bottom: 18px; padding-left: 44px; }
 .drag-handle {
   position: absolute;
   top: 10px;
-  right: 12px;
+  left: 12px;
   z-index: 5;
   cursor: grab;
   touch-action: none;
