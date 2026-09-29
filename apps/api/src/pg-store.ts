@@ -20,7 +20,8 @@ import type {
   CreateApprovalTokenInput,
   CreateCaseStoreInput,
   CreateStaffUserInput,
-  RecordVinLookupSpendInput,
+  ReserveVinLookupSpendInput,
+  ReserveVinLookupSpendResult,
   SaveGlassIdentificationInput,
   SavePriceCalculationInput,
   SaveSupplierOfferInput,
@@ -526,12 +527,44 @@ export class PgCaseStore implements CaseStore {
     );
   }
 
-  async recordVinLookupSpend(input: RecordVinLookupSpendInput): Promise<void> {
-    await this.pool.query(
-      `insert into vin_lookup_spend(id, vin, glass_type, cost_cents, provider, spent_at)
-       values ($1,$2,$3,$4,$5,now())`,
-      [randomUUID(), input.vin.trim().toUpperCase(), input.glassType, input.costCents, input.provider]
-    );
+  /**
+   * Atomic cap check + ledger insert in one transaction. The transaction-scoped
+   * advisory lock serializes concurrent reservations (the API runs serverless,
+   * so an in-process mutex cannot do this), making the read-check-write safe
+   * against two paid lookups racing under the cap.
+   */
+  async reserveVinLookupSpend(input: ReserveVinLookupSpendInput): Promise<ReserveVinLookupSpendResult> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query("select pg_advisory_xact_lock(hashtext('vin_lookup_spend_cap'))");
+      const total = await client.query(
+        "select coalesce(sum(cost_cents),0)::int as total from vin_lookup_spend where spent_at >= $1",
+        [input.sinceIso]
+      );
+      const spentCents = total.rows[0]?.total ?? 0;
+      if (spentCents + input.costCents > input.capCents) {
+        await client.query("rollback");
+        return { reserved: false, spendId: null };
+      }
+      const spendId = randomUUID();
+      await client.query(
+        `insert into vin_lookup_spend(id, vin, glass_type, cost_cents, provider, spent_at)
+         values ($1,$2,$3,$4,$5,now())`,
+        [spendId, input.vin.trim().toUpperCase(), input.glassType, input.costCents, input.provider]
+      );
+      await client.query("commit");
+      return { reserved: true, spendId };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async releaseVinLookupSpend(spendId: string): Promise<void> {
+    await this.pool.query("delete from vin_lookup_spend where id = $1", [spendId]);
   }
 
   async getVinLookupSpendCentsSince(sinceIso: string): Promise<number> {
