@@ -1,8 +1,8 @@
 import "@testing-library/jest-dom/vitest";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { App, cardOrderKey, DEFAULT_CARD_ORDER, filterQueueCases, loadCardOrder, scanProgressForElapsed, sortQueueCases } from "./App";
-import type { CaseRecord } from "./types";
+import { App, cardOrderKey, DEFAULT_CARD_ORDER, describeEvent, filterQueueCases, isStaffActionRequired, loadCardOrder, scanProgressForElapsed, sortQueueCases } from "./App";
+import type { CaseRecord, CaseEvent } from "./types";
 
 vi.stubGlobal("fetch", vi.fn(async () => ({
   ok: true,
@@ -22,8 +22,8 @@ describe("case card ordering", () => {
   const email = "tech@rr.test";
   const key = cardOrderKey(email);
 
-  it("defaults to price and parts cards below the vehicle card", () => {
-    expect(DEFAULT_CARD_ORDER.slice(0, 3)).toEqual(["vehicle", "pricing", "identification"]);
+  it("defaults to sourcing, pricing, activity below the vehicle card", () => {
+    expect(DEFAULT_CARD_ORDER).toEqual(["vehicle", "sourcing", "pricing", "activity"]);
   });
 
   it("returns the default order when nothing is stored", () => {
@@ -32,8 +32,8 @@ describe("case card ordering", () => {
   });
 
   it("returns the staff member's saved order", () => {
-    localStorage.setItem(key, JSON.stringify(["activity", "vehicle", "pricing", "identification", "action", "sourcing"]));
-    expect(loadCardOrder(email)).toEqual(["activity", "vehicle", "pricing", "identification", "action", "sourcing"]);
+    localStorage.setItem(key, JSON.stringify(["activity", "vehicle", "sourcing", "pricing"]));
+    expect(loadCardOrder(email)).toEqual(["activity", "vehicle", "sourcing", "pricing"]);
     localStorage.removeItem(key);
   });
 
@@ -43,7 +43,13 @@ describe("case card ordering", () => {
     expect(order).not.toContain("bogus");
     expect(order.slice(0, 2)).toEqual(["sourcing", "vehicle"]);
     // remaining default cards appended in default relative order
-    expect(order).toEqual(["sourcing", "vehicle", "pricing", "identification", "action", "activity"]);
+    expect(order).toEqual(["sourcing", "vehicle", "pricing", "activity"]);
+    localStorage.removeItem(key);
+  });
+
+  it("drops retired cards from saved orders", () => {
+    localStorage.setItem(key, JSON.stringify(["action", "identification", "vehicle"]));
+    expect(loadCardOrder(email)).toEqual(["vehicle", "sourcing", "pricing", "activity"]);
     localStorage.removeItem(key);
   });
 
@@ -171,5 +177,56 @@ describe("case queue filtering and sorting", () => {
     const input = [b, a, c];
     sortQueueCases(input, "price-desc");
     expect(input.map(x => x.id)).toEqual(["b", "a", "c"]);
+  });
+});
+
+describe("staff action alert", () => {
+  it("is required for blocked states only", () => {
+    for (const s of ["VIN_LOOKUP_REQUIRED", "HUMAN_GLASS_REVIEW_REQUIRED", "GLASS_NOT_IDENTIFIED", "NO_ELIGIBLE_INVENTORY", "PROFIT_REVIEW_REQUIRED"]) {
+      expect(isStaffActionRequired(s)).toBe(true);
+    }
+    for (const s of ["PRICE_APPROVED", "GLASS_SELECTED", "PRICING_IN_PROGRESS", "CASE_CREATED"]) {
+      expect(isStaffActionRequired(s)).toBe(false);
+    }
+  });
+
+  it("orders detail cards: vehicle, sourcing, pricing, activity", () => {
+    expect(DEFAULT_CARD_ORDER).toEqual(["vehicle", "sourcing", "pricing", "activity"]);
+  });
+
+  it("migrates saved orders that reference retired cards", () => {
+    localStorage.setItem(cardOrderKey("sam@example.com"), JSON.stringify(["action", "vehicle", "pricing"]));
+    expect(loadCardOrder("sam@example.com")).toEqual(["vehicle", "pricing", "sourcing", "activity"]);
+  });
+});
+
+describe("describeEvent", () => {
+  const evt = (event_type: string, payload: Record<string, unknown> = {}) =>
+    ({ id: "e1", case_id: "c1", sequence: 1, event_type, occurred_at: "2026-09-29T00:00:00Z", actor_type: "SYSTEM", payload }) as CaseEvent;
+
+  it("summarizes key workflow steps in plain English", () => {
+    expect(describeEvent(evt("CASE_CREATED", { channel: "DIRECT" })))
+      .toBe("Case opened in the Direct channel.");
+    expect(describeEvent(evt("VIN_RESULT_RETURNED", { candidate_count: 2, charged: true })))
+      .toBe("VIN decoded — 2 candidates (charged).");
+    expect(describeEvent(evt("GLASS_RESOLVED", { method: "VIN", part_number: "DW01234" })))
+      .toBe("Glass identified by VIN decode: DW01234.");
+    expect(describeEvent(evt("ELIGIBLE_OFFER_SELECTED", { supplier_name: "PGW", price_cents: 20000, part_number: "DW01234" })))
+      .toBe("Selected PGW at $200.00 for part DW01234.");
+    expect(describeEvent(evt("STANDARD_PRICE_CALCULATED", { sell_price_cents: 65017 })))
+      .toBe("Price calculated — sell price $650.17.");
+    expect(describeEvent(evt("SUPPLIER_OFFER_OVERRIDDEN", { old_supplier_name: "PGW", new_supplier_name: "Local Glass Co", new_price_cents: 18000 })))
+      .toBe("Staff switched supplier from PGW to Local Glass Co at $180.00.");
+    expect(describeEvent(evt("PRICE_APPROVED_BY_RNR", { sell_price_cents: 65017 })))
+      .toBe("R&R approved the price at $650.17.");
+  });
+
+  it("degrades gracefully when payload fields are missing", () => {
+    expect(describeEvent(evt("GLASS_RESOLVED"))).toBe("Glass identification resolved.");
+    expect(describeEvent(evt("ELIGIBLE_OFFER_SELECTED"))).toBe("A supplier offer was selected.");
+  });
+
+  it("falls back to a humanized event type", () => {
+    expect(describeEvent(evt("SOME_FUTURE_EVENT"))).toBe("Some Future Event.");
   });
 });

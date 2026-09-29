@@ -915,10 +915,26 @@ function ManualCaseForm({
 }
 
 /** Case detail cards, reorderable by staff. The order is remembered per
- *  staff member in localStorage so each person sees their preferred layout. */
-export const CASE_CARDS = ["vehicle", "pricing", "identification", "action", "sourcing", "activity"] as const;
+ *  staff member in localStorage so each person sees their preferred layout.
+ *  The "Staff action required" alert is separate: it pins itself above the
+ *  cards only while the case waits on staff, then disappears. */
+export const CASE_CARDS = ["vehicle", "sourcing", "pricing", "activity"] as const;
 export type CaseCardId = (typeof CASE_CARDS)[number];
-export const DEFAULT_CARD_ORDER: CaseCardId[] = ["vehicle", "pricing", "identification", "action", "sourcing", "activity"];
+export const DEFAULT_CARD_ORDER: CaseCardId[] = ["vehicle", "sourcing", "pricing", "activity"];
+
+/** Case states where the workflow is blocked waiting on a person. */
+const STAFF_ACTION_STATES = [
+  "VIN_LOOKUP_REQUIRED",
+  "HUMAN_GLASS_REVIEW_REQUIRED",
+  "GLASS_NOT_IDENTIFIED",
+  "NO_ELIGIBLE_INVENTORY",
+  "PROFIT_REVIEW_REQUIRED"
+] as const;
+
+/** True when the case needs staff — the warning alert shows only then. */
+export function isStaffActionRequired(state: string): boolean {
+  return (STAFF_ACTION_STATES as readonly string[]).includes(state);
+}
 
 export function cardOrderKey(staffEmail: string) {
   return `rnr:card-order:${staffEmail}`;
@@ -1078,33 +1094,12 @@ function CaseDetail({
             </dl>
           </section>
         );
-      case "pricing":
-        return <PricingSummary item={item} />;
-      case "identification":
-        return <IdentificationSummary item={item} events={events} onRefresh={onRefresh} />;
-      case "action":
-        return <IdentificationWorkspace item={item} onRefresh={onRefresh} />;
       case "sourcing":
         return <SourcingSummary item={item} events={events} onRefresh={onRefresh} />;
+      case "pricing":
+        return <PricingSummary item={item} />;
       case "activity":
-        return (
-          <section className="card timeline">
-            <h2>Activity</h2>
-            {loading ? <p>Loading activity…</p> : events.length === 0 ? (
-              <p>No activity recorded yet.</p>
-            ) : (
-              <ol>
-                {events.map(e => (
-                  <li key={e.id}>
-                    <strong>{e.event_type}</strong>
-                    <span>{new Date(e.occurred_at).toLocaleString()}</span>
-                    <small>#{e.sequence} · {e.actor_type}</small>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </section>
-        );
+        return <ActivityTimeline events={events} loading={loading} />;
     }
   };
 
@@ -1122,6 +1117,9 @@ function CaseDetail({
         </div>
       </section>
 
+      {isStaffActionRequired(item.current_state) && (
+        <StaffActionAlert item={item} onRefresh={onRefresh} />
+      )}
       <SortableCardList order={order} onReorder={setOrder} renderCard={renderCard} />
     </>
   );
@@ -1191,7 +1189,9 @@ function ProfitReviewBody({
 /** The staff workspace for the current workflow step. Phase 2 fills the
  *  glass-identification steps; Phase 3 fills sourcing/pricing; other steps
  *  show the standby message until their business contracts land. */
-function IdentificationWorkspace({
+/** Body of the staff-action alert. Rendered only while the case waits on
+ *  staff; once the action is taken the case moves on and the alert goes away. */
+function StaffActionBody({
   item,
   onRefresh
 }: {
@@ -1308,19 +1308,207 @@ function IdentificationWorkspace({
       body = <ProfitReviewBody item={item} run={run} busy={busy} />;
       break;
     default:
-      body = (
-        <>
-          <p>No staff action required at this step.</p>
-          <small>Workflow actions will appear here when their business contracts are implemented.</small>
-        </>
-      );
+      body = null;
   }
 
+  if (!body) return null;
   return (
-    <section className="card">
-      <h2>Current action</h2>
+    <>
       {error && <div className="alert">{error}</div>}
       {body}
+    </>
+  );
+}
+
+/** Warning alert pinned above the detail cards while staff action is needed. */
+function StaffActionAlert({
+  item,
+  onRefresh
+}: {
+  item: CaseRecord;
+  onRefresh: () => Promise<void>;
+}) {
+  return (
+    <section className="card alert-card" role="alert" aria-label="Staff action required">
+      <h2><span aria-hidden="true">⚠</span> Staff action required</h2>
+      <StaffActionBody item={item} onRefresh={onRefresh} />
+    </section>
+  );
+}
+
+function eventText(payload: Record<string, unknown>, key: string): string | undefined {
+  const v = payload[key];
+  return typeof v === "string" || typeof v === "number" ? String(v) : undefined;
+}
+
+function eventMoney(payload: Record<string, unknown>, key: string): string | undefined {
+  const v = payload[key];
+  return typeof v === "number" ? `$${(v / 100).toFixed(2)}` : undefined;
+}
+
+/** Plain-English summary of one workflow event — the auditor/staff trail. */
+export function describeEvent(e: CaseEvent): string {
+  const p = e.payload ?? {};
+  const plural = (n: string | undefined, one: string, many: string) =>
+    n ? `${n} ${n === "1" ? one : many}` : undefined;
+  switch (e.event_type) {
+    case "CASE_CREATED": {
+      const channel = eventText(p, "channel");
+      return channel ? `Case opened in the ${humanize(channel)} channel.` : "Case opened.";
+    }
+    case "START_VIN_LOOKUP":
+      return "VIN lookup started to pin down the exact glass part.";
+    case "VIN_RESULT_RETURNED": {
+      const n = plural(eventText(p, "candidate_count"), "candidate", "candidates");
+      const charged = p.charged === true ? " (charged)" : p.charged === false ? " (no charge)" : "";
+      return `VIN decoded${n ? ` — ${n}` : ""}${charged}.`;
+    }
+    case "USE_SAVED_VIN_RESULT":
+      return "Reused a saved VIN result — no new lookup charge.";
+    case "VIN_LOOKUP_FAILED": {
+      const err = eventText(p, "error");
+      return `VIN lookup failed${err ? `: ${err}` : "."}`;
+    }
+    case "VIN_NEEDED":
+      return "A VIN is needed before identification can continue.";
+    case "YMM_RESULTS_RETURNED": {
+      const n = plural(eventText(p, "candidate_count"), "candidate part", "candidate parts");
+      return n ? `Catalog search returned ${n}.` : "Catalog search completed.";
+    }
+    case "YMM_SEARCH_FAILED":
+      return "Catalog search failed.";
+    case "EVALUATE_GLASS_MATCHES":
+      return "Evaluating catalog matches against the vehicle.";
+    case "GLASS_RESOLVED": {
+      const part = eventText(p, "part_number");
+      const method = eventText(p, "method");
+      const n = plural(eventText(p, "candidate_count"), "candidate", "candidates");
+      if (part)
+        return `Glass identified${method ? ` by ${method === "VIN" ? "VIN decode" : "catalog search"}` : ""}: ${part}.`;
+      if (n) return `Glass narrowed to ${n}.`;
+      return "Glass identification resolved.";
+    }
+    case "NO_VALID_GLASS":
+      return "No valid glass found for this vehicle.";
+    case "HUMAN_REVIEW_NEEDED":
+      return "The catalog returned several candidates — staff need to pick the right part.";
+    case "HUMAN_GLASS_SELECTED": {
+      const part = eventText(p, "part_number");
+      return part ? `Staff picked part ${part}.` : "Staff picked the glass part.";
+    }
+    case "HUMAN_CANNOT_IDENTIFY":
+      return "Staff marked the glass as unidentifiable from the data available.";
+    case "GLASS_CANDIDATE_OVERRIDDEN": {
+      const oldP = eventText(p, "old_part_number");
+      const newP = eventText(p, "new_part_number");
+      return oldP && newP
+        ? `Staff changed the part from ${oldP} to ${newP}.`
+        : "Staff overrode the selected part.";
+    }
+    case "START_SOURCING":
+      return "Requesting supplier offers for the identified part.";
+    case "EVALUATE_OFFERS":
+      return "Evaluating supplier offers.";
+    case "SUPPLIER_OFFERS_RETURNED": {
+      const n = plural(eventText(p, "offer_count"), "supplier offer", "supplier offers");
+      return n ? `${n} received.` : "Supplier offers received.";
+    }
+    case "ELIGIBLE_OFFER_SELECTED": {
+      const name = eventText(p, "supplier_name");
+      const price = eventMoney(p, "price_cents");
+      const part = eventText(p, "part_number");
+      return name && price
+        ? `Selected ${name} at ${price}${part ? ` for part ${part}` : ""}.`
+        : "A supplier offer was selected.";
+    }
+    case "NO_ELIGIBLE_OFFERS": {
+      const reason = eventText(p, "reason");
+      return reason ? `No eligible supplier offers — ${reason}` : "No supplier had eligible stock.";
+    }
+    case "SOURCING_FAILED": {
+      const err = eventText(p, "error") ?? eventText(p, "reason");
+      return `Supplier sourcing failed${err ? `: ${err}` : "."}`;
+    }
+    case "SUPPLIER_OFFER_OVERRIDDEN": {
+      const oldS = eventText(p, "old_supplier_name");
+      const newS = eventText(p, "new_supplier_name");
+      const price = eventMoney(p, "new_price_cents");
+      return oldS && newS
+        ? `Staff switched supplier from ${oldS} to ${newS}${price ? ` at ${price}` : ""}.`
+        : "Staff overrode the supplier choice.";
+    }
+    case "START_PRICING":
+      return "Calculating the price from glass cost, labor, profit and tax.";
+    case "STANDARD_PRICE_CALCULATED": {
+      const price = eventMoney(p, "sell_price_cents");
+      return price ? `Price calculated — sell price ${price}.` : "Price calculated.";
+    }
+    case "PRICE_APPROVED_BY_RNR": {
+      const price = eventMoney(p, "sell_price_cents");
+      return price ? `R&R approved the price at ${price}.` : "R&R approved the price.";
+    }
+    case "PRICE_REJECTED_BY_RNR": {
+      const reason = eventText(p, "reason");
+      return `R&R declined the price${reason ? `: ${reason}` : "."}`;
+    }
+    default:
+      return `${humanize(e.event_type)}.`;
+  }
+}
+
+/** Expandable plain-English trail of everything that happened on the case. */
+function ActivityTimeline({ events, loading }: { events: CaseEvent[]; loading: boolean }) {
+  const [openIds, setOpenIds] = useState<Set<string>>(new Set());
+  const toggle = (id: string) =>
+    setOpenIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  return (
+    <section className="card timeline">
+      <h2>Activity</h2>
+      {loading ? (
+        <p>Loading activity…</p>
+      ) : events.length === 0 ? (
+        <p>No activity recorded yet.</p>
+      ) : (
+        <ol className="timeline-list">
+          {events.map(e => {
+            const open = openIds.has(e.id);
+            return (
+              <li key={e.id} className="timeline-item">
+                <button
+                  type="button"
+                  className="timeline-toggle"
+                  aria-expanded={open}
+                  onClick={() => toggle(e.id)}
+                >
+                  <span className="timeline-chevron" aria-hidden="true">{open ? "▾" : "▸"}</span>
+                  <span className="timeline-summary">{describeEvent(e)}</span>
+                  <time className="timeline-time">{new Date(e.occurred_at).toLocaleString()}</time>
+                </button>
+                {open && (
+                  <div className="timeline-details">
+                    <dl>
+                      <dt>Event</dt><dd><code>{e.event_type}</code></dd>
+                      <dt>Step</dt><dd>#{e.sequence}</dd>
+                      <dt>Actor</dt><dd>{e.actor_type === "SYSTEM" ? "System" : humanize(e.actor_type)}</dd>
+                    </dl>
+                    {Object.keys(e.payload ?? {}).length > 0 && (
+                      <details>
+                        <summary>Payload</summary>
+                        <pre>{JSON.stringify(e.payload, null, 2)}</pre>
+                      </details>
+                    )}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ol>
+      )}
     </section>
   );
 }
