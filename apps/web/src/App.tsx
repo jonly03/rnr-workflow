@@ -199,6 +199,28 @@ export function App() {
     [cases, search, channelFilter, glassFilter, statusFilter, sortBy]
   );
 
+  /** Bulk expand/collapse of whatever the queue is currently showing (respects filters). */
+  const allVisibleExpanded =
+    visibleCases.length > 0 && visibleCases.every(c => expandedIds.has(c.id));
+  const toggleExpandAll = () => {
+    const ids = visibleCases.map(c => c.id);
+    if (allVisibleExpanded) {
+      setExpandedIds(prev => {
+        const next = new Set(prev);
+        ids.forEach(id => next.delete(id));
+        return next;
+      });
+    } else {
+      setExpandedIds(prev => {
+        const next = new Set(prev);
+        ids.forEach(id => next.add(id));
+        return next;
+      });
+      // Same freshness guarantee as expanding one card at a time.
+      visibleCases.forEach(c => { void refreshExpandedCase(c.id); });
+    }
+  };
+
   const filtersActive =
     search.trim() !== "" ||
     channelFilter !== "ALL" ||
@@ -460,6 +482,13 @@ export function App() {
               </div>
             ) : (
               <>
+            {visibleCases.length > 0 && (
+              <div className="queue-bulk">
+                <button type="button" className="link" onClick={toggleExpandAll}>
+                  {allVisibleExpanded ? "Collapse all" : "Expand all"}
+                </button>
+              </div>
+            )}
             <p className="muted queue-count">
               {visibleCases.length} of {cases.length} {cases.length === 1 ? "case" : "cases"}
               {filtersActive && (
