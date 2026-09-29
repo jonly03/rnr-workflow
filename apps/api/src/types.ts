@@ -115,7 +115,12 @@ export interface GlassIdentification {
   created_at: string;
 }
 
-/** Cached VIN lookup result. A successful result is reused, never repurchased. */
+/**
+ * Cached VIN lookup result. One row per VIN; `result` holds per-glass-type
+ * results so each glass type reuses its own successful lookup instead of
+ * being repurchased — and never reuses another glass type's candidates.
+ * Failed lookups are retried (repurchased) on the next request.
+ */
 export interface VinLookupRecord {
   id: string;
   vin: string;

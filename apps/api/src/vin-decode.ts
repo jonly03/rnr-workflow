@@ -1,3 +1,5 @@
+import { assertValidVin, VinValidationError } from "./vin-validation.js";
+
 /**
  * NHTSA vPIC VIN decoder — free public API, no key required.
  * https://vpic.nhtsa.dot.gov/api/
@@ -36,10 +38,14 @@ interface NhtsaResult {
  * Throws VinDecodeError on invalid VIN, network failure, or no decode results.
  */
 export async function decodeVinNhtsa(vin: string): Promise<NhtsaDecodedVehicle> {
-  const normalized = vin.trim().toUpperCase();
-  if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(normalized)) {
+  let normalized: string;
+  try {
+    normalized = assertValidVin(vin);
+  } catch (error) {
     throw new VinDecodeError(
-      "VIN must be 17 characters (letters A-Z except I, O, Q, and digits)."
+      error instanceof VinValidationError
+        ? error.message
+        : "VIN must be 17 characters (letters A-Z except I, O, Q, and digits)."
     );
   }
 
