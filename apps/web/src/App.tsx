@@ -582,6 +582,7 @@ function Shell({
   crumbs?: Crumb[];
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
   const closeMenu = () => setMenuOpen(false);
   const handleSignOut = () => {
     closeMenu();
@@ -589,11 +590,20 @@ function Shell({
   };
   useEffect(() => {
     if (!menuOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setMenuOpen(false);
     };
+    document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKey);
+    };
   }, [menuOpen]);
   return (
     <div className="app-shell">
@@ -622,7 +632,7 @@ function Shell({
               {staff.name} · {staff.email}
               <button className="link" onClick={onSignOut}>Sign out</button>
             </span>
-            <div className="menu-wrap">
+            <div className="menu-wrap" ref={menuRef}>
               <button
                 type="button"
                 className="menu-btn"
@@ -634,18 +644,15 @@ function Shell({
                 ☰
               </button>
               {menuOpen && (
-                <>
-                  <button type="button" className="menu-backdrop" aria-hidden="true" tabIndex={-1} onClick={closeMenu} />
-                  <div className="user-menu" role="menu">
-                    <p className="user-menu-id">
-                      <strong>{staff.name}</strong>
-                      <span className="muted">{staff.email}</span>
-                    </p>
-                    <button type="button" className="link" role="menuitem" onClick={handleSignOut}>
-                      Sign out
-                    </button>
-                  </div>
-                </>
+                <div className="user-menu" role="menu">
+                  <p className="user-menu-id">
+                    <strong>{staff.name}</strong>
+                    <span className="muted">{staff.email}</span>
+                  </p>
+                  <button type="button" className="link" role="menuitem" onClick={handleSignOut}>
+                    Sign out
+                  </button>
+                </div>
               )}
             </div>
           </div>
