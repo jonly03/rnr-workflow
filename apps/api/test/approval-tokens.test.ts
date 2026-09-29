@@ -16,7 +16,7 @@ async function fixture() {
   const store = new JsonCaseStore(path.join(dir, "cases.json"));
   const { caseRecord } = await store.createCase({
     channel: "DIRECT",
-    vehicle: { year: 2020, make: "Honda", model: "Accord", vin: "1HGTESTVIN0000001" },
+    vehicle: { year: 2020, make: "Honda", model: "Accord", vin: "1HGCM82633A004352" },
     glass_type: "WINDSHIELD"
   });
   return { store, caseId: caseRecord.id };

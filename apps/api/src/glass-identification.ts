@@ -1,5 +1,6 @@
 import type { GlassCatalogProvider } from "./glass-catalog.js";
 import type { CaseStore } from "./store.js";
+import { assertValidVin, VinValidationError } from "./vin-validation.js";
 import type {
   CaseRecord,
   GlassCandidate,
@@ -56,6 +57,7 @@ const VIN_ELIGIBLE: ReadonlySet<string> = new Set(["WINDSHIELD", "BACK_GLASS"]);
 export type IdentificationErrorCode =
   | "INVALID_TRANSITION"
   | "VIN_NOT_ELIGIBLE"
+  | "VIN_LOOKUP_IN_PROGRESS"
   | "INVALID_CANDIDATE"
   | "IDENTIFICATION_NOT_FOUND";
 
@@ -246,10 +248,35 @@ async function evaluateCandidates(
 }
 
 /**
+ * How long a caller that lost the single-flight claim waits for the
+ * winner's result before giving up with a retryable 409.
+ */
+const VIN_LOOKUP_WAIT_MS = 10_000;
+const VIN_LOOKUP_POLL_MS = 250;
+
+async function waitForVinLookupResult(
+  store: CaseStore,
+  vin: string,
+  glassType: GlassRequest["glass_type"]
+) {
+  const deadline = Date.now() + VIN_LOOKUP_WAIT_MS;
+  for (;;) {
+    const result = await store.findVinLookup(vin, glassType);
+    if (result?.success) return result;
+    if (Date.now() >= deadline) return null;
+    await new Promise(resolve => setTimeout(resolve, VIN_LOOKUP_POLL_MS));
+  }
+}
+
+/**
  * Staff-confirmed paid VIN lookup. Guardrails (all backend-enforced):
  * - only from VIN_LOOKUP_REQUIRED,
  * - only for WINDSHIELD / BACK_GLASS (never Door/Quarter/Vent),
- * - a saved successful VIN result is reused instead of repurchasing.
+ * - the VIN passes the shared ISO 3779 gate (format + check digit),
+ * - a saved successful result for this (VIN, glass type) is reused
+ *   instead of repurchased; results are never shared across glass types,
+ * - concurrent requests for the same (VIN, glass type) single-flight on
+ *   a store-backed claim so the paid call happens at most once.
  */
 export async function requestVinLookup(
   store: CaseStore,
@@ -273,61 +300,100 @@ export async function requestVinLookup(
       409
     );
   }
-  if (vehicle.vin.trim().length !== 17) {
+  let vin: string;
+  try {
+    vin = assertValidVin(vehicle.vin);
+  } catch (error) {
     throw new IdentificationError(
       "VIN_NOT_ELIGIBLE",
-      "A 17-character VIN is required for VIN lookup.",
+      error instanceof VinValidationError
+        ? error.message
+        : "A valid 17-character VIN is required for VIN lookup.",
       422
     );
   }
 
-  // Duplicate-charge prevention: reuse a saved successful result.
-  const cached = await store.findVinLookup(vehicle.vin);
+  // Sequential duplicate-charge prevention: reuse this glass type's
+  // saved successful result. One VIN entry holds per-glass-type results,
+  // so a Windshield lookup is never served to a Back Glass case.
+  const cached = await store.findVinLookup(vin, glassRequest.glass_type);
   if (cached?.success) {
     await store.appendEvent({
       caseId,
       eventType: "USE_SAVED_VIN_RESULT",
       actor,
       nextState: transition(caseRecord, "USE_SAVED_VIN_RESULT"),
-      payload: { vin: vehicle.vin, cached: true, charged: false }
+      payload: { vin, cached: true, charged: false }
     });
-    const result = cached.result as { candidates?: GlassCandidate[] };
-    await evaluateVinResult(store, caseId, glassRequest, result.candidates ?? [], provider.name, actor, false);
+    await evaluateVinResult(store, caseId, glassRequest, cached.candidates, provider.name, actor, false);
     return;
   }
 
-  await store.appendEvent({
-    caseId,
-    eventType: "START_VIN_LOOKUP",
-    actor,
-    nextState: transition(caseRecord, "START_VIN_LOOKUP"),
-    payload: { vin: vehicle.vin, charged: true, provider: provider.name }
-  });
+  // Concurrent duplicate-charge prevention: only the claim winner pays
+  // for the lookup. Losers wait briefly for the winner's cached result.
+  const wonClaim = await store.claimVinLookup(vin, glassRequest.glass_type);
+  if (!wonClaim) {
+    const winnerResult = await waitForVinLookupResult(store, vin, glassRequest.glass_type);
+    if (winnerResult?.success) {
+      await store.appendEvent({
+        caseId,
+        eventType: "USE_SAVED_VIN_RESULT",
+        actor,
+        nextState: transition(caseRecord, "USE_SAVED_VIN_RESULT"),
+        payload: { vin, cached: true, charged: false, shared_lookup: true }
+      });
+      await evaluateVinResult(store, caseId, glassRequest, winnerResult.candidates, provider.name, actor, false);
+      return;
+    }
+    throw new IdentificationError(
+      "VIN_LOOKUP_IN_PROGRESS",
+      "A VIN lookup for this vehicle and glass type is already in progress. Please retry shortly.",
+      409
+    );
+  }
 
   try {
-    const lookup = await provider.lookupVin(vehicle.vin);
-    await store.saveVinLookup({ vin: vehicle.vin, success: true, result: lookup as unknown as Record<string, unknown> });
+    await store.appendEvent({
+      caseId,
+      eventType: "START_VIN_LOOKUP",
+      actor,
+      nextState: transition(caseRecord, "START_VIN_LOOKUP"),
+      payload: { vin, charged: true, provider: provider.name }
+    });
+
+    const lookup = await provider.lookupVin(vin, glassRequest.glass_type);
+    await store.saveVinLookup({
+      vin,
+      glassType: glassRequest.glass_type,
+      result: { success: true, decoded: lookup.decoded, candidates: lookup.candidates }
+    });
     await store.appendEvent({
       caseId,
       eventType: "VIN_RESULT_RETURNED",
       actor: SYSTEM,
       nextState: transition({ ...caseRecord, current_state: "VIN_LOOKUP_IN_PROGRESS" }, "VIN_RESULT_RETURNED"),
-      payload: { vin: vehicle.vin, charged: true, provider: provider.name, candidate_count: lookup.candidates.length }
+      payload: { vin, charged: true, provider: provider.name, candidate_count: lookup.candidates.length }
     });
     await evaluateVinResult(store, caseId, glassRequest, lookup.candidates, provider.name, SYSTEM, true);
   } catch (error) {
     await store.saveVinLookup({
-      vin: vehicle.vin,
-      success: false,
-      result: { error: error instanceof Error ? error.message : "Unknown error" }
+      vin,
+      glassType: glassRequest.glass_type,
+      result: {
+        success: false,
+        candidates: [],
+        error: error instanceof Error ? error.message : "Unknown error"
+      }
     });
     await store.appendEvent({
       caseId,
       eventType: "VIN_LOOKUP_FAILED",
       actor: SYSTEM,
       nextState: "SYSTEM_ATTENTION_REQUIRED",
-      payload: { vin: vehicle.vin, error: error instanceof Error ? error.message : "Unknown error" }
+      payload: { vin, error: error instanceof Error ? error.message : "Unknown error" }
     });
+  } finally {
+    await store.releaseVinLookup(vin, glassRequest.glass_type);
   }
 }
 

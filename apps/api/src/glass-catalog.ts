@@ -27,8 +27,12 @@ export interface VinLookupResult {
 export interface GlassCatalogProvider {
   readonly name: string;
   searchYmm(input: YmmSearchInput): Promise<GlassCandidate[]>;
-  /** Paid VIN lookup. Callers must check the VIN cache first. */
-  lookupVin(vin: string): Promise<VinLookupResult>;
+  /**
+   * Paid VIN lookup. The glass type is required: a lookup resolves the
+   * exact part for one position, so the returned candidates must match
+   * the requested glass type. Callers must check the VIN cache first.
+   */
+  lookupVin(vin: string, glassType: GlassType): Promise<VinLookupResult>;
 }
 
 const GLASS_LABEL: Record<GlassType, string> = {
@@ -91,26 +95,28 @@ export class MockGlassCatalogProvider implements GlassCatalogProvider {
     return [baseCandidate(year, make, model, glassType, "S1", [])];
   }
 
-  async lookupVin(vin: string): Promise<VinLookupResult> {
+  async lookupVin(vin: string, glassType: GlassType): Promise<VinLookupResult> {
     this.vinLookups++;
     const normalized = vin.trim().toUpperCase();
     if (normalized.length !== 17) {
       throw new Error("VIN must be 17 characters for lookup.");
     }
     // The VIN pins the exact factory option set, so ambiguity collapses to
-    // the single correct part. The trim is derived deterministically from the
-    // VIN so repeat lookups of the same VIN return the same result.
+    // the single correct part for the requested glass type. The trim is
+    // derived deterministically from the VIN so repeat lookups of the same
+    // VIN return the same result.
     const trimCodes = ["LX", "EX", "Touring", "Sport"];
     const trim = trimCodes[normalized.charCodeAt(8) % trimCodes.length];
+    const suffix = glassType === "WINDSHIELD" ? "WS" : glassType.slice(0, 2);
     return {
       vin: normalized,
       decoded: { year: 2020, make: "Honda", model: "Accord", trim },
       candidates: [
         {
-          part_number: `VIN-${normalized.slice(0, 8)}-WS`,
-          description: `VIN-decoded Windshield (${trim} trim)`,
+          part_number: `VIN-${normalized.slice(0, 8)}-${suffix}`,
+          description: `VIN-decoded ${GLASS_LABEL[glassType]} (${trim} trim)`,
           features: ["rain-sensor", "acoustic"],
-          position: "WINDSHIELD",
+          position: glassType,
           list_price_cents: 52000
         }
       ]

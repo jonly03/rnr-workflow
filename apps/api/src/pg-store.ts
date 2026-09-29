@@ -23,8 +23,10 @@ import type {
   SaveGlassIdentificationInput,
   SavePriceCalculationInput,
   SaveSupplierOfferInput,
-  SaveVinLookupInput
+  SaveVinLookupInput,
+  VinLookupGlassResult
 } from "./store.js";
+import type { GlassType } from "./types.js";
 
 type Pool = pg.Pool;
 type PoolClient = pg.PoolClient;
@@ -459,20 +461,64 @@ export class PgCaseStore implements CaseStore {
     return result.rowCount ? glassIdentificationRow(result.rows[0]) : null;
   }
 
-  async findVinLookup(vin: string): Promise<VinLookupRecord | null> {
+  async findVinLookup(vin: string, glassType: GlassType): Promise<VinLookupGlassResult | null> {
     const result = await this.pool.query("select * from vin_lookups where vin = $1", [
       vin.trim().toUpperCase()
     ]);
-    return result.rowCount ? vinLookupRow(result.rows[0]) : null;
+    if (!result.rowCount) return null;
+    const record = vinLookupRow(result.rows[0]);
+    const glassTypes = (record.result as { glassTypes?: Partial<Record<GlassType, VinLookupGlassResult>> })
+      .glassTypes;
+    return glassTypes?.[glassType] ?? null;
   }
 
   async saveVinLookup(input: SaveVinLookupInput): Promise<void> {
     const normalized = input.vin.trim().toUpperCase();
+    // Merge per-glass-type results into the single VIN row in SQL so
+    // concurrent saves for different glass types cannot clobber each other.
     await this.pool.query(
       `insert into vin_lookups(id, vin, success, result, created_at)
        values ($1,$2,$3,$4::jsonb,now())
-       on conflict (vin) do update set success = excluded.success, result = excluded.result`,
-      [randomUUID(), normalized, input.success, JSON.stringify(input.result)]
+       on conflict (vin) do update set
+         success = vin_lookups.success or excluded.success,
+         result = jsonb_set(
+           coalesce(vin_lookups.result, '{}'::jsonb),
+           '{glassTypes}',
+           coalesce(vin_lookups.result->'glassTypes', '{}'::jsonb)
+             || (excluded.result->'glassTypes'),
+           true
+         )`,
+      [
+        randomUUID(),
+        normalized,
+        input.result.success,
+        JSON.stringify({ glassTypes: { [input.glassType]: input.result } })
+      ]
+    );
+  }
+
+  /**
+   * Atomic single-flight claim. The INSERT wins outright; on conflict the
+   * UPDATE only fires for stale claims (> 5 minutes), so exactly one
+   * caller holds a fresh claim. A returned row means we won.
+   */
+  async claimVinLookup(vin: string, glassType: GlassType): Promise<boolean> {
+    const result = await this.pool.query(
+      `insert into vin_lookup_claims(vin, glass_type, claimed_at)
+       values ($1,$2,now())
+       on conflict (vin, glass_type) do update
+         set claimed_at = now()
+         where vin_lookup_claims.claimed_at < now() - interval '5 minutes'
+       returning vin`,
+      [vin.trim().toUpperCase(), glassType]
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async releaseVinLookup(vin: string, glassType: GlassType): Promise<void> {
+    await this.pool.query(
+      "delete from vin_lookup_claims where vin = $1 and glass_type = $2",
+      [vin.trim().toUpperCase(), glassType]
     );
   }
 

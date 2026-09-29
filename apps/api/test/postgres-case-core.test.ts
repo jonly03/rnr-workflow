@@ -100,7 +100,7 @@ suite("Case Core PostgreSQL adapter", () => {
         year: 2020,
         make: "Toyota",
         model: "Camry",
-        vin: "4T1G11AK0LU000001"
+        vin: "1HGCM82633A004352"
       },
       glass_request: { glass_type: "BACK_GLASS" }
     };

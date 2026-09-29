@@ -9,6 +9,7 @@ import type {
   GlassCandidate,
   GlassIdentification,
   GlassRequest,
+  GlassType,
   IdentificationMethod,
   IdentificationStatus,
   PriceCalculation,
@@ -21,6 +22,12 @@ import type {
   Vehicle,
   VinLookupRecord
 } from "./types.js";
+
+/**
+ * How long a VIN-lookup claim is honored before another caller may steal
+ * it. Guards against a crashed worker blocking lookups forever.
+ */
+export const CLAIM_TTL_MS = 5 * 60 * 1000;
 
 export interface CreateCaseStoreInput {
   channel: CaseRecord["channel"];
@@ -66,10 +73,28 @@ export interface SaveGlassIdentificationInput {
   selectedCandidate?: GlassCandidate | null;
 }
 
+/**
+ * The cached result of one paid VIN lookup for one glass type.
+ * A single VIN cache entry holds one of these per glass type that has
+ * been looked up, so a second glass type for the same VIN triggers its
+ * own (type-correct) lookup instead of reusing the wrong candidates.
+ */
+export interface VinLookupGlassResult {
+  success: boolean;
+  decoded?: { year: number; make: string; model: string; trim: string };
+  candidates: GlassCandidate[];
+  error?: string;
+}
+
+/** Shape of the vin_lookups.result JSON: per-glass-type results under one VIN. */
+export interface VinLookupCacheValue {
+  glassTypes: Partial<Record<GlassType, VinLookupGlassResult>>;
+}
+
 export interface SaveVinLookupInput {
   vin: string;
-  success: boolean;
-  result: Record<string, unknown>;
+  glassType: GlassType;
+  result: VinLookupGlassResult;
 }
 
 export interface SaveSupplierOfferInput {
@@ -116,8 +141,19 @@ export interface CaseStore {
   appendEvent(input: AppendEventInput): Promise<CaseEvent>;
   saveGlassIdentification(input: SaveGlassIdentificationInput): Promise<GlassIdentification>;
   getLatestGlassIdentification(glassRequestId: string): Promise<GlassIdentification | null>;
-  findVinLookup(vin: string): Promise<VinLookupRecord | null>;
+  findVinLookup(vin: string, glassType: GlassType): Promise<VinLookupGlassResult | null>;
   saveVinLookup(input: SaveVinLookupInput): Promise<void>;
+  /**
+   * Atomically claims the right to perform a paid VIN lookup for one
+   * (VIN, glass type). Returns true when this caller won the claim;
+   * false when another lookup is already in flight. Stale claims
+   * (older than CLAIM_TTL_MS) may be stolen so a crashed worker cannot
+   * block lookups forever. This is the duplicate-charge prevention for
+   * concurrent requests; the cache itself handles sequential ones.
+   */
+  claimVinLookup(vin: string, glassType: GlassType): Promise<boolean>;
+  /** Releases a claim taken by claimVinLookup. Always call in a finally. */
+  releaseVinLookup(vin: string, glassType: GlassType): Promise<void>;
   saveSupplierOffer(input: SaveSupplierOfferInput): Promise<SupplierOffer>;
   listSupplierOffers(glassRequestId: string): Promise<SupplierOffer[]>;
   selectSupplierOffer(offerId: string): Promise<void>;
@@ -143,6 +179,8 @@ const emptyStore = (): StoreShape => ({
 
 export class JsonCaseStore implements CaseStore {
   private data: StoreShape;
+  /** Transient (VIN, glass type) lookup claims. Never persisted. */
+  private readonly vinLookupClaims = new Map<string, number>();
 
   constructor(private readonly filePath: string) {
     this.data = this.load();
@@ -381,20 +419,28 @@ export class JsonCaseStore implements CaseStore {
     return matches.length ? matches[matches.length - 1] : null;
   }
 
-  async findVinLookup(vin: string): Promise<VinLookupRecord | null> {
+  async findVinLookup(vin: string, glassType: GlassType): Promise<VinLookupGlassResult | null> {
     const normalized = vin.trim().toUpperCase();
-    return this.data.vin_lookups.find(v => v.vin === normalized) ?? null;
+    const entry = this.data.vin_lookups.find(v => v.vin === normalized);
+    const value = entry?.result as VinLookupCacheValue | undefined;
+    return value?.glassTypes?.[glassType] ?? null;
   }
 
   async saveVinLookup(input: SaveVinLookupInput): Promise<void> {
     const normalized = input.vin.trim().toUpperCase();
     const next = structuredClone(this.data);
     const existing = next.vin_lookups.find(v => v.vin === normalized);
+    // Merge: one VIN entry accumulates per-glass-type results.
+    const glassTypes: VinLookupCacheValue["glassTypes"] = {
+      ...((existing?.result as VinLookupCacheValue | undefined)?.glassTypes ?? {}),
+      [input.glassType]: input.result
+    };
     const record: VinLookupRecord = {
       id: existing?.id ?? randomUUID(),
       vin: normalized,
-      success: input.success,
-      result: input.result,
+      success:
+        input.result.success || (existing?.success ?? false),
+      result: { glassTypes } as unknown as Record<string, unknown>,
       created_at: existing?.created_at ?? new Date().toISOString()
     };
     if (existing) {
@@ -403,6 +449,24 @@ export class JsonCaseStore implements CaseStore {
       next.vin_lookups.push(record);
     }
     this.persist(next);
+  }
+
+  private static vinClaimKey(vin: string, glassType: GlassType): string {
+    return `${vin.trim().toUpperCase()}|${glassType}`;
+  }
+
+  async claimVinLookup(vin: string, glassType: GlassType): Promise<boolean> {
+    const key = JsonCaseStore.vinClaimKey(vin, glassType);
+    const claimedAt = this.vinLookupClaims.get(key);
+    if (claimedAt !== undefined && Date.now() - claimedAt < CLAIM_TTL_MS) {
+      return false;
+    }
+    this.vinLookupClaims.set(key, Date.now());
+    return true;
+  }
+
+  async releaseVinLookup(vin: string, glassType: GlassType): Promise<void> {
+    this.vinLookupClaims.delete(JsonCaseStore.vinClaimKey(vin, glassType));
   }
 
   async saveSupplierOffer(input: SaveSupplierOfferInput): Promise<SupplierOffer> {

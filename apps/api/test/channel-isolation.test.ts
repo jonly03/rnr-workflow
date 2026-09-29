@@ -6,16 +6,24 @@ import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { hashPassword } from "../src/auth.js";
 import { JsonCaseStore } from "../src/store.js";
+import { expectedCheckDigit } from "../src/vin-validation.js";
 import type { Channel } from "../src/types.js";
 
 const TEST_AUTH_SECRET = "test-secret-for-channel-tests";
 
-const vehicle = (n: number) => ({
-  year: 2020,
-  make: "Honda",
-  model: "Accord",
-  vin: `1HGTESTVIN${String(n).padStart(7, "0")}`
-});
+const vehicle = (n: number) => {
+  // Build a VIN with a valid ISO 3779 check digit: position 9 has weight
+  // 0, so the check digit is computed over the placeholder form.
+  const suffix = String(n).padStart(7, "0");
+  const placeholder = `1HGCM8260A${suffix}`;
+  const check = expectedCheckDigit(placeholder);
+  return {
+    year: 2020,
+    make: "Honda",
+    model: "Accord",
+    vin: `1HGCM826${check}A${suffix}`
+  };
+};
 
 async function fixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rnr-channels-"));
