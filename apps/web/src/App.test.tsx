@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, cardOrderKey, DEFAULT_CARD_ORDER, describeEvent, filterQueueCases, isStaffActionRequired, loadCardOrder, scanProgressForElapsed, shouldShowOverrideWarning, sortQueueCases } from "./App";
 import type { CaseRecord, CaseEvent } from "./types";
 
@@ -250,20 +250,33 @@ describe("describeEvent", () => {
 });
 
 describe("glass catalog mode badge", () => {
+  const staff = { name: "Tech", email: "tech@rr.test" };
   function stubHealth(glassCatalog: string) {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string | URL | Request) => {
-        if (String(url).endsWith("/health")) {
+        const target = String(url);
+        if (target.endsWith("/health")) {
           return {
             ok: true,
             json: async () => ({ ok: true, storage: "json", glass_catalog: glassCatalog })
           };
         }
+        if (target.endsWith("/auth/me")) {
+          return { ok: true, json: async () => ({ staff }) };
+        }
         return { ok: true, json: async () => [] };
       })
     );
   }
+
+  // The badge lives on the queue screen, so these tests sign in first.
+  beforeEach(() => {
+    localStorage.setItem("rnr_staff_token", "test-token");
+  });
+  afterEach(() => {
+    localStorage.removeItem("rnr_staff_token");
+  });
 
   it("shows a LIVE badge when the API sources from MyGrant", async () => {
     stubHealth("mygrant-web");
@@ -282,13 +295,18 @@ describe("glass catalog mode badge", () => {
     expect(badge).toHaveClass("mock");
   });
 
-  it("keeps the badge inside the brand cluster so the 3-column header grid holds", async () => {
+  it("puts the catalog badge under the R&R Operations eyebrow and above the Case Queue heading, outside the header", async () => {
     stubHealth("mock-catalog");
     render(<App />);
     const badge = await screen.findByText("Mock catalog");
-    // The topbar is grid-template-columns: 1fr auto 1fr; the badge must not
-    // become a fourth grid child (that wrapped sign-out below the header).
-    expect(badge.parentElement).toHaveClass("brand-wrap");
-    expect(badge.parentElement?.tagName.toLowerCase()).not.toBe("header");
+    // Never in the topbar: the header grid stays untouched.
+    expect(badge.closest("header")).toBeNull();
+    // In the queue page head, ordered: eyebrow, badge, heading.
+    const pageHead = badge.closest(".page-head");
+    expect(pageHead).not.toBeNull();
+    const order = Array.from(pageHead!.querySelectorAll(".eyebrow, .catalog-badge, h1"));
+    expect(
+      order.map(el => (el.classList.contains("catalog-badge") ? "badge" : el.textContent))
+    ).toEqual(["R&R Operations", "badge", "Case Queue"]);
   });
 });

@@ -375,6 +375,7 @@ export function App() {
       <section className="page-head">
         <div>
           <p className="eyebrow">R&R Operations</p>
+          <CatalogBadge />
           <h1>Case Queue</h1>
           <p className="muted">One operational truth across Direct, Auction, and Insurance.</p>
         </div>
@@ -571,6 +572,38 @@ export interface Crumb {
   onClick?: () => void;
 }
 
+/**
+ * Glass catalog mode badge: live MyGrant ($1/VIN lookup) vs mock catalog.
+ * Fetches the API health once and renders nothing until it resolves.
+ * Placed in the page head under the section eyebrow — never in the topbar,
+ * so the header grid stays untouched.
+ */
+function CatalogBadge() {
+  const [catalog, setCatalog] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getHealth().then(health => {
+      if (!cancelled && health) setCatalog(health.glass_catalog);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  if (!catalog) return null;
+  return (
+    <span
+      className={`catalog-badge ${catalog === "mygrant-web" ? "live" : "mock"}`}
+      title={
+        catalog === "mygrant-web"
+          ? "Live MyGrant sourcing: each VIN lookup costs $1"
+          : "Mock catalog: no live sourcing, no charges"
+      }
+    >
+      {catalog === "mygrant-web" ? "LIVE · MyGrant" : "Mock catalog"}
+    </span>
+  );
+}
+
 function Shell({
   children,
   staff,
@@ -583,24 +616,12 @@ function Shell({
   crumbs?: Crumb[];
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [catalog, setCatalog] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const closeMenu = () => setMenuOpen(false);
   const handleSignOut = () => {
     closeMenu();
     onSignOut();
   };
-  // Live-mode indicator: which glass catalog the API is sourcing from.
-  // "mygrant-web" = live MyGrant ($1 per VIN lookup); anything else = mock.
-  useEffect(() => {
-    let cancelled = false;
-    getHealth().then(health => {
-      if (!cancelled && health) setCatalog(health.glass_catalog);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
   useEffect(() => {
     if (!menuOpen) return;
     const onPointerDown = (e: PointerEvent) => {
@@ -624,18 +645,6 @@ function Shell({
         <div className="brand-wrap">
           <div className="brand">R&R</div>
           <span className="brand-title">Case Operations</span>
-          {catalog && (
-            <span
-              className={`catalog-badge ${catalog === "mygrant-web" ? "live" : "mock"}`}
-              title={
-                catalog === "mygrant-web"
-                  ? "Live MyGrant sourcing: each VIN lookup costs $1"
-                  : "Mock catalog: no live sourcing, no charges"
-              }
-            >
-              {catalog === "mygrant-web" ? "LIVE · MyGrant" : "Mock catalog"}
-            </span>
-          )}
         </div>
         {crumbs.length > 0 && (
           <nav className="crumbs" aria-label="Breadcrumb">
