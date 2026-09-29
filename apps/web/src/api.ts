@@ -144,15 +144,30 @@ export function decodeVin(vin: string) {
   }).then(json<{ vin: string; vehicle: DecodedVehicle }>);
 }
 
+const OCR_FETCH_TIMEOUT_MS = 60_000;
+
 export function ocrVinPhoto(photo: File) {
   const form = new FormData();
   form.append("photo", photo);
   const token = getToken();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OCR_FETCH_TIMEOUT_MS);
   return fetch(`${API_BASE}/vin/ocr`, {
     method: "POST",
     headers: token ? { Authorization: `Bearer ${token}` } : {},
-    body: form
-  }).then(json<{ vin: string }>);
+    body: form,
+    signal: controller.signal
+  })
+    .then(json<{ vin: string }>)
+    .catch(err => {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        throw new Error(
+          "Photo read timed out. Try a clearer photo or type the VIN manually."
+        );
+      }
+      throw err;
+    })
+    .finally(() => clearTimeout(timer));
 }
 
 export function createCase(input: CreateCaseInput) {
