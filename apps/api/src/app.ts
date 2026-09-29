@@ -189,14 +189,19 @@ export function createApp(
     }
   };
 
-  app.get("/health", async (_req, res) => {
+  // Health is served at both /health (deploy monitors, direct API checks)
+  // and /api/v1/health (reachable through the web app's same-origin API
+  // proxy, which only forwards /api/v1/*).
+  const healthHandler = async (_req: express.Request, res: express.Response) => {
     await store.health();
     res.json({
       ok: true,
       storage: process.env.DATABASE_URL ? "postgres" : "json",
       glass_catalog: glassCatalog.name
     });
-  });
+  };
+  app.get("/health", healthHandler);
+  app.get("/api/v1/health", healthHandler);
 
   app.post("/api/v1/auth/login", loginLimiter, async (req, res) => {
     const parsed = loginSchema.safeParse(req.body);
