@@ -1012,6 +1012,13 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
     const transport = this.getTransport();
     let lastFingerprint: string | undefined;
     try {
+      // Warm the session: visit the bare search form page first, the way a
+      // real browser does before submitting. ASP.NET sites sometimes gate
+      // results on session state initialized by the form page load.
+      await this.authenticatedGet(
+        transport,
+        this.baseUrl + MYGRANT_YMM_SEARCH_PATH
+      );
       // Live-browser verified 2026-09-29: MyGrant's make matching is
       // case-insensitive ("JEEP" and "Jeep" both return results). Keep the
       // title-case retry as a harmless fallback for unusual inputs.
