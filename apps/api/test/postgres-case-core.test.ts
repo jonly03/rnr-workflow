@@ -64,7 +64,16 @@ suite("Case Core PostgreSQL adapter", () => {
 
     // Phase 2: identification auto-runs after intake (single candidate here).
     // Phase 3: sourcing + pricing auto-advance to PRICE_APPROVED.
-    expect(created.body.current_state).toBe("PRICE_APPROVED");
+    // The run is async now: poll until it settles.
+    const pollStart = Date.now();
+    let settled = created;
+    for (;;) {
+      const r = await app.get(`/api/v1/cases/${created.body.id}`).expect(200);
+      if (r.body.current_state === "PRICE_APPROVED") { settled = r; break; }
+      if (Date.now() - pollStart > 15000) throw new Error("timed out waiting for PRICE_APPROVED");
+      await new Promise(rr => setTimeout(rr, 100));
+    }
+    expect(settled.body.current_state).toBe("PRICE_APPROVED");
 
     const restartedApp = await authedApp();
 
