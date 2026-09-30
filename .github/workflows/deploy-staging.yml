@@ -95,6 +95,18 @@ jobs:
           echo "url=$web_url" >> "$GITHUB_OUTPUT"
           echo "Web: $web_url" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Alias stable staging URLs
+        working-directory: apps/web
+        env:
+          VERCEL_PROJECT_ID: ${{ env.WEB_PROJECT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Stable aliases so there's one permanent staging URL to test.
+          # Re-assigning an existing alias just moves it to the new deployment.
+          vercel alias "${{ steps.web.outputs.url }}" rnr-case-staging-zero-to100-edu.vercel.app --token="$VERCEL_TOKEN"
+          echo "Stable web: https://rnr-case-staging-zero-to100-edu.vercel.app" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Live API health check
         env:
           API_URL: ${{ steps.api.outputs.url }}
