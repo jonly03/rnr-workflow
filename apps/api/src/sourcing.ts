@@ -152,6 +152,12 @@ export const SOURCING_TRANSITIONS: Record<string, Record<string, string>> = {
   NO_ELIGIBLE_INVENTORY: {
     RETRY_SOURCING: "SOURCING_IN_PROGRESS"
   },
+  // Staff can retry after a sourcing transport/parser failure without
+  // starting a new case. Part-number searches are free, so a retry spends
+  // no money.
+  SYSTEM_ATTENTION_REQUIRED: {
+    RETRY_SOURCING: "SOURCING_IN_PROGRESS"
+  },
   GLASS_SELECTED: {
     START_PRICING: "PRICING_IN_PROGRESS"
   }
@@ -272,14 +278,18 @@ export async function runSourcing(
   let rawOffers: RawSupplierOffer[];
   try {
     // Part-number searches are free; only VIN lookups cost money.
-    const perPart = await Promise.all(
-      partNumbers.map(async partNumber => {
-        const offers = await provider.searchOffers(partNumber);
-        const isInterchange =
-          partNumber.trim().toUpperCase() !== primaryPartNumber.trim().toUpperCase();
-        return offers.map(offer => ({ ...offer, is_interchange: isInterchange }));
-      })
-    );
+    // Sequential on purpose, not Promise.all: the MyGrant browser service
+    // drives a single Chromium page, so concurrent page loads race — the
+    // second navigation interrupts the first and its content read fails
+    // with "page is navigating". One page load completes before the next
+    // starts.
+    const perPart: RawSupplierOffer[][] = [];
+    for (const partNumber of partNumbers) {
+      const offers = await provider.searchOffers(partNumber);
+      const isInterchange =
+        partNumber.trim().toUpperCase() !== primaryPartNumber.trim().toUpperCase();
+      perPart.push(offers.map(offer => ({ ...offer, is_interchange: isInterchange })));
+    }
     rawOffers = perPart.flat();
   } catch (error) {
     await store.appendEvent({

@@ -574,4 +574,60 @@ describe("Sourcing + Pricing", () => {
       res.body.glass_identification.selected_candidate.part_number
     );
   });
+
+  it("searches part numbers sequentially, never concurrently", async () => {
+    // The MyGrant browser service drives a single Chromium page: concurrent
+    // page loads race and the loser's content read fails. runSourcing must
+    // issue its per-part searches one at a time.
+    const f = await fixture();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const orig = f.sourcing.searchOffers.bind(f.sourcing);
+    f.sourcing.searchOffers = async (partNumber: string) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      try {
+        // Yield long enough that a concurrent implementation would overlap.
+        await new Promise(r => setTimeout(r, 25));
+        return await orig(partNumber);
+      } finally {
+        inFlight--;
+      }
+    };
+    // Ambiguous YMM routes to VIN lookup; the mock VIN result carries two
+    // interchange part numbers, so sourcing searches 3 part numbers.
+    const created = await f.createCase({ model: "Ambiguous" }).expect(201);
+    await waitForState(f, created.body.id, ["VIN_LOOKUP_REQUIRED"]);
+    const res = await act(f, created.body.id, "request_vin_lookup").expect(200);
+    expect(res.body.current_state).toBe("PRICE_APPROVED");
+    expect(f.sourcing.offerSearches).toBe(3);
+    expect(maxInFlight).toBe(1);
+  });
+
+  it("retries sourcing from SYSTEM_ATTENTION_REQUIRED after a transport failure", async () => {
+    const f = await fixture();
+    let failSearches = true;
+    const orig = f.sourcing.searchOffers.bind(f.sourcing);
+    f.sourcing.searchOffers = async (partNumber: string) => {
+      if (failSearches) {
+        throw new Error("simulated browser-service outage");
+      }
+      return orig(partNumber);
+    };
+    const created = await f.createCase({ model: "Ambiguous" }).expect(201);
+    await waitForState(f, created.body.id, ["VIN_LOOKUP_REQUIRED"]);
+    // The VIN lookup succeeds but sourcing fails loudly.
+    await act(f, created.body.id, "request_vin_lookup").expect(200);
+    const failed = await waitForState(f, created.body.id, ["SYSTEM_ATTENTION_REQUIRED"]);
+    expect(failed.body.current_state).toBe("SYSTEM_ATTENTION_REQUIRED");
+
+    // Staff retries without starting a new case; the retry spends no money
+    // (part-number searches are free) and the VIN result is cached.
+    failSearches = false;
+    const retried = await act(f, created.body.id, "retry_sourcing").expect(200);
+    expect(retried.body.current_state).toBe("PRICE_APPROVED");
+    const offers = retried.body.supplier_offers as any[];
+    expect(offers.length).toBeGreaterThan(0);
+    expect(offers.find((o: any) => o.selected)).toBeDefined();
+  });
 });
