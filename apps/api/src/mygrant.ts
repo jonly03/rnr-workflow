@@ -827,9 +827,19 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
       [LOGIN_BUTTON_FIELD]: "Login"
     });
     if (!isAuthenticatedPage(response)) {
+      // Include what the post-login page actually looked like so a bot
+      // challenge / block can be told apart from wrong credentials.
+      const title =
+        /<title[^>]*>([^<]{1,80})/i.exec(response)?.[1]?.trim() ?? "untitled";
+      const looksLikeChallenge =
+        /cf-challenge|captcha|attention required|just a moment|verify you are|access denied|ip.*block/i.test(
+          response
+        );
       throw new MyGrantError(
         "MYGRANT_AUTH_FAILED",
-        "MyGrant rejected the login. Check MYGRANT_USERNAME / MYGRANT_PASSWORD.",
+        `MyGrant rejected the login. Check MYGRANT_USERNAME / MYGRANT_PASSWORD. (post-login page: "${title}", ${response.length} bytes${
+          looksLikeChallenge ? ", possible bot challenge/block" : ""
+        })`,
         502
       );
     }
