@@ -49,6 +49,11 @@ export const IDENTIFICATION_TRANSITIONS: Record<string, Record<string, string>> 
   // the current intake data, so it re-enters the search directly.
   GLASS_NOT_IDENTIFIED: {
     RETRY_IDENTIFICATION: "YMM_SEARCH_IN_PROGRESS"
+  },
+  // Staff can retry after a YMM transport/parser failure without starting
+  // a new case. YMM searches are free, so a retry spends no money.
+  SYSTEM_ATTENTION_REQUIRED: {
+    RETRY_IDENTIFICATION: "YMM_SEARCH_IN_PROGRESS"
   }
 };
 

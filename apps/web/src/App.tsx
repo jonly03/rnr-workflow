@@ -579,6 +579,23 @@ export interface Crumb {
   onClick?: () => void;
 }
 
+/** Glass catalog mode from the API health check ("mygrant-web" vs "mock").
+ * Shared by the catalog badge and any copy that differs between live and
+ * mock mode — e.g. the VIN lookup card must say $1 in live mode. */
+function useCatalogMode(): string | null {
+  const [catalog, setCatalog] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getHealth().then(health => {
+      if (!cancelled && health) setCatalog(health.glass_catalog ?? null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return catalog;
+}
+
 /**
  * Glass catalog mode badge: live MyGrant ($1/VIN lookup) vs mock catalog.
  * Fetches the API health once and renders nothing until it resolves.
@@ -586,16 +603,7 @@ export interface Crumb {
  * so the header grid stays untouched.
  */
 function CatalogBadge() {
-  const [catalog, setCatalog] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    getHealth().then(health => {
-      if (!cancelled && health) setCatalog(health.glass_catalog);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const catalog = useCatalogMode();
   if (!catalog) return null;
   return (
     <span
@@ -1158,7 +1166,9 @@ const STAFF_ACTION_STATES = [
   "HUMAN_GLASS_REVIEW_REQUIRED",
   "GLASS_NOT_IDENTIFIED",
   "NO_ELIGIBLE_INVENTORY",
-  "PROFIT_REVIEW_REQUIRED"
+  "PROFIT_REVIEW_REQUIRED",
+  // A failed run parks here; the alert offers the retry matching the failure.
+  "SYSTEM_ATTENTION_REQUIRED"
 ] as const;
 
 /** True when the case needs staff — the warning alert shows only then. */
@@ -1347,7 +1357,7 @@ function CaseDetail({
       </section>
 
       {isStaffActionRequired(item.current_state) && (
-        <StaffActionAlert item={item} onRefresh={onRefresh} />
+        <StaffActionAlert item={item} events={events} onRefresh={onRefresh} />
       )}
       <SortableCardList order={order} onReorder={setOrder} renderCard={renderCard} />
     </>
@@ -1422,14 +1432,18 @@ function ProfitReviewBody({
  *  staff; once the action is taken the case moves on and the alert goes away. */
 function StaffActionBody({
   item,
+  events,
   onRefresh
 }: {
   item: CaseRecord;
+  events: CaseEvent[];
   onRefresh: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [selectedPart, setSelectedPart] = useState("");
+  const catalogMode = useCatalogMode();
+  const liveVin = catalogMode === "mygrant-web";
 
   const run = async (action: string, extra: Record<string, unknown> = {}) => {
     setBusy(true);
@@ -1455,11 +1469,13 @@ function StaffActionBody({
         <>
           <p>
             The catalog could not pin down the exact part. A VIN decode can
-            resolve it — the mock catalog stands in here, so nothing is charged.
+            resolve it — {liveVin
+              ? "this runs a live VIN lookup against MyGrant for $1."
+              : "the mock catalog stands in here, so nothing is charged."}
           </p>
           <div className="workspace-actions">
             <button className="primary" disabled={busy} onClick={() => run("request_vin_lookup")}>
-              {busy ? "Looking up…" : "Run VIN lookup"}
+              {busy ? "Looking up…" : liveVin ? "Run VIN lookup ($1)" : "Run VIN lookup"}
             </button>
           </div>
           <small>Successful VIN results are cached and reused — never repurchased.</small>
@@ -1536,6 +1552,72 @@ function StaffActionBody({
     case "PROFIT_REVIEW_REQUIRED":
       body = <ProfitReviewBody item={item} run={run} busy={busy} />;
       break;
+    case "SYSTEM_ATTENTION_REQUIRED": {
+      // The workflow failed somewhere (sourcing, YMM, VIN, pricing…).
+      // Offer the retry that matches the actual failure; anything else
+      // just shows the error so staff can decide.
+      const failure = [...events].reverse().find(e =>
+        ["SOURCING_FAILED", "YMM_SEARCH_FAILED", "VIN_LOOKUP_FAILED", "PRICING_FAILED", "IDENTIFICATION_ERROR"].includes(e.event_type)
+      );
+      const failurePayload = (failure?.payload ?? {}) as Record<string, unknown>;
+      const failureError = eventText(failurePayload, "error") ?? eventText(failurePayload, "reason");
+      const failureSuffix = failureError ? `: ${failureError}` : ".";
+      if (failure?.event_type === "SOURCING_FAILED") {
+        body = (
+          <>
+            <p>
+              Supplier sourcing failed{failureSuffix} Part-number searches
+              are free, so retrying costs nothing.
+            </p>
+            <div className="workspace-actions">
+              <button className="primary" disabled={busy} onClick={() => run("retry_sourcing")}>
+                {busy ? "Retrying…" : "Retry sourcing"}
+              </button>
+            </div>
+          </>
+        );
+      } else if (failure?.event_type === "YMM_SEARCH_FAILED") {
+        body = (
+          <>
+            <p>
+              The vehicle search failed{failureSuffix} Retrying re-runs
+              identification — YMM searches are free.
+            </p>
+            <div className="workspace-actions">
+              <button className="primary" disabled={busy} onClick={() => run("retry_identification")}>
+                {busy ? "Retrying…" : "Retry identification"}
+              </button>
+            </div>
+          </>
+        );
+      } else if (failure?.event_type === "VIN_LOOKUP_FAILED") {
+        body = (
+          <>
+            <p>
+              The VIN lookup failed{failureSuffix} {liveVin
+                ? "Retrying runs another live VIN lookup for $1."
+                : "The mock catalog stands in here, so nothing is charged."}
+            </p>
+            <div className="workspace-actions">
+              <button className="primary" disabled={busy} onClick={() => run("request_vin_lookup")}>
+                {busy ? "Looking up…" : liveVin ? "Retry VIN lookup ($1)" : "Retry VIN lookup"}
+              </button>
+            </div>
+            <small>Successful VIN results are cached and reused — never repurchased.</small>
+          </>
+        );
+      } else {
+        body = (
+          <>
+            <p>
+              The workflow hit a problem{failureSuffix} Take a look at the
+              activity below before deciding what to do.
+            </p>
+          </>
+        );
+      }
+      break;
+    }
     default:
       body = null;
   }
@@ -1552,15 +1634,17 @@ function StaffActionBody({
 /** Warning alert pinned above the detail cards while staff action is needed. */
 function StaffActionAlert({
   item,
+  events,
   onRefresh
 }: {
   item: CaseRecord;
+  events: CaseEvent[];
   onRefresh: () => Promise<void>;
 }) {
   return (
     <section className="card alert-card" role="alert" aria-label="Staff action required">
       <h2><span aria-hidden="true">⚠</span> Staff action required</h2>
-      <StaffActionBody item={item} onRefresh={onRefresh} />
+      <StaffActionBody item={item} events={events} onRefresh={onRefresh} />
     </section>
   );
 }
