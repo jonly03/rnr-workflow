@@ -66,7 +66,8 @@ export type MyGrantErrorCode =
   | "MYGRANT_UNAVAILABLE"
   | "MYGRANT_PARSE_ERROR"
   | "MYGRANT_SPEND_CAP_EXCEEDED"
-  | "MYGRANT_UNSUPPORTED_GLASS_TYPE";
+  | "MYGRANT_UNSUPPORTED_GLASS_TYPE"
+  | "MYGRANT_NO_VEHICLES";
 
 export class MyGrantError extends Error {
   /**
@@ -240,27 +241,79 @@ export class HttpMyGrantTransport implements MyGrantTransport {
     }
   }
 
+  private static readonly MAX_REDIRECTS = 10;
+
   private async request(url: string, init: RequestInit): Promise<string> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const headers = new Headers(init.headers);
-      const cookieHeader = this.cookieHeader();
-      if (cookieHeader) headers.set("Cookie", cookieHeader);
-      headers.set(
-        "User-Agent",
-        "Mozilla/5.0 (compatible; RNR-CaseCore/1.0; +shop-automation)"
-      );
-      const res = await this.fetchImpl(url, { ...init, headers, signal: controller.signal });
-      this.storeCookies(res.headers);
-      if (!res.ok) {
-        throw new MyGrantError(
-          "MYGRANT_UNAVAILABLE",
-          `MyGrant returned HTTP ${res.status} for ${url}.`,
-          502
+      // Follow redirects manually. fetch's automatic redirect handling
+      // swallows Set-Cookie headers on intermediate responses, which drops
+      // the .ASPXAUTH cookie MyGrant issues on its post-login 302 — the
+      // login then "fails" even with correct credentials.
+      let currentUrl = url;
+      let method = (init.method ?? "GET").toUpperCase();
+      let body = init.body;
+      for (let hop = 0; hop <= HttpMyGrantTransport.MAX_REDIRECTS; hop++) {
+        const headers = new Headers(init.headers);
+        const cookieHeader = this.cookieHeader();
+        if (cookieHeader) headers.set("Cookie", cookieHeader);
+        headers.set(
+          "User-Agent",
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
         );
+        if (!headers.has("Accept")) {
+          headers.set(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+          );
+        }
+        if (!headers.has("Accept-Language")) {
+          headers.set("Accept-Language", "en-US,en;q=0.9");
+        }
+        if (method === "GET") headers.delete("Content-Type");
+        const res = await this.fetchImpl(currentUrl, {
+          ...init,
+          method,
+          body,
+          headers,
+          redirect: "manual",
+          signal: controller.signal,
+        });
+        this.storeCookies(res.headers);
+        if (res.status >= 300 && res.status < 400) {
+          const location = res.headers.get("location");
+          if (hop === HttpMyGrantTransport.MAX_REDIRECTS || !location) {
+            throw new MyGrantError(
+              "MYGRANT_UNAVAILABLE",
+              `MyGrant redirected too many times for ${url}.`,
+              502
+            );
+          }
+          currentUrl = new URL(location, currentUrl).toString();
+          if (
+            res.status === 303 ||
+            ((res.status === 301 || res.status === 302) && method === "POST")
+          ) {
+            method = "GET";
+            body = undefined;
+          }
+          continue;
+        }
+        if (!res.ok) {
+          throw new MyGrantError(
+            "MYGRANT_UNAVAILABLE",
+            `MyGrant returned HTTP ${res.status} for ${url}.`,
+            502
+          );
+        }
+        return await res.text();
       }
-      return await res.text();
+      throw new MyGrantError(
+        "MYGRANT_UNAVAILABLE",
+        `MyGrant redirected too many times for ${url}.`,
+        502
+      );
     } catch (error) {
       if (error instanceof MyGrantError) throw error;
       throw new MyGrantError(
@@ -454,6 +507,17 @@ function parseError(what: string): MyGrantError {
       "The site may have changed; refusing to guess.",
     502
   );
+}
+
+/**
+ * NHTSA vPIC returns makes in ALL CAPS ("JEEP"); MyGrant's YMM search is
+ * case-sensitive and expects title case ("Jeep"). Used as a fallback when
+ * the verbatim make matches zero vehicles.
+ */
+function toTitleCaseMake(make: string): string {
+  return make
+    .toLowerCase()
+    .replace(/(?:^|[\s\-'])\S/g, (c) => c.toUpperCase());
 }
 
 /**
@@ -658,6 +722,53 @@ export function parseYmmVehicleList(html: string): YmmVehicleMatch[] {
   return out;
 }
 
+/** A glass part listed on a vehicle drill-down page. */
+export interface VehiclePart {
+  /** Base part number, e.g. "DW02416" (without brand suffix). */
+  partNumber: string;
+  /** Full description text from the parts table. */
+  description: string;
+  /**
+   * Interchangeable part numbers parsed from **NNN=...** annotations in
+   * the description, e.g. "**DW02417=Aftermarket**".
+   */
+  interchangePartNumbers: string[];
+}
+
+/**
+ * Parse a vehicle drill-down page (#cms_DivParts > table.partlist).
+ * Each row has a part-number link to /pages/search.aspx?q=<PART> and a
+ * description. Throws MYGRANT_PARSE_ERROR if the structure is unrecognized.
+ */
+export function parseVehicleParts(html: string): VehiclePart[] {
+  const scope = innerHtmlOfId(html, "cms_DivParts");
+  if (!scope) throw parseError("vehicle parts container (#cms_DivParts)");
+  const tableMatch = /<table\b[^>]*\bclass\s*=\s*["'][^"']*\bpartlist\b[^"']*["'][^>]*>([\s\S]*?)<\/table\s*>/i.exec(scope);
+  if (!tableMatch) throw parseError("vehicle parts table (.partlist)");
+  const tableHtml = tableMatch[1];
+  const out: VehiclePart[] = [];
+  // Rows: <tr class="rowstd|rowalt"><td><a href="...q=PART">PART</a></td><td>DESC</td></tr>
+  const rowRe = /<tr\b[^>]*>\s*<td\b[^>]*>\s*<a\b[^>]*\bhref\s*=\s*["'][^"']*[?&]q=([A-Z0-9]+)[^"']*["'][^>]*>([\s\S]*?)<\/a\s*>\s*<\/td\s*>\s*<td\b[^>]*>([\s\S]*?)<\/td\s*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = rowRe.exec(tableHtml)) !== null) {
+    const partNumber = m[1].trim();
+    const description = textOf(m[3]);
+    if (!partNumber || !description) continue;
+    // Extract **PART=...** interchange annotations from description.
+    const interchanges: string[] = [];
+    const annotRe = /\*\*([A-Z]{2}\d{4,6})\s*=/g;
+    let am: RegExpExecArray | null;
+    while ((am = annotRe.exec(description)) !== null) {
+      if (am[1] !== partNumber && !interchanges.includes(am[1])) {
+        interchanges.push(am[1]);
+      }
+    }
+    out.push({ partNumber, description, interchangePartNumbers: interchanges });
+  }
+  if (out.length === 0) throw parseError("vehicle parts rows (table.partlist)");
+  return out;
+}
+
 export type PartStock = "in_stock" | "call_to_verify" | "unknown";
 
 export interface PartOffer {
@@ -740,6 +851,25 @@ const LOGIN_PASSWORD_FIELD = "clogin:TxtPassword";
 const LOGIN_BUTTON_FIELD = "clogin:ButtonLogin";
 const VIN_FIELD = "vin";
 
+/**
+ * MyGrant part-number prefix for a glass position.
+ * DW = windshield, DB = back glass, DD/DQ = door/quarter.
+ */
+function glassTypePartPrefix(glassType: GlassType): string {
+  switch (glassType) {
+    case "WINDSHIELD":
+      return "DW";
+    case "BACK_GLASS":
+      return "DB";
+    case "DOOR_GLASS":
+      return "DD";
+    case "QUARTER_GLASS":
+      return "DQ";
+    case "VENT_GLASS":
+      return "DV";
+  }
+}
+
 export class MyGrantWebProvider implements GlassCatalogProvider {
   readonly name = "mygrant-web";
   /** MyGrant charges the shop $1 per VIN lookup. YMM/part search are free. */
@@ -775,9 +905,19 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
       [LOGIN_BUTTON_FIELD]: "Login"
     });
     if (!isAuthenticatedPage(response)) {
+      // Include what the post-login page actually looked like so a bot
+      // challenge / block can be told apart from wrong credentials.
+      const title =
+        /<title[^>]*>([^<]{1,80})/i.exec(response)?.[1]?.trim() ?? "untitled";
+      const looksLikeChallenge =
+        /cf-challenge|captcha|attention required|just a moment|verify you are|access denied|ip.*block/i.test(
+          response
+        );
       throw new MyGrantError(
         "MYGRANT_AUTH_FAILED",
-        "MyGrant rejected the login. Check MYGRANT_USERNAME / MYGRANT_PASSWORD.",
+        `MyGrant rejected the login. Check MYGRANT_USERNAME / MYGRANT_PASSWORD. (post-login page: "${title}", ${response.length} bytes${
+          looksLikeChallenge ? ", possible bot challenge/block" : ""
+        })`,
         502
       );
     }
@@ -818,41 +958,113 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
   async searchYmmVehicles(input: YmmSearchInput): Promise<YmmVehicleMatch[]> {
     const transport = this.getTransport();
     try {
-      const params = new URLSearchParams({
-        yr: String(input.year),
-        mk: input.make,
-        // MyGrant's model search is case-sensitive prefix matching: a
-        // single first character returns the exhaustive model list.
-        md: input.model,
-        smdo: "Search"
-      });
-      const html = await this.authenticatedGet(
-        transport,
-        this.baseUrl + MYGRANT_YMM_SEARCH_PATH + "?" + params.toString()
+      // Live-browser verified 2026-09-29: MyGrant's make matching is
+      // case-insensitive ("JEEP" and "Jeep" both return results). Keep the
+      // title-case retry as a harmless fallback for unusual inputs.
+      const makes = [input.make, toTitleCaseMake(input.make)].filter(
+        (m, i, a) => m && a.indexOf(m) === i
       );
-      return parseYmmVehicleList(html);
+      for (const make of makes) {
+        const params = new URLSearchParams({
+          yr: String(input.year),
+          mk: make,
+          // MyGrant's model search is case-sensitive prefix matching: a
+          // single first character returns the exhaustive model list.
+          md: input.model,
+          smdo: "Search"
+        });
+        const html = await this.authenticatedGet(
+          transport,
+          this.baseUrl + MYGRANT_YMM_SEARCH_PATH + "?" + params.toString()
+        );
+        const vehicles = parseYmmVehicleList(html);
+        if (vehicles.length > 0) return vehicles;
+      }
+      return [];
     } finally {
       if (!this.transport) await transport.close();
     }
   }
 
   /**
-   * Interface method. The live site returns vehicles for a YMM search, not
-   * glass candidates, and the vehicle→parts drill-down page has not been
-   * captured — so this fails loudly rather than inventing candidates. Use
-   * lookupVin for live identification, or searchYmmVehicles for the raw
-   * vehicle matches.
+   * Interface method: YMM search → pick best vehicle → drill into its parts
+   * page → part-number search for each glass part → GlassCandidate[].
+   * All steps are free (no VIN credits spent). Fails loudly if the vehicle
+   * list is empty or the parts page structure is unrecognized.
    */
   async searchYmm(input: YmmSearchInput): Promise<GlassCandidate[]> {
-    const vehicles = await this.searchYmmVehicles(input);
-    throw new MyGrantError(
-      "MYGRANT_PARSE_ERROR",
-      `MyGrant YMM search matched ${vehicles.length} vehicle(s), but the ` +
-        "vehicle→parts drill-down page has not been captured yet, so no " +
-        "glass candidates can be produced. Use the $1 VIN lookup for live " +
-        "identification instead. No charge was made (YMM is free).",
-      502
-    );
+    const transport = this.getTransport();
+    try {
+      const vehicles = await this.searchYmmVehicles(input);
+      if (vehicles.length === 0) {
+        throw new MyGrantError(
+          "MYGRANT_NO_VEHICLES",
+          `MyGrant YMM search matched 0 vehicles for ${input.year} ` +
+            `${input.make} ${input.model}. ` +
+            "Check that the year/make/model are correct.",
+          502
+        );
+      }
+      // Pick the best vehicle match: prefer exact model containment,
+      // fall back to the first result.
+      const modelLower = input.model.toLowerCase();
+      const vehicle =
+        vehicles.find((v) => v.name.toLowerCase().includes(modelLower)) ??
+        vehicles[0];
+      // Drill down: the detailPath is a relative query string like
+      // "?yr=2018&mk=Jeep&md=W&v=Jeep+Wrangler+2018+2+Door+Utility".
+      const partsUrl = this.baseUrl + MYGRANT_YMM_SEARCH_PATH + vehicle.detailPath;
+      const partsHtml = await this.authenticatedGet(transport, partsUrl);
+      const parts = parseVehicleParts(partsHtml);
+      // Filter to parts relevant for the requested glass type. MyGrant part
+      // numbers encode position: DW = windshield, DB = back glass,
+      // DD/DQ = door/quarter glass.
+      const prefix = glassTypePartPrefix(input.glassType);
+      const relevant = parts.filter((p) => p.partNumber.startsWith(prefix));
+      if (relevant.length === 0) {
+        throw new MyGrantError(
+          "MYGRANT_PARSE_ERROR",
+          `Vehicle "${vehicle.name}" has ${parts.length} part(s) but none ` +
+            `matching glass type ${input.glassType} (prefix "${prefix}").`,
+          502
+        );
+      }
+      // For each part, run a (free) part-number search to get live price
+      // and stock. Limit to the first 6 to bound request count.
+      const candidates: GlassCandidate[] = [];
+      for (const part of relevant.slice(0, 6)) {
+        const params = new URLSearchParams({
+          q: part.partNumber,
+          sc: "B036",
+          do: "Search"
+        });
+        const html = await this.authenticatedGet(
+          transport,
+          this.baseUrl + MYGRANT_PART_SEARCH_PATH + "?" + params.toString()
+        );
+        const results = parsePartSearchResults(html);
+        for (const offer of results.results) {
+          candidates.push({
+            part_number: offer.part_number,
+            description: part.description,
+            features: [],
+            position: input.glassType,
+            list_price_cents: offer.price_cents
+          });
+        }
+      }
+      if (candidates.length === 0) {
+        throw new MyGrantError(
+          "MYGRANT_PARSE_ERROR",
+          `Part-number searches for vehicle "${vehicle.name}" returned no ` +
+            "priced offers. No charge was made (YMM is free).",
+          502
+        );
+      }
+      return candidates;
+    } finally {
+      if (!this.transport) await transport.close();
+    }
   }
 
   /**

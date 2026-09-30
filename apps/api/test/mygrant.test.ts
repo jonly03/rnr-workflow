@@ -15,6 +15,7 @@ import {
   parseVinLookupsRemaining,
   parseVinResults,
   parseYmmVehicleList,
+  parseVehicleParts,
   RecordingMyGrantTransport,
   ReplayMyGrantTransport,
   serializeMyGrantFixtures,
@@ -244,6 +245,32 @@ describe("MyGrantWebProvider fail-loud contract", () => {
     expect(submittedVinUrls(transport)).toHaveLength(0);
   });
 
+  it("retries YMM with title-cased make when ALL CAPS matches nothing (NHTSA vs MyGrant casing)", async () => {
+    const emptyYmm = '<div id="cms_DivModels"><ol></ol></div>';
+    const transport = new StubTransport(
+      url => {
+        if (url.includes("/pages/login.aspx")) return loginPageHtml();
+        if (url.includes("/pages/searchm.aspx")) {
+          const mk = new URL(url).searchParams.get("mk");
+          // The live site is case-sensitive: only title case matches.
+          return mk === "Jeep" ? fixture("ymm-results-2020-honda-a.html") : emptyYmm;
+        }
+        throw new Error(`unexpected GET ${url}`);
+      },
+      url => {
+        if (url.includes("/pages/login.aspx")) return authedChrome("<p>home</p>");
+        throw new Error(`unexpected POST ${url}`);
+      }
+    );
+    const provider = new MyGrantWebProvider(CONFIG, transport);
+    const vehicles = await provider.searchYmmVehicles({ year: 2018, make: "JEEP", model: "W", glassType: "WINDSHIELD" });
+    expect(vehicles.length).toBeGreaterThan(0);
+    const mkValues = transport.calls
+      .filter(c => c.op === "get" && c.url.includes("/pages/searchm.aspx?"))
+      .map(c => new URL(c.url).searchParams.get("mk"));
+    expect(mkValues).toEqual(["JEEP", "Jeep"]);
+  });
+
   it("resolves YMM to the real vehicle list via GET", async () => {
     const transport = liveSiteTransport();
     const provider = new MyGrantWebProvider(CONFIG, transport);
@@ -346,6 +373,22 @@ describe("MyGrant page parsers", () => {
   it("treats an empty YMM list as no matches, not a parse failure", () => {
     const empty = fixture("ymm-results-2020-honda-a.html").replace(/<ol>[\s\S]*?<\/ol>/, "<ol></ol>");
     expect(parseYmmVehicleList(empty)).toEqual([]);
+  });
+
+  it("parses the vehicle drill-down parts page", () => {
+    const parts = parseVehicleParts(fixture("ymm-vehicle-parts-wrangler-2018.html"));
+    expect(parts.map(p => p.partNumber)).toEqual([
+      "DW02414", "DW02415", "DW02416", "DW02417", "DB12927"
+    ]);
+    expect(parts[0].interchangePartNumbers).toEqual(["DW02417"]);
+    expect(parts[1].interchangePartNumbers).toEqual(["DW02416"]);
+    expect(parts[4].interchangePartNumbers).toEqual([]);
+    expect(parts[0].description).toContain("Jeep Gladiator");
+  });
+
+  it("throws MYGRANT_PARSE_ERROR when the parts container is missing", () => {
+    expect(() => parseVehicleParts("<html><body>garbage</body></html>"))
+      .toThrowError(expect.objectContaining({ code: "MYGRANT_PARSE_ERROR" }));
   });
 
   it("parses the interchange part search (cheaper option)", () => {
@@ -463,6 +506,49 @@ describe("HttpMyGrantTransport", () => {
     await transport.get("https://mygrant.test/a");
     await transport.get("https://mygrant.test/b");
     expect(seen[1]).toContain("ASP.NET_SessionId=xyz");
+  });
+
+  it("preserves Set-Cookie across the post-login redirect", async () => {
+    const seen: string[] = [];
+    const fetchImpl = stubFetch((url, init) => {
+      seen.push(new Headers(init.headers).get("cookie") ?? "");
+      if (url.endsWith("/pages/login.aspx") && init.method === "POST") {
+        // ASP.NET Forms Auth: the auth cookie arrives on the 302, not the
+        // final page. fetch's auto-redirect would swallow it.
+        const headers = new Headers();
+        headers.set("set-cookie", ".ASPXAUTH=auth-token; path=/");
+        headers.set("location", "/pages/searchm.aspx");
+        return new Response("", { status: 302, headers });
+      }
+      const authed = seen[seen.length - 1].includes(".ASPXAUTH=auth-token");
+      return textResponse(
+        authed
+          ? "<a href='/logout'>logout</a><p>welcome</p>"
+          : "<form><input name='clogin:TxtUsername'/></form>"
+      );
+    });
+    const transport = new HttpMyGrantTransport(5000, fetchImpl as unknown as typeof fetch);
+    const html = await transport.postForm("https://mygrant.test/pages/login.aspx", {
+      "clogin:TxtUsername": "shop",
+      "clogin:TxtPassword": "secret"
+    });
+    expect(html).toContain("logout");
+    // The redirect hop follows with GET and no form body.
+    const calls = (fetchImpl as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls;
+    expect(calls).toHaveLength(3);
+    expect(calls[2][1].method).toBe("GET");
+    expect(calls[2][1].body).toBeUndefined();
+    expect(calls[2][0]).toBe("https://mygrant.test/pages/searchm.aspx");
+  });
+
+  it("fails loudly on a redirect loop", async () => {
+    const headers = new Headers();
+    headers.set("location", "/pages/login.aspx");
+    const fetchImpl = stubFetch(() => new Response("", { status: 302, headers }));
+    const transport = new HttpMyGrantTransport(5000, fetchImpl as unknown as typeof fetch);
+    await expect(transport.get("https://mygrant.test/pages/login.aspx")).rejects.toMatchObject({
+      code: "MYGRANT_UNAVAILABLE"
+    });
   });
 
   it("maps HTTP errors and timeouts to MYGRANT_UNAVAILABLE", async () => {
