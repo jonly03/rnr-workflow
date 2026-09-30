@@ -66,7 +66,8 @@ export type MyGrantErrorCode =
   | "MYGRANT_UNAVAILABLE"
   | "MYGRANT_PARSE_ERROR"
   | "MYGRANT_SPEND_CAP_EXCEEDED"
-  | "MYGRANT_UNSUPPORTED_GLASS_TYPE";
+  | "MYGRANT_UNSUPPORTED_GLASS_TYPE"
+  | "MYGRANT_NO_VEHICLES";
 
 export class MyGrantError extends Error {
   /**
