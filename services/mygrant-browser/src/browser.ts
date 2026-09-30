@@ -21,6 +21,12 @@ export class MyGrantBrowser {
   private browser: Browser | null = null;
   private page: Page | null = null;
   private loginInFlight: Promise<void> | null = null;
+  /**
+   * Fetch queue: the service owns a single page, so concurrent navigations
+   * race — the second goto interrupts the first and its content read fails
+   * with "page is navigating". Fetches serialize behind this chain instead.
+   */
+  private fetchQueue: Promise<unknown> = Promise.resolve();
 
   /** Launch Chromium (once). Call at startup. */
   async launch(): Promise<void> {
@@ -105,8 +111,18 @@ export class MyGrantBrowser {
   /**
    * Navigate to a MyGrant URL as the logged-in user and return the rendered
    * HTML. Re-logs-in once if the session expired mid-flow.
+   *
+   * Serialized: concurrent callers queue behind one another because the
+   * service drives a single page.
    */
   async fetchPage(url: string): Promise<{ html: string; finalUrl: string }> {
+    const run = this.fetchQueue.then(() => this.doFetchPage(url));
+    // A failed fetch must not poison the queue for the next caller.
+    this.fetchQueue = run.catch(() => {});
+    return run;
+  }
+
+  private async doFetchPage(url: string): Promise<{ html: string; finalUrl: string }> {
     const page = this.getPage();
     await this.ensureLoggedIn();
     await page.goto(url, { waitUntil: "domcontentloaded" });
@@ -119,8 +135,28 @@ export class MyGrantBrowser {
         throw new Error("MyGrant session could not be re-established.");
       }
     }
-    // Let any client-side rendering settle.
-    await page.waitForTimeout(1000);
-    return { html: await page.content(), finalUrl: page.url() };
+    const html = await this.readStableContent(page);
+    return { html, finalUrl: page.url() };
+  }
+
+  /**
+   * Read the rendered DOM, tolerating a post-load navigation (some MyGrant
+   * result pages navigate again right after load). Retries the read a few
+   * times before giving up.
+   */
+  private async readStableContent(page: Page): Promise<string> {
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        // Let any in-flight navigation finish before reading.
+        await page.waitForLoadState("domcontentloaded", { timeout: 10000 }).catch(() => {});
+        await page.waitForTimeout(800);
+        return await page.content();
+      } catch (err) {
+        lastError = err;
+        await page.waitForTimeout(1500);
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 }
