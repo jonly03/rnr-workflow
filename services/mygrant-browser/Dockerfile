@@ -3,7 +3,8 @@ FROM mcr.microsoft.com/playwright:v1.48.0-noble
 
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev
+# Full install: typescript (a devDependency) is needed to compile.
+RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
 RUN npx tsc
