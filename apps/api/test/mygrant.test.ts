@@ -287,6 +287,34 @@ describe("MyGrantWebProvider fail-loud contract", () => {
     expect(query.get("smdo")).toBe("Search");
   });
 
+  it("sends only the first model character for YMM search (site model match is case-sensitive)", async () => {
+    const emptyYmm = '<div id="cms_DivModels"><ol></ol></div>';
+    const transport = new StubTransport(
+      url => {
+        if (url.includes("/pages/login.aspx")) return loginPageHtml();
+        if (url.includes("/pages/searchm.aspx")) {
+          // Regression: 2026-09-30 the full VIN-decoded model "Wrangler"
+          // matched 0 vehicles on the live site while "W" matched 6.
+          const md = new URL(url).searchParams.get("md");
+          return md === "W" ? fixture("ymm-results-2020-honda-a.html") : emptyYmm;
+        }
+        throw new Error(`unexpected GET ${url}`);
+      },
+      url => {
+        if (url.includes("/pages/login.aspx")) return authedChrome("<p>home</p>");
+        throw new Error(`unexpected POST ${url}`);
+      }
+    );
+    const provider = new MyGrantWebProvider(CONFIG, transport);
+    // VIN decode supplies the full model name; the site needs the prefix.
+    const vehicles = await provider.searchYmmVehicles({ year: 2018, make: "Jeep", model: "Wrangler", glassType: "WINDSHIELD" });
+    expect(vehicles.length).toBeGreaterThan(0);
+    const mdValues = transport.calls
+      .filter(c => c.op === "get" && c.url.includes("/pages/searchm.aspx?"))
+      .map(c => new URL(c.url).searchParams.get("md"));
+    expect(mdValues).toEqual(["W"]);
+  });
+
   it("fails YMM-to-candidates loudly: the vehicle→parts drill-down is not captured", async () => {
     const transport = liveSiteTransport();
     const provider = new MyGrantWebProvider(CONFIG, transport);
