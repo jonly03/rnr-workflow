@@ -271,6 +271,27 @@ export class HttpMyGrantTransport implements MyGrantTransport {
         if (!headers.has("Accept-Language")) {
           headers.set("Accept-Language", "en-US,en;q=0.9");
         }
+        // Browser-emulation headers: MyGrant serves empty results to requests
+        // that look like scripts. A real browser navigating from the search
+        // form sends Referer and Sec-Fetch-* headers.
+        if (!headers.has("Referer")) {
+          headers.set("Referer", "https://www.mygrantglass.com/pages/searchm.aspx");
+        }
+        if (!headers.has("Sec-Fetch-Dest")) {
+          headers.set("Sec-Fetch-Dest", "document");
+        }
+        if (!headers.has("Sec-Fetch-Mode")) {
+          headers.set("Sec-Fetch-Mode", "navigate");
+        }
+        if (!headers.has("Sec-Fetch-Site")) {
+          headers.set("Sec-Fetch-Site", "same-origin");
+        }
+        if (!headers.has("Sec-Fetch-User")) {
+          headers.set("Sec-Fetch-User", "?1");
+        }
+        if (!headers.has("Upgrade-Insecure-Requests")) {
+          headers.set("Upgrade-Insecure-Requests", "1");
+        }
         if (method === "GET") headers.delete("Content-Type");
         const res = await this.fetchImpl(currentUrl, {
           ...init,
