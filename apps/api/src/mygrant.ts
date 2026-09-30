@@ -963,8 +963,33 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
    * a vehicle to its parts needs the vehicle→parts drill-down page, which
    * has not been captured yet. Returns the vehicle matches.
    */
+  /**
+   * Sanitized fingerprint of a YMM search response for zero-result diagnostics.
+   * Contains no credentials or customer data — just structural markers.
+   */
+  private fingerprintYmmResponse(html: string, url: string): string {
+    const title = /<title[^>]*>([^<]{1,60})/i.exec(html)?.[1]?.trim() ?? "untitled";
+    const hasModels = /cms_DivModels/i.test(html);
+    const hasLogout = /logout/i.test(html);
+    const hasLoginForm = isLoginPage(html);
+    // Safe markup signature: first 200 chars of body with tags stripped
+    const bodyText = html
+      .replace(/<script[\s\S]*?<\/script\s*>/gi, "")
+      .replace(/<style[\s\S]*?<\/style\s*>/gi, "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 200);
+    return (
+      `title="${title}", ${html.length} bytes, ` +
+      `cms_DivModels=${hasModels}, logout=${hasLogout}, loginForm=${hasLoginForm}, ` +
+      `url_query="${url.split("?")[1] ?? ""}", body_start="${bodyText}"`
+    );
+  }
+
   async searchYmmVehicles(input: YmmSearchInput): Promise<YmmVehicleMatch[]> {
     const transport = this.getTransport();
+    let lastFingerprint: string | undefined;
     try {
       // Live-browser verified 2026-09-29: MyGrant's make matching is
       // case-insensitive ("JEEP" and "Jeep" both return results). Keep the
@@ -987,8 +1012,19 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
         );
         const vehicles = parseYmmVehicleList(html);
         if (vehicles.length > 0) return vehicles;
+        // Capture fingerprint of the LAST attempt for diagnostics.
+        lastFingerprint = this.fingerprintYmmResponse(
+          html,
+          this.baseUrl + MYGRANT_YMM_SEARCH_PATH + "?" + params.toString()
+        );
       }
-      return [];
+      throw new MyGrantError(
+        "MYGRANT_NO_VEHICLES",
+        `MyGrant YMM search matched 0 vehicles for ${input.year} ` +
+          `${input.make} ${input.model}. ` +
+          `Response: ${lastFingerprint ?? "n/a"}`,
+        502
+      );
     } finally {
       // Transport is cached now; session persists across calls.
     }
