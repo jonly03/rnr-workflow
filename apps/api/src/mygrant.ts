@@ -370,6 +370,82 @@ export class HttpMyGrantTransport implements MyGrantTransport {
 }
 
 // ---------------------------------------------------------------------------
+// Transport: delegate page loads to the mygrant-browser headless-Chromium
+// service. Used when MYGRANT_BROWSER_URL is set; otherwise the direct HTTP
+// transport above is used. The browser service owns the MyGrant login
+// session, so postForm is a no-op that returns the page HTML.
+// ---------------------------------------------------------------------------
+
+export class BrowserServiceTransport implements MyGrantTransport {
+  private readonly baseUrl: string;
+  private readonly secret: string;
+  private readonly timeoutMs: number;
+
+  constructor(baseUrl: string, secret: string, timeoutMs = 60000) {
+    // Normalize: no trailing slash.
+    this.baseUrl = baseUrl.replace(/\/+$/, "");
+    this.secret = secret;
+    this.timeoutMs = timeoutMs;
+  }
+
+  private async callFetch(url: string): Promise<string> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const res = await fetch(`${this.baseUrl}/v1/fetch`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.secret}`,
+        },
+        body: JSON.stringify({ url }),
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new MyGrantError(
+          "MYGRANT_UNAVAILABLE",
+          `Browser service ${res.status} for ${url}: ${body.slice(0, 300)}`,
+          502
+        );
+      }
+      const data = (await res.json()) as { html?: string; error?: string };
+      if (typeof data.html !== "string") {
+        throw new MyGrantError(
+          "MYGRANT_UNAVAILABLE",
+          `Browser service returned no HTML for ${url}: ${data.error ?? "unknown"}`,
+          502
+        );
+      }
+      return data.html;
+    } catch (err) {
+      if (err instanceof MyGrantError) throw err;
+      throw new MyGrantError(
+        "MYGRANT_UNAVAILABLE",
+        `Browser service unreachable for ${url}: ${err instanceof Error ? err.message : String(err)}`,
+        502
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async get(url: string): Promise<string> {
+    return this.callFetch(url);
+  }
+
+  async postForm(url: string, _fields: Record<string, string>): Promise<string> {
+    // The browser service maintains the authenticated session itself;
+    // form posts (login) are handled there. Return the page HTML.
+    return this.callFetch(url);
+  }
+
+  async close(): Promise<void> {
+    // Session lives in the browser service; nothing to close here.
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Fixture record/replay: real responses are captured once, tests replay
 // them. A replay miss throws loudly — tests must never silently pass on
 // an unstubbed call.
@@ -912,8 +988,21 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
     // transport instance. Creating a fresh transport per call drops the
     // session while `loggedIn` stays true, causing silent 0-result searches.
     if (!this.cachedTransport) {
-      this.cachedTransport =
-        this.transport ?? new HttpMyGrantTransport(this.config.timeoutMs);
+      if (this.transport) {
+        this.cachedTransport = this.transport;
+      } else {
+        // When MYGRANT_BROWSER_URL is set, page loads go through the
+        // headless-Chromium browser service (MyGrant blocks datacenter HTTP
+        // clients). Otherwise fall back to direct HTTP.
+        const browserUrl = process.env.MYGRANT_BROWSER_URL?.trim();
+        this.cachedTransport = browserUrl
+          ? new BrowserServiceTransport(
+              browserUrl,
+              process.env.MYGRANT_BROWSER_SECRET ?? "",
+              this.config.timeoutMs
+            )
+          : new HttpMyGrantTransport(this.config.timeoutMs);
+      }
     }
     return this.cachedTransport;
   }
@@ -928,6 +1017,12 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
    */
   private async ensureLoggedIn(transport: MyGrantTransport): Promise<void> {
     if (this.loggedIn) return;
+    if (transport instanceof BrowserServiceTransport) {
+      // The browser service owns the MyGrant session (logs in at startup,
+      // re-logs-in if the session expires). Nothing to do here.
+      this.loggedIn = true;
+      return;
+    }
     const response = await transport.postForm(this.loginUrl(), {
       [LOGIN_USERNAME_FIELD]: this.config.username,
       [LOGIN_PASSWORD_FIELD]: this.config.password,
