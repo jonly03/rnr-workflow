@@ -989,6 +989,8 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
         if (vehicles.length > 0) return vehicles;
       }
       return [];
+    } finally {
+      // Transport is cached now; session persists across calls.
     }
   }
 
@@ -1068,6 +1070,8 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
         );
       }
       return candidates;
+    } finally {
+      // Transport is cached now; session persists across calls.
     }
   }
 
@@ -1126,6 +1130,8 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
       } catch (error) {
         throw markCharged(error);
       }
+    } finally {
+      // Transport is cached now; session persists across calls.
     }
   }
 
@@ -1160,6 +1166,8 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
         this.baseUrl + MYGRANT_PART_SEARCH_PATH + "?" + params.toString()
       );
       return parsePartSearchResults(html);
+    } finally {
+      // Transport is cached now; session persists across calls.
     }
   }
 }
