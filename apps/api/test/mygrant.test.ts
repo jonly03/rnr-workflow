@@ -15,6 +15,7 @@ import {
   parseVinLookupsRemaining,
   parseVinResults,
   parseYmmVehicleList,
+  parseVehicleParts,
   RecordingMyGrantTransport,
   ReplayMyGrantTransport,
   serializeMyGrantFixtures,
@@ -372,6 +373,22 @@ describe("MyGrant page parsers", () => {
   it("treats an empty YMM list as no matches, not a parse failure", () => {
     const empty = fixture("ymm-results-2020-honda-a.html").replace(/<ol>[\s\S]*?<\/ol>/, "<ol></ol>");
     expect(parseYmmVehicleList(empty)).toEqual([]);
+  });
+
+  it("parses the vehicle drill-down parts page", () => {
+    const parts = parseVehicleParts(fixture("ymm-vehicle-parts-wrangler-2018.html"));
+    expect(parts.map(p => p.partNumber)).toEqual([
+      "DW02414", "DW02415", "DW02416", "DW02417", "DB12927"
+    ]);
+    expect(parts[0].interchangePartNumbers).toEqual(["DW02417"]);
+    expect(parts[1].interchangePartNumbers).toEqual(["DW02416"]);
+    expect(parts[4].interchangePartNumbers).toEqual([]);
+    expect(parts[0].description).toContain("Jeep Gladiator");
+  });
+
+  it("throws MYGRANT_PARSE_ERROR when the parts container is missing", () => {
+    expect(() => parseVehicleParts("<html><body>garbage</body></html>"))
+      .toThrowError(expect.objectContaining({ code: "MYGRANT_PARSE_ERROR" }));
   });
 
   it("parses the interchange part search (cheaper option)", () => {
