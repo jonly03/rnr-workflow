@@ -35,6 +35,11 @@ jobs:
       MYGRANT_PASSWORD: ${{ secrets.MYGRANT_PASSWORD }}
       GLASS_CATALOG_PROVIDER: ${{ vars.GLASS_CATALOG_PROVIDER }}
       SOURCING_PROVIDER: ${{ vars.SOURCING_PROVIDER }}
+      # Headless-browser service for MyGrant (Fly.io). When set, the API
+      # routes MyGrant page loads through it; when empty, falls back to
+      # direct HTTP. Empty is safe — never in the required list below.
+      MYGRANT_BROWSER_URL: ${{ secrets.MYGRANT_BROWSER_URL }}
+      MYGRANT_BROWSER_SECRET: ${{ secrets.MYGRANT_BROWSER_SECRET }}
 
     steps:
       - uses: actions/checkout@v4
@@ -74,7 +79,7 @@ jobs:
         run: |
           set -euo pipefail
           vercel pull --yes --environment=preview --token="$VERCEL_TOKEN"
-          api_url="$(vercel deploy --yes --token="$VERCEL_TOKEN" --env DATABASE_URL="$DATABASE_URL" --env PG_POOL_MAX=3 --env AUTH_SECRET="$AUTH_SECRET" --env STAFF_ADMIN_EMAIL="$STAFF_ADMIN_EMAIL" --env STAFF_ADMIN_PASSWORD="$STAFF_ADMIN_PASSWORD" --env MYGRANT_USERNAME="$MYGRANT_USERNAME" --env MYGRANT_PASSWORD="$MYGRANT_PASSWORD" --env GLASS_CATALOG_PROVIDER="${GLASS_CATALOG_PROVIDER:-mock}" --env SOURCING_PROVIDER="${SOURCING_PROVIDER:-mock}" | tail -n1)"
+          api_url="$(vercel deploy --yes --token="$VERCEL_TOKEN" --env DATABASE_URL="$DATABASE_URL" --env PG_POOL_MAX=3 --env AUTH_SECRET="$AUTH_SECRET" --env STAFF_ADMIN_EMAIL="$STAFF_ADMIN_EMAIL" --env STAFF_ADMIN_PASSWORD="$STAFF_ADMIN_PASSWORD" --env MYGRANT_USERNAME="$MYGRANT_USERNAME" --env MYGRANT_PASSWORD="$MYGRANT_PASSWORD" --env GLASS_CATALOG_PROVIDER="${GLASS_CATALOG_PROVIDER:-mock}" --env SOURCING_PROVIDER="${SOURCING_PROVIDER:-mock}" --env MYGRANT_BROWSER_URL="${MYGRANT_BROWSER_URL:-}" --env MYGRANT_BROWSER_SECRET="${MYGRANT_BROWSER_SECRET:-}" | tail -n1)"
           echo "url=$api_url" >> "$GITHUB_OUTPUT"
           echo "API: $api_url" >> "$GITHUB_STEP_SUMMARY"
 
