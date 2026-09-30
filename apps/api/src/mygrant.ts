@@ -965,12 +965,15 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
         (m, i, a) => m && a.indexOf(m) === i
       );
       for (const make of makes) {
+        // MyGrant's model search is case-sensitive prefix matching, but the
+        // full model name can return empty from automated requests. Use just
+        // the first character to get the exhaustive list, then filter
+        // client-side (searchYmm picks the best vehicle match below).
+        const modelPrefix = input.model.charAt(0).toUpperCase();
         const params = new URLSearchParams({
           yr: String(input.year),
           mk: make,
-          // MyGrant's model search is case-sensitive prefix matching: a
-          // single first character returns the exhaustive model list.
-          md: input.model,
+          md: modelPrefix,
           smdo: "Search"
         });
         const html = await this.authenticatedGet(

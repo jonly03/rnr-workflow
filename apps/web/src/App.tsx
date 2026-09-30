@@ -149,6 +149,13 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
 
+  // A load error (e.g. a transient "Load failed" when the queue fetch hits
+  // a network blip) belongs to the screen where it happened. Clear it on
+  // navigation so a stale banner never follows the user to another screen.
+  useEffect(() => {
+    setMessage("");
+  }, [screen]);
+
   // Case Queue toolbar: search, pill filters, and sorting.
   const [search, setSearch] = useState("");
   const [channelFilter, setChannelFilter] = useState<"ALL" | Channel>("ALL");
