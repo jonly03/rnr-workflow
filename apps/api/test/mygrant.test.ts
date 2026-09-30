@@ -244,6 +244,32 @@ describe("MyGrantWebProvider fail-loud contract", () => {
     expect(submittedVinUrls(transport)).toHaveLength(0);
   });
 
+  it("retries YMM with title-cased make when ALL CAPS matches nothing (NHTSA vs MyGrant casing)", async () => {
+    const emptyYmm = '<div id="cms_DivModels"><ol></ol></div>';
+    const transport = new StubTransport(
+      url => {
+        if (url.includes("/pages/login.aspx")) return loginPageHtml();
+        if (url.includes("/pages/searchm.aspx")) {
+          const mk = new URL(url).searchParams.get("mk");
+          // The live site is case-sensitive: only title case matches.
+          return mk === "Jeep" ? fixture("ymm-results-2020-honda-a.html") : emptyYmm;
+        }
+        throw new Error(`unexpected GET ${url}`);
+      },
+      url => {
+        if (url.includes("/pages/login.aspx")) return authedChrome("<p>home</p>");
+        throw new Error(`unexpected POST ${url}`);
+      }
+    );
+    const provider = new MyGrantWebProvider(CONFIG, transport);
+    const vehicles = await provider.searchYmmVehicles({ year: 2018, make: "JEEP", model: "W", glassType: "WINDSHIELD" });
+    expect(vehicles.length).toBeGreaterThan(0);
+    const mkValues = transport.calls
+      .filter(c => c.op === "get" && c.url.includes("/pages/searchm.aspx?"))
+      .map(c => new URL(c.url).searchParams.get("mk"));
+    expect(mkValues).toEqual(["JEEP", "Jeep"]);
+  });
+
   it("resolves YMM to the real vehicle list via GET", async () => {
     const transport = liveSiteTransport();
     const provider = new MyGrantWebProvider(CONFIG, transport);

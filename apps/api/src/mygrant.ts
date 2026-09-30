@@ -509,6 +509,17 @@ function parseError(what: string): MyGrantError {
 }
 
 /**
+ * NHTSA vPIC returns makes in ALL CAPS ("JEEP"); MyGrant's YMM search is
+ * case-sensitive and expects title case ("Jeep"). Used as a fallback when
+ * the verbatim make matches zero vehicles.
+ */
+function toTitleCaseMake(make: string): string {
+  return make
+    .toLowerCase()
+    .replace(/(?:^|[\s\-'])\S/g, (c) => c.toUpperCase());
+}
+
+/**
  * Read the "VIN Lookups Remaining:" counter. Targets the #cvs_lookupCredits
  * span first, falls back to the label text. Returns null when the counter
  * cannot be found — the caller treats that as a loud failure, not "plenty".
@@ -880,19 +891,28 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
   async searchYmmVehicles(input: YmmSearchInput): Promise<YmmVehicleMatch[]> {
     const transport = this.getTransport();
     try {
-      const params = new URLSearchParams({
-        yr: String(input.year),
-        mk: input.make,
-        // MyGrant's model search is case-sensitive prefix matching: a
-        // single first character returns the exhaustive model list.
-        md: input.model,
-        smdo: "Search"
-      });
-      const html = await this.authenticatedGet(
-        transport,
-        this.baseUrl + MYGRANT_YMM_SEARCH_PATH + "?" + params.toString()
+      // MyGrant's make search is case-sensitive; NHTSA decodes to ALL CAPS.
+      // Try the make verbatim first, then title-cased ("JEEP" -> "Jeep").
+      const makes = [input.make, toTitleCaseMake(input.make)].filter(
+        (m, i, a) => m && a.indexOf(m) === i
       );
-      return parseYmmVehicleList(html);
+      for (const make of makes) {
+        const params = new URLSearchParams({
+          yr: String(input.year),
+          mk: make,
+          // MyGrant's model search is case-sensitive prefix matching: a
+          // single first character returns the exhaustive model list.
+          md: input.model,
+          smdo: "Search"
+        });
+        const html = await this.authenticatedGet(
+          transport,
+          this.baseUrl + MYGRANT_YMM_SEARCH_PATH + "?" + params.toString()
+        );
+        const vehicles = parseYmmVehicleList(html);
+        if (vehicles.length > 0) return vehicles;
+      }
+      return [];
     } finally {
       if (!this.transport) await transport.close();
     }
