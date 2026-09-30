@@ -33,6 +33,11 @@ jobs:
       # code change. Both default to "mock" — forwarding empty values is safe.
       MYGRANT_USERNAME: ${{ secrets.MYGRANT_USERNAME }}
       MYGRANT_PASSWORD: ${{ secrets.MYGRANT_PASSWORD }}
+      # Browser-service transport: page loads go through the headless-Chromium
+      # browser service (MyGrant blocks datacenter HTTP clients). Forwarding
+      # empty values is safe — the provider falls back to direct HTTP.
+      MYGRANT_BROWSER_URL: ${{ secrets.MYGRANT_BROWSER_URL }}
+      MYGRANT_BROWSER_SECRET: ${{ secrets.MYGRANT_BROWSER_SECRET }}
       GLASS_CATALOG_PROVIDER: ${{ vars.GLASS_CATALOG_PROVIDER }}
       SOURCING_PROVIDER: ${{ vars.SOURCING_PROVIDER }}
 
@@ -74,7 +79,7 @@ jobs:
         run: |
           set -euo pipefail
           vercel pull --yes --environment=preview --token="$VERCEL_TOKEN"
-          api_url="$(vercel deploy --yes --token="$VERCEL_TOKEN" --env DATABASE_URL="$DATABASE_URL" --env PG_POOL_MAX=3 --env AUTH_SECRET="$AUTH_SECRET" --env STAFF_ADMIN_EMAIL="$STAFF_ADMIN_EMAIL" --env STAFF_ADMIN_PASSWORD="$STAFF_ADMIN_PASSWORD" --env MYGRANT_USERNAME="$MYGRANT_USERNAME" --env MYGRANT_PASSWORD="$MYGRANT_PASSWORD" --env GLASS_CATALOG_PROVIDER="${GLASS_CATALOG_PROVIDER:-mock}" --env SOURCING_PROVIDER="${SOURCING_PROVIDER:-mock}" | tail -n1)"
+          api_url="$(vercel deploy --yes --token="$VERCEL_TOKEN" --env DATABASE_URL="$DATABASE_URL" --env PG_POOL_MAX=3 --env AUTH_SECRET="$AUTH_SECRET" --env STAFF_ADMIN_EMAIL="$STAFF_ADMIN_EMAIL" --env STAFF_ADMIN_PASSWORD="$STAFF_ADMIN_PASSWORD" --env MYGRANT_USERNAME="$MYGRANT_USERNAME" --env MYGRANT_PASSWORD="$MYGRANT_PASSWORD" --env MYGRANT_BROWSER_URL="$MYGRANT_BROWSER_URL" --env MYGRANT_BROWSER_SECRET="$MYGRANT_BROWSER_SECRET" --env GLASS_CATALOG_PROVIDER="${GLASS_CATALOG_PROVIDER:-mock}" --env SOURCING_PROVIDER="${SOURCING_PROVIDER:-mock}" | tail -n1)"
           echo "url=$api_url" >> "$GITHUB_OUTPUT"
           echo "API: $api_url" >> "$GITHUB_STEP_SUMMARY"
 

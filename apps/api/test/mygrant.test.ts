@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
+  BrowserServiceTransport,
   createGlassCatalogProvider,
   createSourcingProvider,
   extractHiddenFields,
@@ -313,6 +314,85 @@ describe("MyGrantWebProvider fail-loud contract", () => {
       .filter(c => c.op === "get" && c.url.includes("/pages/searchm.aspx?"))
       .map(c => new URL(c.url).searchParams.get("md"));
     expect(mdValues).toEqual(["W"]);
+  });
+
+  it("fails YMM loudly with a response fingerprint when every attempt returns nothing", async () => {
+    const emptyYmm = '<html><head><title>MyGrant Search</title></head><body><div id="cms_DivModels"><ol></ol></div></body></html>';
+    const transport = new StubTransport(
+      url => {
+        if (url.includes("/pages/login.aspx")) return loginPageHtml();
+        if (url.includes("/pages/searchm.aspx")) return emptyYmm;
+        throw new Error(`unexpected GET ${url}`);
+      },
+      url => {
+        if (url.includes("/pages/login.aspx")) return authedChrome("<p>home</p>");
+        throw new Error(`unexpected POST ${url}`);
+      }
+    );
+    const provider = new MyGrantWebProvider(CONFIG, transport);
+    const err = await provider
+      .searchYmmVehicles({ year: 2018, make: "JEEP", model: "Wrangler", glassType: "WINDSHIELD" })
+      .catch(e => e);
+    expect(err).toBeInstanceOf(MyGrantError);
+    expect(err.code).toBe("MYGRANT_NO_VEHICLES");
+    // The fingerprint names the site's response shape so the next debug
+    // round doesn't start from "0 vehicles" alone.
+    expect(err.message).toContain("matched 0 vehicles for 2018 JEEP Wrangler");
+    expect(err.message).toContain("Response: title=");
+    expect(err.message).toContain("cms_DivModels=true");
+  });
+
+  it("routes page loads through the browser service when MYGRANT_BROWSER_URL is set", async () => {
+    const browserHtml = authedChrome(fixture("ymm-results-2020-honda-a.html"));
+    const fetchCalls: Array<{ url: string; body: string; auth: string | null }> = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: any, init: any) => {
+      fetchCalls.push({ url: String(url), body: String(init?.body ?? ""), auth: init?.headers?.Authorization ?? null });
+      return new Response(JSON.stringify({ html: browserHtml }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }) as typeof fetch;
+    const prevUrl = process.env.MYGRANT_BROWSER_URL;
+    const prevSecret = process.env.MYGRANT_BROWSER_SECRET;
+    process.env.MYGRANT_BROWSER_URL = "https://browser.test";
+    process.env.MYGRANT_BROWSER_SECRET = "s3cret";
+    try {
+      // No injected transport: the provider must build a BrowserServiceTransport.
+      const provider = new MyGrantWebProvider(CONFIG);
+      const vehicles = await provider.searchYmmVehicles({ year: 2020, make: "Honda", model: "A", glassType: "WINDSHIELD" });
+      expect(vehicles.length).toBeGreaterThan(0);
+      expect(fetchCalls.length).toBeGreaterThan(0);
+      // Every page load went to the browser service's /v1/fetch with the secret.
+      for (const call of fetchCalls) {
+        expect(call.url).toBe("https://browser.test/v1/fetch");
+        expect(call.auth).toBe("Bearer s3cret");
+      }
+      // The YMM search URL was delegated, with the single-char model prefix.
+      const ymmCall = fetchCalls.find(c => c.body.includes("searchm.aspx?"));
+      expect(ymmCall).toBeDefined();
+      expect(new URL(JSON.parse(ymmCall!.body).url).searchParams.get("md")).toBe("A");
+    } finally {
+      globalThis.fetch = realFetch;
+      if (prevUrl === undefined) delete process.env.MYGRANT_BROWSER_URL;
+      else process.env.MYGRANT_BROWSER_URL = prevUrl;
+      if (prevSecret === undefined) delete process.env.MYGRANT_BROWSER_SECRET;
+      else process.env.MYGRANT_BROWSER_SECRET = prevSecret;
+    }
+  });
+
+  it("BrowserServiceTransport surfaces service failures as MYGRANT_UNAVAILABLE", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response("boom", { status: 500 })) as typeof fetch;
+    try {
+      const transport = new BrowserServiceTransport("https://browser.test", "s3cret", 1000);
+      await expect(transport.get("https://www.mygrantglass.com/pages/searchm.aspx")).rejects.toMatchObject({
+        code: "MYGRANT_UNAVAILABLE"
+      });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 
   it("fails YMM-to-candidates loudly: the vehicle→parts drill-down is not captured", async () => {
