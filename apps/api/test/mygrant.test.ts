@@ -465,6 +465,49 @@ describe("HttpMyGrantTransport", () => {
     expect(seen[1]).toContain("ASP.NET_SessionId=xyz");
   });
 
+  it("preserves Set-Cookie across the post-login redirect", async () => {
+    const seen: string[] = [];
+    const fetchImpl = stubFetch((url, init) => {
+      seen.push(new Headers(init.headers).get("cookie") ?? "");
+      if (url.endsWith("/pages/login.aspx") && init.method === "POST") {
+        // ASP.NET Forms Auth: the auth cookie arrives on the 302, not the
+        // final page. fetch's auto-redirect would swallow it.
+        const headers = new Headers();
+        headers.set("set-cookie", ".ASPXAUTH=auth-token; path=/");
+        headers.set("location", "/pages/searchm.aspx");
+        return new Response("", { status: 302, headers });
+      }
+      const authed = seen[seen.length - 1].includes(".ASPXAUTH=auth-token");
+      return textResponse(
+        authed
+          ? "<a href='/logout'>logout</a><p>welcome</p>"
+          : "<form><input name='clogin:TxtUsername'/></form>"
+      );
+    });
+    const transport = new HttpMyGrantTransport(5000, fetchImpl as unknown as typeof fetch);
+    const html = await transport.postForm("https://mygrant.test/pages/login.aspx", {
+      "clogin:TxtUsername": "shop",
+      "clogin:TxtPassword": "secret"
+    });
+    expect(html).toContain("logout");
+    // The redirect hop follows with GET and no form body.
+    const calls = (fetchImpl as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls;
+    expect(calls).toHaveLength(3);
+    expect(calls[2][1].method).toBe("GET");
+    expect(calls[2][1].body).toBeUndefined();
+    expect(calls[2][0]).toBe("https://mygrant.test/pages/searchm.aspx");
+  });
+
+  it("fails loudly on a redirect loop", async () => {
+    const headers = new Headers();
+    headers.set("location", "/pages/login.aspx");
+    const fetchImpl = stubFetch(() => new Response("", { status: 302, headers }));
+    const transport = new HttpMyGrantTransport(5000, fetchImpl as unknown as typeof fetch);
+    await expect(transport.get("https://mygrant.test/pages/login.aspx")).rejects.toMatchObject({
+      code: "MYGRANT_UNAVAILABLE"
+    });
+  });
+
   it("maps HTTP errors and timeouts to MYGRANT_UNAVAILABLE", async () => {
     const bad = new HttpMyGrantTransport(
       5000,

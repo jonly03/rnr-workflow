@@ -240,27 +240,79 @@ export class HttpMyGrantTransport implements MyGrantTransport {
     }
   }
 
+  private static readonly MAX_REDIRECTS = 10;
+
   private async request(url: string, init: RequestInit): Promise<string> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const headers = new Headers(init.headers);
-      const cookieHeader = this.cookieHeader();
-      if (cookieHeader) headers.set("Cookie", cookieHeader);
-      headers.set(
-        "User-Agent",
-        "Mozilla/5.0 (compatible; RNR-CaseCore/1.0; +shop-automation)"
-      );
-      const res = await this.fetchImpl(url, { ...init, headers, signal: controller.signal });
-      this.storeCookies(res.headers);
-      if (!res.ok) {
-        throw new MyGrantError(
-          "MYGRANT_UNAVAILABLE",
-          `MyGrant returned HTTP ${res.status} for ${url}.`,
-          502
+      // Follow redirects manually. fetch's automatic redirect handling
+      // swallows Set-Cookie headers on intermediate responses, which drops
+      // the .ASPXAUTH cookie MyGrant issues on its post-login 302 — the
+      // login then "fails" even with correct credentials.
+      let currentUrl = url;
+      let method = (init.method ?? "GET").toUpperCase();
+      let body = init.body;
+      for (let hop = 0; hop <= HttpMyGrantTransport.MAX_REDIRECTS; hop++) {
+        const headers = new Headers(init.headers);
+        const cookieHeader = this.cookieHeader();
+        if (cookieHeader) headers.set("Cookie", cookieHeader);
+        headers.set(
+          "User-Agent",
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
         );
+        if (!headers.has("Accept")) {
+          headers.set(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+          );
+        }
+        if (!headers.has("Accept-Language")) {
+          headers.set("Accept-Language", "en-US,en;q=0.9");
+        }
+        if (method === "GET") headers.delete("Content-Type");
+        const res = await this.fetchImpl(currentUrl, {
+          ...init,
+          method,
+          body,
+          headers,
+          redirect: "manual",
+          signal: controller.signal,
+        });
+        this.storeCookies(res.headers);
+        if (res.status >= 300 && res.status < 400) {
+          const location = res.headers.get("location");
+          if (hop === HttpMyGrantTransport.MAX_REDIRECTS || !location) {
+            throw new MyGrantError(
+              "MYGRANT_UNAVAILABLE",
+              `MyGrant redirected too many times for ${url}.`,
+              502
+            );
+          }
+          currentUrl = new URL(location, currentUrl).toString();
+          if (
+            res.status === 303 ||
+            ((res.status === 301 || res.status === 302) && method === "POST")
+          ) {
+            method = "GET";
+            body = undefined;
+          }
+          continue;
+        }
+        if (!res.ok) {
+          throw new MyGrantError(
+            "MYGRANT_UNAVAILABLE",
+            `MyGrant returned HTTP ${res.status} for ${url}.`,
+            502
+          );
+        }
+        return await res.text();
       }
-      return await res.text();
+      throw new MyGrantError(
+        "MYGRANT_UNAVAILABLE",
+        `MyGrant redirected too many times for ${url}.`,
+        502
+      );
     } catch (error) {
       if (error instanceof MyGrantError) throw error;
       throw new MyGrantError(
