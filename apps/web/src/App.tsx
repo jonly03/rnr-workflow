@@ -780,6 +780,9 @@ function VinFirstCase({
   const [glassType, setGlassType] = useState<GlassType>("WINDSHIELD");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // Set once POST /api/v1/cases returns the case shell; identification runs
+  // in the background while CaseCreationProgress streams its events.
+  const [pendingCase, setPendingCase] = useState<CaseRecord | null>(null);
 
   const runDecode = async (vin: string) => {
     setError("");
@@ -866,13 +869,17 @@ function VinFirstCase({
         },
         glass_request: { glass_type: glassType }
       });
-      await onCreated(c);
+      setPendingCase(c);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create case.");
     } finally {
       setSaving(false);
     }
   };
+
+  if (pendingCase) {
+    return <CaseCreationProgress caseRecord={pendingCase} onDone={() => onCreated(pendingCase)} />;
+  }
 
   return (
     <div className="form card">
@@ -1040,6 +1047,9 @@ function ManualCaseForm({
   const [glassType, setGlassType] = useState<GlassType>("WINDSHIELD");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // Set once POST /api/v1/cases returns the case shell; identification runs
+  // in the background while CaseCreationProgress streams its events.
+  const [pendingCase, setPendingCase] = useState<CaseRecord | null>(null);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -1062,13 +1072,17 @@ function ManualCaseForm({
         },
         glass_request: { glass_type: glassType }
       });
-      await onCreated(c);
+      setPendingCase(c);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create case.");
     } finally {
       setSaving(false);
     }
   };
+
+  if (pendingCase) {
+    return <CaseCreationProgress caseRecord={pendingCase} onDone={() => onCreated(pendingCase)} />;
+  }
 
   return (
     <form className="form card" onSubmit={submit}>
@@ -1585,6 +1599,8 @@ export function describeEvent(e: CaseEvent): string {
     }
     case "YMM_SEARCH_FAILED":
       return "Catalog search failed.";
+    case "IDENTIFICATION_ERROR":
+      return "Identification hit an unexpected error and needs staff attention.";
     case "EVALUATE_GLASS_MATCHES":
       return "Evaluating catalog matches against the vehicle.";
     case "GLASS_RESOLVED": {
@@ -1718,6 +1734,124 @@ function ActivityTimeline({ events, loading }: { events: CaseEvent[]; loading: b
         </ol>
       )}
     </section>
+  );
+}
+
+/**
+ * Events that end the automatic identification → sourcing → pricing run.
+ * When one appears in the event stream, the progress view hands off to the
+ * case detail screen. GLASS_IDENTIFIED is deliberately absent: sourcing
+ * still runs automatically after it.
+ */
+const CREATION_TERMINAL_EVENTS: ReadonlySet<string> = new Set([
+  // STANDARD_PRICE_CALCULATED is the terminal event of the automatic run:
+  // it transitions the case into the PRICE_APPROVED state.
+  "STANDARD_PRICE_CALCULATED",
+  "PRICING_EXCEPTION_DETECTED",
+  "PRICE_APPROVED_BY_RNR",
+  "PRICE_REJECTED_BY_RNR",
+  "VIN_NEEDED",
+  "HUMAN_REVIEW_NEEDED",
+  "HUMAN_GLASS_REVIEW_REQUIRED",
+  "HUMAN_CANNOT_IDENTIFY",
+  "GLASS_NOT_IDENTIFIED",
+  "NO_VALID_GLASS",
+  "NO_ELIGIBLE_OFFERS",
+  "YMM_SEARCH_FAILED",
+  "VIN_LOOKUP_FAILED",
+  "SOURCING_FAILED",
+  "IDENTIFICATION_NOT_FOUND",
+  "IDENTIFICATION_ERROR"
+]);
+
+/** Live "chain of thought" view shown while a new case's identification runs
+ *  in the background. Intake summary on the left, the case's real activity
+ *  log streaming on the right; hands off to the detail screen when the
+ *  automatic run reaches a terminal event. */
+function CaseCreationProgress({
+  caseRecord,
+  onDone
+}: {
+  caseRecord: CaseRecord;
+  onDone: () => Promise<void>;
+}) {
+  const [events, setEvents] = useState<CaseEvent[]>([]);
+  const [timedOut, setTimedOut] = useState(false);
+  const doneRef = useRef(false);
+  const onDoneRef = useRef(onDone);
+  onDoneRef.current = onDone;
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | null = null;
+    const startedAt = Date.now();
+    const TIMEOUT_MS = 3 * 60 * 1000;
+    const POLL_MS = 2000;
+
+    const finish = () => {
+      if (doneRef.current || cancelled) return;
+      doneRef.current = true;
+      void onDoneRef.current();
+    };
+
+    const poll = async () => {
+      if (cancelled || doneRef.current) return;
+      try {
+        const evts = await getCaseEvents(caseRecord.id);
+        if (cancelled || doneRef.current) return;
+        setEvents(evts);
+        if (evts.some(e => CREATION_TERMINAL_EVENTS.has(e.event_type))) {
+          finish();
+          return;
+        }
+      } catch {
+        // Transient failure: keep polling until the timeout bounds the wait.
+      }
+      if (Date.now() - startedAt >= TIMEOUT_MS) {
+        setTimedOut(true);
+        return;
+      }
+      timer = window.setTimeout(poll, POLL_MS);
+    };
+
+    timer = window.setTimeout(poll, 750);
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [caseRecord.id]);
+
+  const v = caseRecord.vehicle;
+  return (
+    <div>
+      <div className="page-head">
+        <div>
+          <p className="eyebrow">Case Core</p>
+          <h1>Creating case…</h1>
+          <p>Identification is running — watch it happen live.</p>
+        </div>
+      </div>
+      <div className="creation-split">
+        <section className="card">
+          <h2>Intake</h2>
+          <dl>
+            <dt>Channel</dt><dd>{humanize(caseRecord.channel)}</dd>
+            <dt>Vehicle</dt><dd>{v.year} {v.make} {v.model}</dd>
+            <dt>VIN</dt><dd><code>{v.vin}</code></dd>
+            <dt>Glass</dt><dd>{humanize(caseRecord.glass_request.glass_type)}</dd>
+          </dl>
+        </section>
+        <ActivityTimeline events={events} loading={events.length === 0 && !timedOut} />
+      </div>
+      {timedOut && (
+        <div className="alert" role="alert">
+          Still working — this is taking longer than expected.{" "}
+          <button type="button" className="link" onClick={() => void onDoneRef.current()}>
+            Open the case anyway
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 

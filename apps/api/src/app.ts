@@ -189,6 +189,34 @@ export function createApp(
     }
   };
 
+  /**
+   * Runs identification + the automatic sourcing/pricing chain in the
+   * background so POST /api/v1/cases can return the case shell immediately.
+   * The client polls GET /api/v1/cases/:id/events for live progress.
+   * Unexpected failures are recorded as IDENTIFICATION_ERROR (a terminal
+   * event into SYSTEM_ATTENTION_REQUIRED) so the client stops polling
+   * instead of hanging; expected failures are already recorded by
+   * runIdentification itself (YMM_SEARCH_FAILED, VIN_LOOKUP_FAILED, ...).
+   */
+  const runIdentificationInBackground = (caseId: string): void => {
+    runIdentification(store, glassCatalog, caseId)
+      .then(() => advanceWorkflow(caseId))
+      .catch(async (err) => {
+        console.error(`Background identification failed for case ${caseId}:`, err);
+        try {
+          await store.appendEvent({
+            caseId,
+            eventType: "IDENTIFICATION_ERROR",
+            actor: { type: "SYSTEM", id: null },
+            nextState: "SYSTEM_ATTENTION_REQUIRED",
+            payload: { error: err instanceof Error ? err.message : "Unknown error" }
+          });
+        } catch (eventErr) {
+          console.error(`Failed to record IDENTIFICATION_ERROR for case ${caseId}:`, eventErr);
+        }
+      });
+  };
+
   // Health is served at both /health (deploy monitors, direct API checks)
   // and /api/v1/health (reachable through the web app's same-origin API
   // proxy, which only forwards /api/v1/*).
@@ -371,12 +399,12 @@ export function createApp(
     });
 
     // Glass identification starts automatically after valid intake
-    // (workflow-spec §4). The mock provider is synchronous-fast; a live
-    // provider would move this to background processing.
-    // Phase 3: sourcing + pricing advance automatically from GLASS_IDENTIFIED.
+    // (workflow-spec §4). It runs in the background so the case shell is
+    // returned immediately; the client polls the case's event stream for
+    // live progress. Phase 3: sourcing + pricing advance automatically from
+    // GLASS_IDENTIFIED.
     if (!result.reused) {
-      await runIdentification(store, glassCatalog, result.caseRecord.id);
-      await advanceWorkflow(result.caseRecord.id);
+      runIdentificationInBackground(result.caseRecord.id);
     }
 
     const fresh = (await store.getCase(result.caseRecord.id)) ?? result.caseRecord;

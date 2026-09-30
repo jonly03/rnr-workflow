@@ -78,6 +78,24 @@ async function fixture(): Promise<Fixture> {
   return { app, store, sourcing, token, createCase };
 }
 
+/** Identification + sourcing + pricing now run in the background after POST /api/v1/cases. */
+async function waitForState(f: Fixture, caseId: string, states: string[], timeoutMs = 15000) {
+  const started = Date.now();
+  for (;;) {
+    const res = await request(f.app)
+      .get(`/api/v1/cases/${caseId}`)
+      .set("Authorization", `Bearer ${f.token}`)
+      .expect(200);
+    if (states.includes(res.body.current_state)) return res;
+    if (Date.now() - started > timeoutMs) {
+      throw new Error(
+        `Timed out waiting for ${states.join("/")} (still ${res.body.current_state})`
+      );
+    }
+    await new Promise(r => setTimeout(r, 100));
+  }
+}
+
 const act = (f: Fixture, caseId: string, action: string, body: Record<string, unknown> = {}) =>
   request(f.app)
     .post(`/api/v1/cases/${caseId}/actions`)
@@ -92,9 +110,10 @@ describe("Sourcing + Pricing", () => {
     const res = await f.createCase().expect(201);
 
     // Full automatic chain: identification → sourcing → pricing.
-    expect(res.body.current_state).toBe("PRICE_APPROVED");
+    const settled = await waitForState(f, res.body.id, ["PRICE_APPROVED"]);
+    expect(settled.body.current_state).toBe("PRICE_APPROVED");
 
-    const offers = res.body.supplier_offers as any[];
+    const offers = settled.body.supplier_offers as any[];
     expect(offers.length).toBe(4);
 
     // Regional is excluded even though it is cheapest.
@@ -117,7 +136,7 @@ describe("Sourcing + Pricing", () => {
     expect(selected.price_cents).toBe(Math.min(...eligiblePrices));
 
     // Pricing snapshot is reproducible.
-    const calc = res.body.price_calculation;
+    const calc = settled.body.price_calculation;
     expect(calc.status).toBe("APPROVED");
     expect(calc.glass_cost_cents).toBe(selected.price_cents);
     expect(calc.labor_cents).toBe(12500);
@@ -182,10 +201,22 @@ describe("Sourcing + Pricing", () => {
       })
       .expect(201);
 
-    expect(res.body.current_state).toBe("PRICE_APPROVED");
-    expect(res.body.price_calculation.status).toBe("APPROVED");
-    expect(res.body.price_calculation.glass_cost_cents).toBe(3000);
-    expect(res.body.price_calculation.profit_cents).toBe(25000); // $250 even for cheap glass
+    // Identification → sourcing → pricing run in the background now.
+    const started = Date.now();
+    let settled = res;
+    for (;;) {
+      const r = await request(app)
+        .get(`/api/v1/cases/${res.body.id}`)
+        .set("Authorization", `Bearer ${token}`)
+        .expect(200);
+      if (r.body.current_state === "PRICE_APPROVED") { settled = r; break; }
+      if (Date.now() - started > 15000) throw new Error("timed out waiting for PRICE_APPROVED");
+      await new Promise(rr => setTimeout(rr, 100));
+    }
+    expect(settled.body.current_state).toBe("PRICE_APPROVED");
+    expect(settled.body.price_calculation.status).toBe("APPROVED");
+    expect(settled.body.price_calculation.glass_cost_cents).toBe(3000);
+    expect(settled.body.price_calculation.profit_cents).toBe(25000); // $250 even for cheap glass
   });
 
   it("no eligible inventory reaches the manual retry path", async () => {
@@ -233,11 +264,22 @@ describe("Sourcing + Pricing", () => {
       })
       .expect(201);
 
-    expect(created.body.current_state).toBe("NO_ELIGIBLE_INVENTORY");
-    const offers = created.body.supplier_offers as any[];
+    const pollStart = Date.now();
+    let settled = created;
+    for (;;) {
+      const r = await request(app)
+        .get(`/api/v1/cases/${created.body.id}`)
+        .set("Authorization", `Bearer ${token}`)
+        .expect(200);
+      if (r.body.current_state === "NO_ELIGIBLE_INVENTORY") { settled = r; break; }
+      if (Date.now() - pollStart > 15000) throw new Error("timed out waiting for NO_ELIGIBLE_INVENTORY");
+      await new Promise(rr => setTimeout(rr, 100));
+    }
+    expect(settled.body.current_state).toBe("NO_ELIGIBLE_INVENTORY");
+    const offers = settled.body.supplier_offers as any[];
     expect(offers.length).toBeGreaterThan(0);
     expect(offers.every(o => o.excluded_reason)).toBe(true);
-    expect(created.body.price_calculation).toBeNull();
+    expect(settled.body.price_calculation).toBeNull();
 
     // Staff can retry sourcing.
     const retried = await request(app)
@@ -253,13 +295,15 @@ describe("Sourcing + Pricing", () => {
     const f = await fixture();
     const first = await f.createCase().expect(201);
     const second = await f.createCase().expect(201);
+    const firstSettled = await waitForState(f, first.body.id, ["PRICE_APPROVED"]);
+    const secondSettled = await waitForState(f, second.body.id, ["PRICE_APPROVED"]);
 
-    const firstSelected = (first.body.supplier_offers as any[]).find(o => o.selected);
-    const secondSelected = (second.body.supplier_offers as any[]).find(o => o.selected);
+    const firstSelected = (firstSettled.body.supplier_offers as any[]).find(o => o.selected);
+    const secondSelected = (secondSettled.body.supplier_offers as any[]).find(o => o.selected);
     expect(firstSelected.price_cents).toBe(secondSelected.price_cents);
     expect(firstSelected.supplier_name).toBe(secondSelected.supplier_name);
-    expect(first.body.price_calculation.sell_price_cents).toBe(
-      second.body.price_calculation.sell_price_cents
+    expect(firstSettled.body.price_calculation.sell_price_cents).toBe(
+      secondSettled.body.price_calculation.sell_price_cents
     );
   });
 
@@ -358,8 +402,19 @@ describe("Sourcing + Pricing", () => {
       })
       .expect(201);
 
-    expect(res.body.current_state).toBe("PRICE_APPROVED");
-    const offers = res.body.supplier_offers as any[];
+    const badStart = Date.now();
+    let badSettled = res;
+    for (;;) {
+      const r = await request(app)
+        .get(`/api/v1/cases/${res.body.id}`)
+        .set("Authorization", `Bearer ${token}`)
+        .expect(200);
+      if (r.body.current_state === "PRICE_APPROVED") { badSettled = r; break; }
+      if (Date.now() - badStart > 15000) throw new Error("timed out waiting for PRICE_APPROVED");
+      await new Promise(rr => setTimeout(rr, 100));
+    }
+    expect(badSettled.body.current_state).toBe("PRICE_APPROVED");
+    const offers = badSettled.body.supplier_offers as any[];
     const bad = offers.find(o => o.supplier_name === "Bad Supplier");
     expect(bad.excluded_reason).toMatch(/Invalid.*price/i);
     expect(bad.selected).toBe(false);
@@ -390,6 +445,8 @@ describe("Sourcing + Pricing", () => {
     const f = await fixture();
     const res = await f.createCase().expect(201);
     const caseId = res.body.id as string;
+    // Wait for the background run to finish; then the case is PRICE_APPROVED.
+    await waitForState(f, caseId, ["PRICE_APPROVED"]);
     // Case is already PRICE_APPROVED; approve_price is not legal here.
     const bad = await act(f, caseId, "approve_price").expect(409);
     expect(bad.body.error.code).toBe("INVALID_TRANSITION");
@@ -403,7 +460,7 @@ describe("Sourcing + Pricing", () => {
     // Ambiguous YMM routes to VIN lookup; the mock VIN result carries two
     // interchange part numbers (<primary>-ALT1 / -ALT2).
     const created = await f.createCase({ model: "Ambiguous" }).expect(201);
-    expect(created.body.current_state).toBe("VIN_LOOKUP_REQUIRED");
+    await waitForState(f, created.body.id, ["VIN_LOOKUP_REQUIRED"]);
 
     const res = await act(f, created.body.id, "request_vin_lookup").expect(200);
     expect(res.body.current_state).toBe("PRICE_APPROVED");
@@ -492,6 +549,16 @@ describe("Sourcing + Pricing", () => {
         glass_request: { glass_type: "WINDSHIELD" }
       })
       .expect(201);
+    const altStart = Date.now();
+    for (;;) {
+      const r = await request(app)
+        .get(`/api/v1/cases/${created.body.id}`)
+        .set("Authorization", `Bearer ${token}`)
+        .expect(200);
+      if (r.body.current_state === "VIN_LOOKUP_REQUIRED") break;
+      if (Date.now() - altStart > 15000) throw new Error("timed out waiting for VIN_LOOKUP_REQUIRED");
+      await new Promise(rr => setTimeout(rr, 100));
+    }
     const res = await request(app)
       .post(`/api/v1/cases/${created.body.id}/actions`)
       .set("Authorization", `Bearer ${token}`)

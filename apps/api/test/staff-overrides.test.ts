@@ -97,9 +97,17 @@ const getEvents = (f: Fixture, caseId: string) =>
 async function approvedCase(f: Fixture): Promise<{ caseId: string; created: request.Response }> {
   const created = await f.createCase().expect(201);
   const caseId = created.body.id as string;
-  expect(created.body.current_state).toBe("HUMAN_GLASS_REVIEW_REQUIRED");
+  // Identification runs in the background now; wait for human review.
+  const start = Date.now();
+  let settled = created;
+  for (;;) {
+    const r = await getCase(f, caseId).expect(200);
+    if (r.body.current_state === "HUMAN_GLASS_REVIEW_REQUIRED") { settled = r; break; }
+    if (Date.now() - start > 15000) throw new Error("timed out waiting for HUMAN_GLASS_REVIEW_REQUIRED");
+    await new Promise(rr => setTimeout(rr, 100));
+  }
 
-  const ident = created.body.glass_identification;
+  const ident = settled.body.glass_identification;
   expect(ident.candidates.length).toBeGreaterThan(1);
 
   // Staff resolves the ambiguity by picking the first candidate.

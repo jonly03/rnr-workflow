@@ -279,3 +279,23 @@ dd { margin: 0; }
   opacity: 0.96;
 }
 .sortable-card.is-dragging .drag-handle { color: #cbd5e1; cursor: grabbing; }
+
+/* Case creation progress: intake summary left, live activity stream right. */
+.creation-split {
+  display: grid;
+  grid-template-columns: 5fr 7fr;
+  gap: 16px;
+  align-items: start;
+}
+.creation-split .card { margin-bottom: 0; }
+.creation-split dl {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  gap: 6px 12px;
+  margin: 0;
+}
+.creation-split dt { color: #94a3b8; font-size: .85rem; }
+.creation-split dd { margin: 0; color: #e2e8f0; }
+@media (max-width: 950px) {
+  .creation-split { grid-template-columns: 1fr; }
+}

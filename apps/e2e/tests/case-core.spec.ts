@@ -69,7 +69,12 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
   ).toBeGreaterThanOrEqual(200);
   expect(createResponse.status()).toBeLessThan(300);
 
-  await expect(page.locator("h1")).toHaveText(/^RRA-\d{6}$/);
+  // Creation now shows a live progress view (intake left, activity stream
+  // right) while identification runs in the background, then hands off to
+  // the case detail screen on a terminal event.
+  await expect(page.getByRole("heading", { name: "Creating case…" })).toBeVisible();
+
+  await expect(page.locator("h1")).toHaveText(/^RRA-\d{6}$/, { timeout: 60000 });
   await expect(page.getByRole("heading", { name: "Vehicle / Service" })).toBeVisible();
   await expect(page.getByTestId("case-channel")).toHaveText("DIRECT");
   // Exact match: the identification summary also shows the candidate

@@ -53,26 +53,39 @@ describe("Case Core API", () => {
     const create = await authed.post("/api/v1/cases").send(input).expect(201);
 
     expect(create.body.reference).toMatch(/^RRA-\d{6}$/);
-    // Phase 2: identification auto-runs after intake (single candidate here).
-    // Phase 3: sourcing + pricing auto-advance from GLASS_IDENTIFIED.
-    expect(create.body.current_state).toBe("PRICE_APPROVED");
+    // Identification now runs in the background: the POST returns the case
+    // shell immediately (REQUEST_RECEIVED)…
+    expect(create.body.current_state).toBe("REQUEST_RECEIVED");
     expect(create.body.channel).toBe("DIRECT");
     expect(create.body.vehicle.vin).toBe(input.vehicle.vin);
 
-    const events = await authed
-      .get(`/api/v1/cases/${create.body.id}/events`)
-      .expect(200);
+    // …then the automatic run completes asynchronously. Poll the event
+    // stream until the pricing run finishes (STANDARD_PRICE_CALCULATED is
+    // the terminal event; it lands the case in PRICE_APPROVED).
+    // Phase 2: identification auto-runs after intake (single candidate here).
+    // Phase 3: sourcing + pricing auto-advance from GLASS_IDENTIFIED.
+    let events: { body: Array<{ event_type: string }> } | null = null;
+    for (let i = 0; i < 50; i++) {
+      const res = await authed.get(`/api/v1/cases/${create.body.id}/events`).expect(200);
+      if (res.body.some((e: { event_type: string }) => e.event_type === "STANDARD_PRICE_CALCULATED")) {
+        events = res;
+        break;
+      }
+      await new Promise(r => setTimeout(r, 100));
+    }
+    expect(events, "background identification did not finish pricing").not.toBeNull();
 
     // Phase 2: CASE_CREATED plus the automatic identification event trail.
     // Phase 3: sourcing + pricing auto-advance from GLASS_IDENTIFIED.
-    expect(events.body).toHaveLength(11);
-    expect(events.body[0]).toMatchObject({
+    const evBody = events!.body as Array<{ event_type: string; sequence: number; actor_type: string; actor_id: string }>;
+    expect(evBody).toHaveLength(11);
+    expect(evBody[0]).toMatchObject({
       sequence: 1,
       event_type: "CASE_CREATED",
       actor_type: "RNR_STAFF",
       actor_id: staffId
     });
-    const types = events.body.map((e: { event_type: string }) => e.event_type);
+    const types = evBody.map((e) => e.event_type);
     expect(types).toEqual([
       "CASE_CREATED",
       "START_IDENTIFICATION",
