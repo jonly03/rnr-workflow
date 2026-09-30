@@ -875,6 +875,7 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
   /** MyGrant charges the shop $1 per VIN lookup. YMM/part search are free. */
   readonly vinLookupCostCents = 100;
   private loggedIn = false;
+  private cachedTransport?: MyGrantTransport;
 
   constructor(
     private readonly config: MyGrantConfig,
@@ -886,7 +887,14 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
   }
 
   private getTransport(): MyGrantTransport {
-    return this.transport ?? new HttpMyGrantTransport(this.config.timeoutMs);
+    // Cache the transport: cookies (the MyGrant session) live on the
+    // transport instance. Creating a fresh transport per call drops the
+    // session while `loggedIn` stays true, causing silent 0-result searches.
+    if (!this.cachedTransport) {
+      this.cachedTransport =
+        this.transport ?? new HttpMyGrantTransport(this.config.timeoutMs);
+    }
+    return this.cachedTransport;
   }
 
   private loginUrl(): string {
@@ -981,8 +989,6 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
         if (vehicles.length > 0) return vehicles;
       }
       return [];
-    } finally {
-      if (!this.transport) await transport.close();
     }
   }
 
@@ -1062,8 +1068,6 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
         );
       }
       return candidates;
-    } finally {
-      if (!this.transport) await transport.close();
     }
   }
 
@@ -1122,8 +1126,6 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
       } catch (error) {
         throw markCharged(error);
       }
-    } finally {
-      if (!this.transport) await transport.close();
     }
   }
 
@@ -1158,8 +1160,6 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
         this.baseUrl + MYGRANT_PART_SEARCH_PATH + "?" + params.toString()
       );
       return parsePartSearchResults(html);
-    } finally {
-      if (!this.transport) await transport.close();
     }
   }
 }
