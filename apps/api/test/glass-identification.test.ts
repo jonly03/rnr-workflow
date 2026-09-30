@@ -69,15 +69,23 @@ async function fixture(): Promise<Fixture> {
  */
 async function waitForState(f: Fixture, caseId: string, states: string[], timeoutMs = 15000) {
   const started = Date.now();
+  let lastState = "unknown";
   for (;;) {
     const res = await request(f.app)
       .get(`/api/v1/cases/${caseId}`)
       .set("Authorization", `Bearer ${f.token}`)
       .expect(200);
-    if (states.includes(res.body.current_state)) return res;
+    lastState = res.body.current_state;
+    if (states.includes(lastState)) return res;
     if (Date.now() - started > timeoutMs) {
+      // Debug: dump events to see where the background run stalled.
+      const ev = await request(f.app)
+        .get(`/api/v1/cases/${caseId}/events`)
+        .set("Authorization", `Bearer ${f.token}`);
+      const types = (ev.body || []).map((e: any) => e.event_type);
+      console.error(`[waitForState] TIMEOUT waiting for ${states.join("/")} (still ${lastState}). Events: ${types.join(",")}`);
       throw new Error(
-        `Timed out waiting for ${states.join("/")} (still ${res.body.current_state})`
+        `Timed out waiting for ${states.join("/")} (still ${lastState})`
       );
     }
     await new Promise(r => setTimeout(r, 100));
