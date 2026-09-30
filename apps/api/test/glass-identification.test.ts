@@ -62,6 +62,28 @@ async function fixture(): Promise<Fixture> {
   return { app, store, provider, token, createCase };
 }
 
+/**
+ * Identification now runs in the background after POST /api/v1/cases, so
+ * tests poll the case until the automatic run settles into one of the
+ * expected states.
+ */
+async function waitForState(f: Fixture, caseId: string, states: string[], timeoutMs = 15000) {
+  const started = Date.now();
+  for (;;) {
+    const res = await request(f.app)
+      .get(`/api/v1/cases/${caseId}`)
+      .set("Authorization", `Bearer ${f.token}`)
+      .expect(200);
+    if (states.includes(res.body.current_state)) return res;
+    if (Date.now() - started > timeoutMs) {
+      throw new Error(
+        `Timed out waiting for ${states.join("/")} (still ${res.body.current_state})`
+      );
+    }
+    await new Promise(r => setTimeout(r, 100));
+  }
+}
+
 const act = (f: Fixture, caseId: string, action: string, body: Record<string, unknown> = {}) =>
   request(f.app)
     .post(`/api/v1/cases/${caseId}/actions`)
@@ -73,15 +95,16 @@ describe("Glass Identification", () => {
     const f = await fixture();
     const res = await f.createCase().expect(201);
 
-    expect(res.body.current_state).toBe("PRICE_APPROVED");
-    expect(res.body.glass_identification).toMatchObject({
+    const settled = await waitForState(f, res.body.id, ["PRICE_APPROVED"]);
+    expect(settled.body.current_state).toBe("PRICE_APPROVED");
+    expect(settled.body.glass_identification).toMatchObject({
       method: "YMM",
       status: "RESOLVED",
       provider: "mock-catalog"
     });
-    expect(res.body.glass_identification.candidates).toHaveLength(1);
-    expect(res.body.glass_identification.selected_candidate.part_number).toBe(
-      res.body.glass_identification.candidates[0].part_number
+    expect(settled.body.glass_identification.candidates).toHaveLength(1);
+    expect(settled.body.glass_identification.selected_candidate.part_number).toBe(
+      settled.body.glass_identification.candidates[0].part_number
     );
 
     // The audit trail shows the YMM search and evaluation.
@@ -98,15 +121,17 @@ describe("Glass Identification", () => {
     const f = await fixture();
     const res = await f.createCase({ model: "Ambiguous" }).expect(201);
 
-    expect(res.body.current_state).toBe("VIN_LOOKUP_REQUIRED");
-    expect(res.body.glass_identification.status).toBe("AMBIGUOUS");
-    expect(res.body.glass_identification.candidates).toHaveLength(3);
-    expect(res.body.glass_identification.selected_candidate).toBeNull();
+    const settled = await waitForState(f, res.body.id, ["VIN_LOOKUP_REQUIRED"]);
+    expect(settled.body.current_state).toBe("VIN_LOOKUP_REQUIRED");
+    expect(settled.body.glass_identification.status).toBe("AMBIGUOUS");
+    expect(settled.body.glass_identification.candidates).toHaveLength(3);
+    expect(settled.body.glass_identification.selected_candidate).toBeNull();
   });
 
   it("resolves via VIN lookup and marks the mock lookup as uncharged", async () => {
     const f = await fixture();
     const created = await f.createCase({ model: "Ambiguous" }).expect(201);
+    await waitForState(f, created.body.id, ["VIN_LOOKUP_REQUIRED"]);
     const res = await act(f, created.body.id, "request_vin_lookup").expect(200);
     expect(res.body.current_state).toBe("PRICE_APPROVED");
     expect(res.body.glass_identification).toMatchObject({ method: "VIN", status: "RESOLVED" });
@@ -135,12 +160,13 @@ describe("Glass Identification", () => {
   it("reuses a saved successful VIN result instead of repurchasing", async () => {
     const f = await fixture();
     const first = await f.createCase({ model: "Ambiguous" }).expect(201);
+    await waitForState(f, first.body.id, ["VIN_LOOKUP_REQUIRED"]);
     await act(f, first.body.id, "request_vin_lookup").expect(200);
     expect(f.provider.vinLookups).toBe(1);
 
     // Second case, same VIN: the provider must not be called again.
     const second = await f.createCase({ model: "Ambiguous" }).expect(201);
-    expect(second.body.current_state).toBe("VIN_LOOKUP_REQUIRED");
+    await waitForState(f, second.body.id, ["VIN_LOOKUP_REQUIRED"]);
     const res = await act(f, second.body.id, "request_vin_lookup").expect(200);
     expect(res.body.current_state).toBe("PRICE_APPROVED");
     expect(f.provider.vinLookups).toBe(1);
@@ -161,7 +187,7 @@ describe("Glass Identification", () => {
       .createCase({ model: "Ambiguous", glassType: "DOOR_GLASS" })
       .expect(201);
 
-    expect(res.body.current_state).toBe("HUMAN_GLASS_REVIEW_REQUIRED");
+    await waitForState(f, res.body.id, ["HUMAN_GLASS_REVIEW_REQUIRED"]);
 
     const denied = await act(f, res.body.id, "request_vin_lookup").expect(409);
     expect(denied.body.error.code).toBe("VIN_NOT_ELIGIBLE");
@@ -173,7 +199,8 @@ describe("Glass Identification", () => {
     const res = await f
       .createCase({ model: "Ambiguous", glassType: "DOOR_GLASS" })
       .expect(201);
-    const partNumber = res.body.glass_identification.candidates[1].part_number;
+    const settled = await waitForState(f, res.body.id, ["HUMAN_GLASS_REVIEW_REQUIRED"]);
+    const partNumber = settled.body.glass_identification.candidates[1].part_number;
 
     const selected = await act(f, res.body.id, "select_glass_candidate", {
       part_number: partNumber
@@ -188,6 +215,7 @@ describe("Glass Identification", () => {
     const res = await f
       .createCase({ model: "Ambiguous", glassType: "DOOR_GLASS" })
       .expect(201);
+    await waitForState(f, res.body.id, ["HUMAN_GLASS_REVIEW_REQUIRED"]);
 
     const denied = await act(f, res.body.id, "select_glass_candidate", {
       part_number: "NOPE-123"
@@ -198,7 +226,7 @@ describe("Glass Identification", () => {
   it("marks unidentifiable glass and allows retry", async () => {
     const f = await fixture();
     const res = await f.createCase({ make: "Unknown" }).expect(201);
-    expect(res.body.current_state).toBe("GLASS_NOT_IDENTIFIED");
+    await waitForState(f, res.body.id, ["GLASS_NOT_IDENTIFIED"]);
 
     // Retry re-runs identification (still nothing in the mock catalog).
     const retried = await act(f, res.body.id, "retry_identification").expect(200);
@@ -211,7 +239,7 @@ describe("Glass Identification", () => {
     const res = await f
       .createCase({ model: "Ambiguous", glassType: "QUARTER_GLASS" })
       .expect(201);
-    expect(res.body.current_state).toBe("HUMAN_GLASS_REVIEW_REQUIRED");
+    await waitForState(f, res.body.id, ["HUMAN_GLASS_REVIEW_REQUIRED"]);
 
     const done = await act(f, res.body.id, "mark_glass_unidentifiable").expect(200);
     expect(done.body.current_state).toBe("GLASS_NOT_IDENTIFIED");
@@ -220,6 +248,7 @@ describe("Glass Identification", () => {
   it("rejects VIN lookup from the wrong state and rejects invalid VINs", async () => {
     const f = await fixture();
     const identified = await f.createCase().expect(201);
+    await waitForState(f, identified.body.id, ["PRICE_APPROVED"]);
     const wrongState = await act(f, identified.body.id, "request_vin_lookup").expect(409);
     expect(wrongState.body.error.code).toBe("VIN_NOT_ELIGIBLE");
 
@@ -238,7 +267,7 @@ describe("Glass Identification", () => {
     const created = await f
       .createCase({ model: "Ambiguous", glassType: "BACK_GLASS" })
       .expect(201);
-    expect(created.body.current_state).toBe("VIN_LOOKUP_REQUIRED");
+    await waitForState(f, created.body.id, ["VIN_LOOKUP_REQUIRED"]);
 
     const res = await act(f, created.body.id, "request_vin_lookup").expect(200);
     expect(res.body.current_state).toBe("PRICE_APPROVED");
@@ -255,6 +284,7 @@ describe("Glass Identification", () => {
     const windshield = await f
       .createCase({ model: "Ambiguous", glassType: "WINDSHIELD" })
       .expect(201);
+    await waitForState(f, windshield.body.id, ["VIN_LOOKUP_REQUIRED"]);
     await act(f, windshield.body.id, "request_vin_lookup").expect(200);
     expect(f.provider.vinLookups).toBe(1);
 
@@ -263,6 +293,7 @@ describe("Glass Identification", () => {
     const backGlass = await f
       .createCase({ model: "Ambiguous", glassType: "BACK_GLASS" })
       .expect(201);
+    await waitForState(f, backGlass.body.id, ["VIN_LOOKUP_REQUIRED"]);
     const bgRes = await act(f, backGlass.body.id, "request_vin_lookup").expect(200);
     expect(f.provider.vinLookups).toBe(2);
     expect(bgRes.body.glass_identification.selected_candidate.position).toBe("BACK_GLASS");
@@ -272,6 +303,7 @@ describe("Glass Identification", () => {
     const backGlass2 = await f
       .createCase({ model: "Ambiguous", glassType: "BACK_GLASS" })
       .expect(201);
+    await waitForState(f, backGlass2.body.id, ["VIN_LOOKUP_REQUIRED"]);
     const bg2Res = await act(f, backGlass2.body.id, "request_vin_lookup").expect(200);
     expect(f.provider.vinLookups).toBe(2);
     expect(bg2Res.body.glass_identification.selected_candidate.position).toBe("BACK_GLASS");
@@ -304,6 +336,8 @@ describe("Glass Identification", () => {
 
     const first = await f.createCase({ model: "Ambiguous" }).expect(201);
     const second = await f.createCase({ model: "Ambiguous" }).expect(201);
+    await waitForState(f, first.body.id, ["VIN_LOOKUP_REQUIRED"]);
+    await waitForState(f, second.body.id, ["VIN_LOOKUP_REQUIRED"]);
 
     const [r1, r2] = await Promise.all([
       act(f, first.body.id, "request_vin_lookup"),
