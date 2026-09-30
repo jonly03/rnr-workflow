@@ -77,14 +77,15 @@ describe("Case Core API", () => {
 
     // Phase 2: CASE_CREATED plus the automatic identification event trail.
     // Phase 3: sourcing + pricing auto-advance from GLASS_IDENTIFIED.
-    expect(events.body).toHaveLength(11);
-    expect(events.body[0]).toMatchObject({
+    const evBody = events!.body as Array<{ event_type: string; sequence: number; actor_type: string; actor_id: string }>;
+    expect(evBody).toHaveLength(11);
+    expect(evBody[0]).toMatchObject({
       sequence: 1,
       event_type: "CASE_CREATED",
       actor_type: "RNR_STAFF",
       actor_id: staffId
     });
-    const types = events.body.map((e: { event_type: string }) => e.event_type);
+    const types = evBody.map((e) => e.event_type);
     expect(types).toEqual([
       "CASE_CREATED",
       "START_IDENTIFICATION",

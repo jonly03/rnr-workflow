@@ -82,7 +82,8 @@ async function waitForState(f: Fixture, caseId: string, states: string[], timeou
       const ev = await request(f.app)
         .get(`/api/v1/cases/${caseId}/events`)
         .set("Authorization", `Bearer ${f.token}`);
-      const types = (ev.body || []).map((e: any) => e.event_type);
+      const evBody = ev.body as Array<{ event_type: string }> | undefined;
+      const types = (evBody || []).map((e) => e.event_type);
       console.error(`[waitForState] TIMEOUT waiting for ${states.join("/")} (still ${lastState}). Events: ${types.join(",")}`);
       throw new Error(
         `Timed out waiting for ${states.join("/")} (still ${lastState})`
