@@ -949,21 +949,26 @@ const LOGIN_BUTTON_FIELD = "clogin:ButtonLogin";
 const VIN_FIELD = "vin";
 
 /**
- * MyGrant part-number prefix for a glass position.
- * DW = windshield, DB = back glass, DD/DQ = door/quarter.
+ * MyGrant part-number prefixes for a glass position.
+ * NAGS numbering: D = domestic, F = foreign — the letter after it is the
+ * position (W = windshield, B = back glass, D = door, Q = quarter, V = vent).
+ * Both make-classes are the same glass position: a Jeep windshield is
+ * DW..., a Honda windshield is FW.... Filtering on the domestic prefix
+ * alone silently drops every part for foreign vehicles (2026-09-30:
+ * a 2008 Honda Accord's 6 parts were all rejected for this reason).
  */
-function glassTypePartPrefix(glassType: GlassType): string {
+function glassTypePartPrefixes(glassType: GlassType): string[] {
   switch (glassType) {
     case "WINDSHIELD":
-      return "DW";
+      return ["DW", "FW"];
     case "BACK_GLASS":
-      return "DB";
+      return ["DB", "FB"];
     case "DOOR_GLASS":
-      return "DD";
+      return ["DD", "FD"];
     case "QUARTER_GLASS":
-      return "DQ";
+      return ["DQ", "FQ"];
     case "VENT_GLASS":
-      return "DV";
+      return ["DV", "FV"];
   }
 }
 
@@ -1186,15 +1191,19 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
       const partsHtml = await this.authenticatedGet(transport, partsUrl);
       const parts = parseVehicleParts(partsHtml);
       // Filter to parts relevant for the requested glass type. MyGrant part
-      // numbers encode position: DW = windshield, DB = back glass,
-      // DD/DQ = door/quarter glass.
-      const prefix = glassTypePartPrefix(input.glassType);
-      const relevant = parts.filter((p) => p.partNumber.startsWith(prefix));
+      // numbers encode position: DW/FW = windshield, DB/FB = back glass,
+      // DD/FD = door glass, DQ/FQ = quarter, DV/FV = vent.
+      const prefixes = glassTypePartPrefixes(input.glassType);
+      const relevant = parts.filter((p) =>
+        prefixes.some((prefix) => p.partNumber.startsWith(prefix))
+      );
       if (relevant.length === 0) {
         throw new MyGrantError(
           "MYGRANT_PARSE_ERROR",
           `Vehicle "${vehicle.name}" has ${parts.length} part(s) but none ` +
-            `matching glass type ${input.glassType} (prefix "${prefix}").`,
+            `matching glass type ${input.glassType} (prefixes ${prefixes
+              .map((p) => `"${p}"`)
+              .join(", ")}).`,
           502
         );
       }
