@@ -1491,8 +1491,10 @@ function StaffActionBody({
           </p>
           <div className="candidates">
             {candidates.map(c => (
-              <label key={c.part_number} className="candidate">
-                <input
+              <label
+                key={c.part_number}
+                className={`candidate${selectedPart === c.part_number ? " selected" : ""}`}
+              >                <input
                   type="radio"
                   name="candidate"
                   value={c.part_number}
