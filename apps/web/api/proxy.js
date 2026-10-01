@@ -9,11 +9,35 @@ export const config = {
   api: { bodyParser: false }
 };
 
+// Hard cap on proxied request bodies. The API's largest legitimate upload is
+// the 10MB VIN photo, so anything past this is abuse: the proxy buffers
+// bodies in memory before forwarding, and an unbounded read is a
+// memory-exhaustion vector for the function.
+const MAX_PROXY_BODY_BYTES = 12 * 1024 * 1024;
+
 function readRawBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
-    req.on("end", () => resolve(Buffer.concat(chunks)));
+    let total = 0;
+    let rejected = false;
+    req.on("data", (c) => {
+      if (rejected) return;
+      const buf = Buffer.isBuffer(c) ? c : Buffer.from(c);
+      total += buf.length;
+      if (total > MAX_PROXY_BODY_BYTES) {
+        rejected = true;
+        reject(
+          Object.assign(new Error("Request body too large"), {
+            code: "PROXY_BODY_TOO_LARGE"
+          })
+        );
+        return;
+      }
+      chunks.push(buf);
+    });
+    req.on("end", () => {
+      if (!rejected) resolve(Buffer.concat(chunks));
+    });
     req.on("error", reject);
   });
 }
@@ -26,7 +50,7 @@ export default async function handler(req, res) {
     return res.status(500).json({
       error: {
         code: "PROXY_CONFIGURATION_ERROR",
-        message: "The staging API proxy is not configured."
+        message: "The API proxy is not configured."
       }
     });
   }
@@ -47,8 +71,20 @@ export default async function handler(req, res) {
 
   let body;
   if (!["GET", "HEAD"].includes(String(req.method || "GET").toUpperCase())) {
-    const raw = await readRawBody(req);
-    body = raw.length > 0 ? raw : undefined;
+    try {
+      const raw = await readRawBody(req);
+      body = raw.length > 0 ? raw : undefined;
+    } catch (error) {
+      if (error?.code === "PROXY_BODY_TOO_LARGE") {
+        return res.status(413).json({
+          error: {
+            code: "PAYLOAD_TOO_LARGE",
+            message: "Request body is too large."
+          }
+        });
+      }
+      throw error;
+    }
   }
 
   try {
