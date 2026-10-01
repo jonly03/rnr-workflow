@@ -1085,12 +1085,21 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
    * has not been captured yet. Returns the vehicle matches.
    */
   /**
-   * Sanitized fingerprint of a YMM search response for zero-result diagnostics.
-   * Contains no credentials or customer data — just structural markers.
+   * Sanitized fingerprint of a MyGrant response for zero-result / parse-failure
+   * diagnostics. Contains no credentials or customer data — just structural
+   * markers. Used to tell a "site changed" page from a "no results" page from
+   * a mid-navigation read without dumping raw HTML into logs or events.
    */
-  private fingerprintYmmResponse(html: string, url: string): string {
+  private fingerprintResponse(html: string, url: string): string {
     const title = /<title[^>]*>([^<]{1,60})/i.exec(html)?.[1]?.trim() ?? "untitled";
-    const hasModels = /cms_DivModels/i.test(html);
+    const markers = [
+      "cms_DivModels", // YMM vehicle list
+      "cms_DivParts", // vehicle drill-down parts
+      "table_searchparts", // part-number results
+      "cpsr_DivParts", // part results container
+      "cvs_DivModel", // VIN results
+    ] as const;
+    const found = markers.filter((m) => html.toLowerCase().includes(m.toLowerCase()));
     const hasLogout = /logout/i.test(html);
     const hasLoginForm = isLoginPage(html);
     // Safe markup signature: first 200 chars of body with tags stripped
@@ -1103,7 +1112,7 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
       .slice(0, 200);
     return (
       `title="${title}", ${html.length} bytes, ` +
-      `cms_DivModels=${hasModels}, logout=${hasLogout}, loginForm=${hasLoginForm}, ` +
+      `markers=[${found.join(",") || "none"}], logout=${hasLogout}, loginForm=${hasLoginForm}, ` +
       `url_query="${url.split("?")[1] ?? ""}", body_start="${bodyText}"`
     );
   }
@@ -1143,7 +1152,7 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
         const vehicles = parseYmmVehicleList(html);
         if (vehicles.length > 0) return vehicles;
         // Capture fingerprint of the LAST attempt for diagnostics.
-        lastFingerprint = this.fingerprintYmmResponse(
+        lastFingerprint = this.fingerprintResponse(
           html,
           this.baseUrl + MYGRANT_YMM_SEARCH_PATH + "?" + params.toString()
         );
@@ -1209,18 +1218,36 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
       }
       // For each part, run a (free) part-number search to get live price
       // and stock. Limit to the first 6 to bound request count.
+      // Resilience (2026-09-30): a single part's result page sometimes comes
+      // back without the results table — either MyGrant's post-load
+      // navigation beat the browser service's content read, or the part has
+      // a genuine no-results variant. Retry the fetch once, then skip that
+      // part and try the next; only fail loudly if NO part yields offers.
       const candidates: GlassCandidate[] = [];
+      const skipped: string[] = [];
       for (const part of relevant.slice(0, 6)) {
         const params = new URLSearchParams({
           q: part.partNumber,
           sc: "B036",
           do: "Search"
         });
-        const html = await this.authenticatedGet(
-          transport,
-          this.baseUrl + MYGRANT_PART_SEARCH_PATH + "?" + params.toString()
-        );
-        const results = parsePartSearchResults(html);
+        const partUrl = this.baseUrl + MYGRANT_PART_SEARCH_PATH + "?" + params.toString();
+        let results: PartSearchResults | null = null;
+        let lastHtml = "";
+        for (let attempt = 0; attempt < 2 && !results; attempt++) {
+          lastHtml = await this.authenticatedGet(transport, partUrl);
+          try {
+            results = parsePartSearchResults(lastHtml);
+          } catch {
+            results = null;
+          }
+        }
+        if (!results) {
+          skipped.push(
+            `${part.partNumber} (${this.fingerprintResponse(lastHtml, partUrl)})`
+          );
+          continue;
+        }
         for (const offer of results.results) {
           candidates.push({
             part_number: offer.part_number,
@@ -1232,10 +1259,13 @@ export class MyGrantWebProvider implements GlassCatalogProvider {
         }
       }
       if (candidates.length === 0) {
+        const skipDetail = skipped.length
+          ? ` Skipped ${skipped.length} part page(s) that did not parse: ${skipped.join(" | ")}.`
+          : "";
         throw new MyGrantError(
           "MYGRANT_PARSE_ERROR",
           `Part-number searches for vehicle "${vehicle.name}" returned no ` +
-            "priced offers. No charge was made (YMM is free).",
+            `priced offers.${skipDetail} No charge was made (YMM is free).`,
           502
         );
       }

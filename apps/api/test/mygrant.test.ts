@@ -339,7 +339,7 @@ describe("MyGrantWebProvider fail-loud contract", () => {
     // round doesn't start from "0 vehicles" alone.
     expect(err.message).toContain("matched 0 vehicles for 2018 JEEP Wrangler");
     expect(err.message).toContain("Response: title=");
-    expect(err.message).toContain("cms_DivModels=true");
+    expect(err.message).toContain("markers=[cms_DivModels]");
   });
 
   it("routes page loads through the browser service when MYGRANT_BROWSER_URL is set", async () => {
@@ -508,6 +508,122 @@ describe("MyGrantWebProvider fail-loud contract", () => {
       code: "MYGRANT_PARSE_ERROR"
     });
     expect(transport.calls.some(c => c.url.includes("/pages/search.aspx?"))).toBe(false);
+  });
+
+  it("retries a part search whose first page read missed the results table", async () => {
+    // Regression 2026-09-30: a 2025 Subaru Crosstrek windshield YMM search
+    // failed twice with "no recognizable part results table
+    // (#table_searchparts)" — the browser service can return a mid-navigation
+    // read (post-load redirect) for a single part page. One re-fetch must
+    // recover instead of failing the whole identification.
+    const vehicleList =
+      `<div id="cms_DivModels"><ol><li>` +
+      `<a href="?yr=2025&mk=Subaru&md=C&v=Subaru+Crosstrek+2025+4+Door+Utility">` +
+      `Subaru Crosstrek 2025 4 Door Utility</a></li></ol></div>`;
+    const partsPage =
+      `<div id="cms_DivParts"><table class="partlist">` +
+      `<tr><td><a href="/pages/search.aspx?q=FW02600">FW02600</a></td><td>Windshield</td></tr>` +
+      `</table></div>`;
+    const midNavigationRead = `<html><head><title>MyGrant Glass - Search</title></head>` +
+      `<body><div id="cpsr_DivParts"><p>Loading, please wait...</p></div></body></html>`;
+    let partSearchGets = 0;
+    const transport = new StubTransport(
+      url => {
+        if (url.includes("/pages/login.aspx")) return loginPageHtml();
+        if (url.includes("/pages/searchm.aspx")) {
+          return url.includes("v=") ? partsPage : vehicleList;
+        }
+        if (url.includes("/pages/search.aspx")) {
+          partSearchGets++;
+          // First read is the pre-redirect page; the re-fetch lands correctly.
+          return partSearchGets === 1 ? midNavigationRead : fixture("part-search-dw02416-gty.html");
+        }
+        throw new Error(`unexpected GET ${url}`);
+      },
+      url => {
+        if (url.includes("/pages/login.aspx")) return authedChrome("<p>home</p>");
+        throw new Error(`unexpected POST ${url}`);
+      }
+    );
+    const provider = new MyGrantWebProvider(CONFIG, transport);
+    const candidates = await provider.searchYmm({
+      year: 2025, make: "Subaru", model: "Crosstrek", glassType: "WINDSHIELD"
+    });
+    expect(candidates.length).toBeGreaterThan(0);
+    expect(partSearchGets).toBe(2);
+  });
+
+  it("skips an unparseable part page and prices the next part", async () => {
+    const vehicleList =
+      `<div id="cms_DivModels"><ol><li>` +
+      `<a href="?yr=2025&mk=Subaru&md=C&v=Subaru+Crosstrek+2025+4+Door+Utility">` +
+      `Subaru Crosstrek 2025 4 Door Utility</a></li></ol></div>`;
+    const partsPage =
+      `<div id="cms_DivParts"><table class="partlist">` +
+      `<tr><td><a href="/pages/search.aspx?q=FW02600">FW02600</a></td><td>Windshield acoustic</td></tr>` +
+      `<tr><td><a href="/pages/search.aspx?q=FW02601">FW02601</a></td><td>Windshield</td></tr>` +
+      `</table></div>`;
+    const noTable = `<html><head><title>MyGrant Glass</title></head>` +
+      `<body><div id="cpsr_DivParts"><p>No records found.</p></div></body></html>`;
+    const transport = new StubTransport(
+      url => {
+        if (url.includes("/pages/login.aspx")) return loginPageHtml();
+        if (url.includes("/pages/searchm.aspx")) {
+          return url.includes("v=") ? partsPage : vehicleList;
+        }
+        if (url.includes("/pages/search.aspx")) {
+          const q = new URL(url).searchParams.get("q");
+          // FW02600 genuinely has no results table; FW02601 parses fine.
+          return q === "FW02601" ? fixture("part-search-dw02416-gty.html") : noTable;
+        }
+        throw new Error(`unexpected GET ${url}`);
+      },
+      url => {
+        if (url.includes("/pages/login.aspx")) return authedChrome("<p>home</p>");
+        throw new Error(`unexpected POST ${url}`);
+      }
+    );
+    const provider = new MyGrantWebProvider(CONFIG, transport);
+    const candidates = await provider.searchYmm({
+      year: 2025, make: "Subaru", model: "Crosstrek", glassType: "WINDSHIELD"
+    });
+    expect(candidates.length).toBeGreaterThan(0);
+    // The surviving candidates carry the description of the part that parsed.
+    expect(candidates[0].description).toBe("Windshield");
+  });
+
+  it("still fails loudly when no part page parses, with a page fingerprint", async () => {
+    const vehicleList =
+      `<div id="cms_DivModels"><ol><li>` +
+      `<a href="?yr=2025&mk=Subaru&md=C&v=Subaru+Crosstrek+2025+4+Door+Utility">` +
+      `Subaru Crosstrek 2025 4 Door Utility</a></li></ol></div>`;
+    const partsPage =
+      `<div id="cms_DivParts"><table class="partlist">` +
+      `<tr><td><a href="/pages/search.aspx?q=FW02600">FW02600</a></td><td>Windshield</td></tr>` +
+      `</table></div>`;
+    const noTable = `<html><head><title>MyGrant Glass - Part Search</title></head>` +
+      `<body><div id="cpsr_DivParts"><p>Something changed.</p></div></body></html>`;
+    const transport = new StubTransport(
+      url => {
+        if (url.includes("/pages/login.aspx")) return loginPageHtml();
+        if (url.includes("/pages/searchm.aspx")) {
+          return url.includes("v=") ? partsPage : vehicleList;
+        }
+        if (url.includes("/pages/search.aspx")) return noTable;
+        throw new Error(`unexpected GET ${url}`);
+      },
+      url => {
+        if (url.includes("/pages/login.aspx")) return authedChrome("<p>home</p>");
+        throw new Error(`unexpected POST ${url}`);
+      }
+    );
+    const provider = new MyGrantWebProvider(CONFIG, transport);
+    const err = await provider
+      .searchYmm({ year: 2025, make: "Subaru", model: "Crosstrek", glassType: "WINDSHIELD" })
+      .catch(e => e);
+    expect(err).toMatchObject({ code: "MYGRANT_PARSE_ERROR" });
+    expect(String(err.message)).toContain("FW02600");
+    expect(String(err.message)).toContain("markers=");
   });
 });
 
