@@ -110,10 +110,13 @@ async function loadCaseContext(store: CaseStore, caseId: string) {
 }
 
 /**
- * Runs YMM-first identification. Automatic after valid intake; also the
- * handler for the staff `start_identification` / `retry_identification`
- * actions. The mock provider is synchronous-fast; a live provider would move
- * this to background processing without changing the contract.
+ * Runs YMM-first identification. Started by the client via the awaited
+ * `start_identification` action right after intake; also the handler for
+ * the staff `retry_identification` action. The whole run (identification +
+ * the sourcing/pricing chain via advanceWorkflow) executes inside the
+ * action's request lifecycle, so serverless platforms cannot freeze it
+ * mid-processing — this is what replaced the old fire-and-forget
+ * background chain on case creation.
  */
 export async function runIdentification(
   store: CaseStore,

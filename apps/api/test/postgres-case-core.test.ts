@@ -62,9 +62,14 @@ suite("Case Core PostgreSQL adapter", () => {
       .send(input)
       .expect(201);
 
-    // Phase 2: identification auto-runs after intake (single candidate here).
-    // Phase 3: sourcing + pricing auto-advance to PRICE_APPROVED.
-    // The run is async now: poll until it settles.
+    // Phase 2: identification runs via the awaited start_identification
+    // action (single candidate here).
+    // Phase 3: sourcing + pricing auto-advance to PRICE_APPROVED inside
+    // that same awaited request. Poll until it settles.
+    await app
+      .post(`/api/v1/cases/${created.body.id}/actions`)
+      .send({ action: "start_identification" })
+      .expect(200);
     const pollStart = Date.now();
     let settled = created;
     for (;;) {

@@ -427,3 +427,16 @@ export function createCase(input: CreateCaseInput) {
     body: JSON.stringify(input)
   }).then(json<CaseRecord>);
 }
+
+/**
+ * Starts identification for a freshly created case. POST /cases returns the
+ * shell immediately (serverless-safe); this second, awaited request runs the
+ * whole identification → sourcing → pricing chain inside its own request
+ * lifecycle, so the platform cannot freeze it mid-processing. Progress
+ * streams independently via getCaseEvents polling — callers must not block
+ * UI rendering on this promise, but should catch rejections (the progress
+ * screen's timeout is the backstop when the start request itself fails).
+ */
+export function startIdentification(caseId: string) {
+  return performAction(caseId, "start_identification");
+}

@@ -53,16 +53,24 @@ describe("Case Core API", () => {
     const create = await authed.post("/api/v1/cases").send(input).expect(201);
 
     expect(create.body.reference).toMatch(/^RRA-\d{6}$/);
-    // Identification now runs in the background: the POST returns the case
-    // shell immediately (REQUEST_RECEIVED)…
+    // POST /cases returns the case shell immediately (REQUEST_RECEIVED);
+    // identification no longer auto-starts in the background (serverless
+    // freeze risk). The client starts it explicitly via the awaited
+    // `start_identification` action, which runs the whole chain inside its
+    // request lifecycle…
     expect(create.body.current_state).toBe("REQUEST_RECEIVED");
     expect(create.body.channel).toBe("DIRECT");
     expect(create.body.vehicle.vin).toBe(input.vehicle.vin);
 
-    // …then the automatic run completes asynchronously. Poll the event
+    await authed
+      .post(`/api/v1/cases/${create.body.id}/actions`)
+      .send({ action: "start_identification" })
+      .expect(200);
+
+    // …then the run completes inside that awaited request. Poll the event
     // stream until the pricing run finishes (STANDARD_PRICE_CALCULATED is
     // the terminal event; it lands the case in PRICE_APPROVED).
-    // Phase 2: identification auto-runs after intake (single candidate here).
+    // Phase 2: identification runs via the start_identification action (single candidate here).
     // Phase 3: sourcing + pricing auto-advance from GLASS_IDENTIFIED.
     let events: { body: Array<{ event_type: string }> } | null = null;
     for (let i = 0; i < 50; i++) {
@@ -73,7 +81,7 @@ describe("Case Core API", () => {
       }
       await new Promise(r => setTimeout(r, 100));
     }
-    expect(events, "background identification did not finish pricing").not.toBeNull();
+    expect(events, "awaited identification did not finish pricing").not.toBeNull();
 
     // Phase 2: CASE_CREATED plus the automatic identification event trail.
     // Phase 3: sourcing + pricing auto-advance from GLASS_IDENTIFIED.
@@ -145,7 +153,29 @@ describe("Case Core API", () => {
 
     const detail = await authed.get(`/api/v1/cases/${create.body.id}`).expect(200);
     // Phase 2: arbitrary actions stay rejected.
-    // Phase 3: state is the priced one after the automatic chain.
+    // Nothing auto-starts on creation anymore: the shell waits in
+    // REQUEST_RECEIVED until the client starts identification.
+    expect(detail.body.current_state).toBe("REQUEST_RECEIVED");
+  });
+
+  it("rejects a second start_identification with 409", async () => {
+    const { authed } = await fixture();
+    const create = await authed.post("/api/v1/cases").send(input).expect(201);
+
+    // First start runs the full chain to PRICE_APPROVED.
+    await authed
+      .post(`/api/v1/cases/${create.body.id}/actions`)
+      .send({ action: "start_identification" })
+      .expect(200);
+
+    // A retried start must not re-run the chain.
+    const second = await authed
+      .post(`/api/v1/cases/${create.body.id}/actions`)
+      .send({ action: "start_identification" })
+      .expect(409);
+    expect(second.body.error.code).toBe("IDENTIFICATION_ALREADY_STARTED");
+
+    const detail = await authed.get(`/api/v1/cases/${create.body.id}`).expect(200);
     expect(detail.body.current_state).toBe("PRICE_APPROVED");
   });
 

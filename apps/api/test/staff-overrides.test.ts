@@ -97,7 +97,9 @@ const getEvents = (f: Fixture, caseId: string) =>
 async function approvedCase(f: Fixture): Promise<{ caseId: string; created: request.Response }> {
   const created = await f.createCase().expect(201);
   const caseId = created.body.id as string;
-  // Identification runs in the background now; wait for human review.
+  // Identification no longer auto-starts on creation: the client starts it
+  // explicitly via the awaited action; wait for human review.
+  await act(f, caseId, "start_identification").expect(200);
   const start = Date.now();
   let settled = created;
   for (;;) {

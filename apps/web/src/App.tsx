@@ -12,6 +12,7 @@ import {
   logout,
   ocrVinPhoto,
   performAction,
+  startIdentification,
   UnauthorizedError,
   type DecodedVehicle,
   type StaffUser
@@ -780,6 +781,22 @@ const GLASS_TYPE_OPTIONS: { value: GlassType; label: string }[] = [
   { value: "VENT_GLASS", label: "Vent Glass" }
 ];
 
+/**
+ * Starts identification for a freshly created case. POST /cases returns the
+ * shell immediately (serverless-safe); this second, awaited-on-the-server
+ * request runs the whole identification → sourcing → pricing chain inside
+ * its own request lifecycle, so the platform cannot freeze it
+ * mid-processing. Intentionally not awaited for UI purposes:
+ * CaseCreationProgress streams the event log via polling independently.
+ * A rejected start degrades to the progress screen's 3-minute timeout path.
+ */
+function kickOffIdentification(c: CaseRecord) {
+  if (c.current_state !== "REQUEST_RECEIVED") return;
+  startIdentification(c.id).catch(err => {
+    console.error("Failed to start identification:", err);
+  });
+}
+
 function VinFirstCase({
   onCancel,
   onCreated,
@@ -795,8 +812,9 @@ function VinFirstCase({
   const [glassType, setGlassType] = useState<GlassType>("WINDSHIELD");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  // Set once POST /api/v1/cases returns the case shell; identification runs
-  // in the background while CaseCreationProgress streams its events.
+  // Set once POST /api/v1/cases returns the case shell; kickOffIdentification
+  // starts the awaited processing request while CaseCreationProgress streams
+  // its events.
   const [pendingCase, setPendingCase] = useState<CaseRecord | null>(null);
 
   const runDecode = async (vin: string) => {
@@ -884,6 +902,7 @@ function VinFirstCase({
         },
         glass_request: { glass_type: glassType }
       });
+      kickOffIdentification(c);
       setPendingCase(c);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create case.");
@@ -1062,8 +1081,9 @@ function ManualCaseForm({
   const [glassType, setGlassType] = useState<GlassType>("WINDSHIELD");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  // Set once POST /api/v1/cases returns the case shell; identification runs
-  // in the background while CaseCreationProgress streams its events.
+  // Set once POST /api/v1/cases returns the case shell; kickOffIdentification
+  // starts the awaited processing request while CaseCreationProgress streams
+  // its events.
   const [pendingCase, setPendingCase] = useState<CaseRecord | null>(null);
 
   const submit = async (e: FormEvent) => {
@@ -1087,6 +1107,7 @@ function ManualCaseForm({
         },
         glass_request: { glass_type: glassType }
       });
+      kickOffIdentification(c);
       setPendingCase(c);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create case.");

@@ -190,32 +190,15 @@ export function createApp(
   };
 
   /**
-   * Runs identification + the automatic sourcing/pricing chain in the
-   * background so POST /api/v1/cases can return the case shell immediately.
-   * The client polls GET /api/v1/cases/:id/events for live progress.
-   * Unexpected failures are recorded as IDENTIFICATION_ERROR (a terminal
-   * event into SYSTEM_ATTENTION_REQUIRED) so the client stops polling
-   * instead of hanging; expected failures are already recorded by
-   * runIdentification itself (YMM_SEARCH_FAILED, VIN_LOOKUP_FAILED, ...).
+   * NOTE (serverless safety): case creation used to kick off identification
+   * as a fire-and-forget promise chain after returning the case shell. On
+   * serverless platforms the runtime may freeze the moment the response is
+   * sent, silently killing the chain mid-processing. Identification is now
+   * started by the client through the awaited `start_identification` action
+   * below: the work runs inside that request's lifecycle, so the platform
+   * cannot freeze it until the response is sent. The client streams progress
+   * by polling the case's event stream independently.
    */
-  const runIdentificationInBackground = (caseId: string): void => {
-    runIdentification(store, glassCatalog, caseId)
-      .then(() => advanceWorkflow(caseId))
-      .catch(async (err) => {
-        console.error(`Background identification failed for case ${caseId}:`, err);
-        try {
-          await store.appendEvent({
-            caseId,
-            eventType: "IDENTIFICATION_ERROR",
-            actor: { type: "SYSTEM", id: null },
-            nextState: "SYSTEM_ATTENTION_REQUIRED",
-            payload: { error: err instanceof Error ? err.message : "Unknown error" }
-          });
-        } catch (eventErr) {
-          console.error(`Failed to record IDENTIFICATION_ERROR for case ${caseId}:`, eventErr);
-        }
-      });
-  };
 
   // Health is served at both /health (deploy monitors, direct API checks)
   // and /api/v1/health (reachable through the web app's same-origin API
@@ -398,15 +381,13 @@ export function createApp(
       actor: { type: "RNR_STAFF", id: req.staff?.id ?? null }
     });
 
-    // Glass identification starts automatically after valid intake
-    // (workflow-spec §4). It runs in the background so the case shell is
-    // returned immediately; the client polls the case's event stream for
-    // live progress. Phase 3: sourcing + pricing advance automatically from
-    // GLASS_IDENTIFIED.
-    if (!result.reused) {
-      runIdentificationInBackground(result.caseRecord.id);
-    }
-
+    // Glass identification starts after valid intake (workflow-spec §4),
+    // but NOT inside this request: the case shell is returned immediately
+    // and the client starts identification through the awaited
+    // `start_identification` action, which keeps the serverless function
+    // alive for the whole run. The client polls the case's event stream
+    // for live progress. Phase 3: sourcing + pricing advance automatically
+    // from GLASS_IDENTIFIED inside that same awaited request.
     const fresh = (await store.getCase(result.caseRecord.id)) ?? result.caseRecord;
     return res.status(result.reused ? 200 : 201).json(await detail(fresh));
   });
@@ -446,10 +427,46 @@ export function createApp(
 
     try {
       switch (action) {
-        case "start_identification":
-          await runIdentification(store, glassCatalog, c.id, "START_IDENTIFICATION", staffActor);
-          await advanceWorkflow(c.id);
+        case "start_identification": {
+          // Guard against double-starts (e.g. a retried request): the
+          // client fires this once per fresh case, but a second call must
+          // not re-run the whole chain. A genuinely stuck case is recovered
+          // with `retry_identification`, which is unaffected by this guard.
+          const priorEvents = await store.getEvents(c.id);
+          if (priorEvents.some(e => e.event_type === "START_IDENTIFICATION")) {
+            return res.status(409).json({
+              error: {
+                code: "IDENTIFICATION_ALREADY_STARTED",
+                message:
+                  "Identification has already started for this case. Use retry_identification to run it again."
+              }
+            });
+          }
+          try {
+            await runIdentification(store, glassCatalog, c.id, "START_IDENTIFICATION", staffActor);
+            await advanceWorkflow(c.id);
+          } catch (err) {
+            // Fail loud: an unexpected error must leave a terminal event so
+            // the client's progress screen stops polling instead of hanging
+            // until its timeout. Expected failures are already recorded by
+            // runIdentification / runSourcing themselves (YMM_SEARCH_FAILED,
+            // VIN_LOOKUP_FAILED, SOURCING_FAILED, ...).
+            console.error(`start_identification failed for case ${c.id}:`, err);
+            try {
+              await store.appendEvent({
+                caseId: c.id,
+                eventType: "IDENTIFICATION_ERROR",
+                actor: { type: "SYSTEM", id: null },
+                nextState: "SYSTEM_ATTENTION_REQUIRED",
+                payload: { error: err instanceof Error ? err.message : "Unknown error" }
+              });
+            } catch (eventErr) {
+              console.error(`Failed to record IDENTIFICATION_ERROR for case ${c.id}:`, eventErr);
+            }
+            throw err;
+          }
           break;
+        }
         case "retry_identification":
           await runIdentification(store, glassCatalog, c.id, "RETRY_IDENTIFICATION", staffActor);
           await advanceWorkflow(c.id);
