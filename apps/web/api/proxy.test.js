@@ -112,4 +112,33 @@ describe("staging API proxy", () => {
     const init = vi.mocked(fetch).mock.calls[0][1];
     expect(init.body).toBeUndefined();
   });
+
+  it("rejects bodies larger than the cap with 413", async () => {
+    const fetchMock = vi.fn(async () => ({
+      status: 200,
+      headers: { get: () => null },
+      arrayBuffer: async () => Buffer.alloc(0)
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    // Cap is 12MB; 13MB in several chunks must trip it mid-stream.
+    const big = Buffer.alloc(13 * 1024 * 1024);
+    const req = new EventEmitter();
+    req.method = "POST";
+    req.headers = { "content-type": "application/json" };
+    req.query = { path: "cases" };
+    process.nextTick(() => {
+      const chunk = 1024 * 1024;
+      for (let off = 0; off < big.length; off += chunk) {
+        req.emit("data", big.subarray(off, off + chunk));
+      }
+      req.emit("end");
+    });
+    const res = mockRes();
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(413);
+    expect(res.payload.error.code).toBe("PAYLOAD_TOO_LARGE");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
