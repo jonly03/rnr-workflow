@@ -403,6 +403,85 @@ describe("MyGrantWebProvider fail-loud contract", () => {
     ).rejects.toMatchObject({ code: "MYGRANT_PARSE_ERROR" });
   });
 
+  it("matches foreign-vehicle part prefixes: FW counts as a windshield part", async () => {
+    // Regression 2026-09-30: a 2008 Honda Accord's parts are FW/FD/FB
+    // (foreign NAGS prefixes). The old DW-only filter rejected all 6 parts
+    // with: none matching glass type WINDSHIELD (prefix "DW").
+    const vehicleList =
+      `<div id="cms_DivModels"><ol><li>` +
+      `<a href="?yr=2008&mk=Honda&md=A&v=Honda+Accord+2008+2+Door+Coupe">` +
+      `Honda Accord 2008 2 Door Coupe</a></li></ol></div>`;
+    const partsPage =
+      `<div id="cms_DivParts"><table class="partlist">` +
+      `<tr><td><a href="/pages/search.aspx?q=FW02260">FW02260</a></td><td>Windshield</td></tr>` +
+      `<tr><td><a href="/pages/search.aspx?q=FD02261">FD02261</a></td><td>Door Glass</td></tr>` +
+      `<tr><td><a href="/pages/search.aspx?q=FB02262">FB02262</a></td><td>Back Glass</td></tr>` +
+      `</table></div>`;
+    const transport = new StubTransport(
+      url => {
+        if (url.includes("/pages/login.aspx")) return loginPageHtml();
+        if (url.includes("/pages/searchm.aspx")) {
+          return url.includes("v=") ? partsPage : vehicleList;
+        }
+        if (url.includes("/pages/search.aspx")) return fixture("part-search-dw02416-gty.html");
+        throw new Error(`unexpected GET ${url}`);
+      },
+      url => {
+        if (url.includes("/pages/login.aspx")) return authedChrome("<p>home</p>");
+        throw new Error(`unexpected POST ${url}`);
+      }
+    );
+    const provider = new MyGrantWebProvider(CONFIG, transport);
+    const candidates = await provider.searchYmm({
+      year: 2008, make: "Honda", model: "Accord", glassType: "WINDSHIELD"
+    });
+    expect(candidates.length).toBeGreaterThan(0);
+    expect(candidates[0].position).toBe("WINDSHIELD");
+    // Only the FW windshield part was priced — FD/FB parts were filtered out.
+    const partQueries = transport.calls
+      .filter(c => c.op === "get" && c.url.includes("/pages/search.aspx?"))
+      .map(c => new URL(c.url).searchParams.get("q"));
+    expect(partQueries).toEqual(["FW02260"]);
+  });
+
+  it("matches foreign-vehicle part prefixes: FD counts as a door-glass part", async () => {
+    // Same foreign-prefix fix, DOOR_GLASS variant (regression for the
+    // DOOR_GLASS case Nelly hit on the same 2008 Accord).
+    const vehicleList =
+      `<div id="cms_DivModels"><ol><li>` +
+      `<a href="?yr=2008&mk=Honda&md=A&v=Honda+Accord+2008+2+Door+Coupe">` +
+      `Honda Accord 2008 2 Door Coupe</a></li></ol></div>`;
+    const partsPage =
+      `<div id="cms_DivParts"><table class="partlist">` +
+      `<tr><td><a href="/pages/search.aspx?q=FW02260">FW02260</a></td><td>Windshield</td></tr>` +
+      `<tr><td><a href="/pages/search.aspx?q=FD02261">FD02261</a></td><td>Door Glass</td></tr>` +
+      `</table></div>`;
+    const transport = new StubTransport(
+      url => {
+        if (url.includes("/pages/login.aspx")) return loginPageHtml();
+        if (url.includes("/pages/searchm.aspx")) {
+          return url.includes("v=") ? partsPage : vehicleList;
+        }
+        if (url.includes("/pages/search.aspx")) return fixture("part-search-dw02416-gty.html");
+        throw new Error(`unexpected GET ${url}`);
+      },
+      url => {
+        if (url.includes("/pages/login.aspx")) return authedChrome("<p>home</p>");
+        throw new Error(`unexpected POST ${url}`);
+      }
+    );
+    const provider = new MyGrantWebProvider(CONFIG, transport);
+    const candidates = await provider.searchYmm({
+      year: 2008, make: "Honda", model: "Accord", glassType: "DOOR_GLASS"
+    });
+    expect(candidates.length).toBeGreaterThan(0);
+    expect(candidates[0].position).toBe("DOOR_GLASS");
+    const partQueries = transport.calls
+      .filter(c => c.op === "get" && c.url.includes("/pages/search.aspx?"))
+      .map(c => new URL(c.url).searchParams.get("q"));
+    expect(partQueries).toEqual(["FD02261"]);
+  });
+
   it("searches part numbers via GET and parses stock/price", async () => {
     const transport = liveSiteTransport();
     const provider = new MyGrantWebProvider(CONFIG, transport);
