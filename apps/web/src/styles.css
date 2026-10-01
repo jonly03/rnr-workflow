@@ -7,6 +7,10 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; background: #0b1220; }
+/* Responsive safety net: no single overflowing element (long URL, JSON
+   payload, VIN) may ever cause page-level horizontal scrolling. `clip`
+   (unlike `hidden`) keeps position: sticky working. */
+html, body { overflow-x: clip; }
 button, input, select { font: inherit; }
 button { cursor: pointer; }
 button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #818cf8; outline-offset: 2px; }
@@ -147,11 +151,14 @@ input, select {
 .scan-progress-fill { position: absolute; top: 0; bottom: 0; left: 0; background: rgba(217,119,6,.35); transition: width 200ms linear; }
 .scan-progress-text { position: relative; }
 .state-line { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-code { color: #cbd5e1; font-size: .85em; }
+code { color: #cbd5e1; font-size: .85em; overflow-wrap: anywhere; }
 .detail-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 18px; margin-bottom: 18px; }
-dl { display: grid; grid-template-columns: 120px 1fr; gap: 10px 16px; margin: 0; }
+/* Label/value rows: the value column is minmax(0, 1fr) so long values
+   (VINs, part numbers, URLs) shrink and wrap inside the grid instead of
+   forcing the track — and the card — wider than the viewport. */
+dl { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 10px 16px; margin: 0; }
 dt { color: #94a3b8; }
-dd { margin: 0; }
+dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 
 /* Staff action alert: pinned warning above the detail cards */
 .alert-card {
@@ -160,22 +167,25 @@ dd { margin: 0; }
   margin-bottom: 18px;
 }
 .alert-card h2 { color: #fbbf24; display: flex; gap: 8px; align-items: center; }
+/* Failure text embeds raw URLs and JSON — let it wrap instead of
+   spilling past the card on narrow screens. */
+.alert-card p { min-width: 0; overflow-wrap: anywhere; }
 
 /* Expandable activity trail */
 .timeline-list { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 2px; }
 .timeline-item { border-top: 1px solid #1e293b; }
 .timeline-item:first-child { border-top: 0; }
 .timeline-toggle {
-  width: 100%; display: grid; grid-template-columns: auto 1fr auto; gap: 10px;
+  width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px;
   align-items: baseline; background: none; border: 0; color: inherit;
   text-align: left; cursor: pointer; padding: 10px 4px; font-size: .95rem; font-family: inherit;
 }
 .timeline-toggle:hover .timeline-summary { color: #fff; }
 .timeline-chevron { color: #64748b; font-size: .8rem; }
-.timeline-summary { color: #e2e8f0; }
+.timeline-summary { color: #e2e8f0; min-width: 0; overflow-wrap: anywhere; }
 .timeline-time { color: #94a3b8; font-size: .78rem; white-space: nowrap; }
-.timeline-details { padding: 2px 4px 14px 26px; font-size: .88rem; color: #cbd5e1; }
-.timeline-details dl { display: grid; grid-template-columns: 70px 1fr; gap: 4px 12px; margin: 0 0 8px; }
+.timeline-details { padding: 2px 4px 14px 26px; font-size: .88rem; color: #cbd5e1; min-width: 0; }
+.timeline-details dl { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 4px 12px; margin: 0 0 8px; }
 .timeline-details details summary { cursor: pointer; color: #94a3b8; }
 .timeline-details pre {
   background: #0b1120; border: 1px solid #1e293b; border-radius: 8px;
@@ -222,9 +232,9 @@ dd { margin: 0; }
 .candidate-list { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 6px; }
 .candidate-list li { border-top: 1px solid #1e293b; padding-top: 6px; font-size: .92rem; }
 .card h3 { margin: 14px 0 4px; font-size: 1rem; }
-.card dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0; }
+.card dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 16px; margin: 0; }
 .card dt { color: #94a3b8; }
-.card dd { margin: 0; }
+.card dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .workspace-actions { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 
 /* VIN input methods (photo scan) */
@@ -290,12 +300,12 @@ dd { margin: 0; }
 .creation-split .card { margin-bottom: 0; }
 .creation-split dl {
   display: grid;
-  grid-template-columns: 90px 1fr;
+  grid-template-columns: 90px minmax(0, 1fr);
   gap: 6px 12px;
   margin: 0;
 }
 .creation-split dt { color: #94a3b8; font-size: .85rem; }
-.creation-split dd { margin: 0; color: #e2e8f0; }
+.creation-split dd { margin: 0; color: #e2e8f0; min-width: 0; overflow-wrap: anywhere; }
 @media (max-width: 950px) {
   .creation-split { grid-template-columns: 1fr; }
 }
