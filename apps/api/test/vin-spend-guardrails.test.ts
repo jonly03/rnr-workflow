@@ -39,6 +39,7 @@ interface Fixture {
   token: string;
   createCase: (vin?: string) => request.Test;
   runVinLookup: (caseId: string) => request.Test;
+  startIdentification: (caseId: string) => request.Test;
 }
 
 async function fixture(provider: MockGlassCatalogProvider): Promise<Fixture> {
@@ -74,7 +75,15 @@ async function fixture(provider: MockGlassCatalogProvider): Promise<Fixture> {
       .set("Authorization", `Bearer ${token}`)
       .send({ action: "request_vin_lookup" });
 
-  return { app, store, provider, token, createCase, runVinLookup };
+  // New client contract: POST /cases returns the shell; the client starts
+  // identification explicitly via this awaited action (no background chain).
+  const startIdentification = (caseId: string) =>
+    request(app)
+      .post(`/api/v1/cases/${caseId}/actions`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ action: "start_identification" });
+
+  return { app, store, provider, token, createCase, runVinLookup, startIdentification };
 }
 
 const savedCap = process.env.MYGRANT_DAILY_SPEND_CAP_USD;
@@ -105,6 +114,7 @@ describe("paid VIN lookup spend tracking", () => {
     const provider = new PaidMockProvider();
     const f = await fixture(provider);
     const created = await f.createCase().expect(201);
+    await f.startIdentification(created.body.id).expect(200);
     await f.runVinLookup(created.body.id).expect(200);
     expect(provider.vinLookups).toBe(1);
 
@@ -138,6 +148,7 @@ describe("paid VIN lookup spend tracking", () => {
       expect(r.reserved).toBe(true);
     }
     const created = await f.createCase().expect(201);
+    await f.startIdentification(created.body.id).expect(200);
     const blocked = await f.runVinLookup(created.body.id).expect(200);
     expect(blocked.body.current_state).toBe("SYSTEM_ATTENTION_REQUIRED");
     expect(provider.vinLookups).toBe(0);
@@ -161,6 +172,7 @@ describe("paid VIN lookup spend tracking", () => {
     const provider = new MockGlassCatalogProvider();
     const f = await fixture(provider);
     const created = await f.createCase().expect(201);
+    await f.startIdentification(created.body.id).expect(200);
     // Cap is $0, but the free provider is never gated.
     await f.runVinLookup(created.body.id).expect(200);
     expect(provider.vinLookups).toBe(1);
@@ -172,6 +184,7 @@ describe("paid VIN lookup spend tracking", () => {
     const provider = new FailingPaidProvider(() => failure);
     const f = await fixture(provider);
     const created = await f.createCase().expect(201);
+    await f.startIdentification(created.body.id).expect(200);
     await f.runVinLookup(created.body.id).expect(200);
     expect(provider.vinLookups).toBe(1);
 
@@ -189,6 +202,7 @@ describe("paid VIN lookup spend tracking", () => {
     const provider = new FailingPaidProvider(() => failure);
     const f = await fixture(provider);
     const created = await f.createCase().expect(201);
+    await f.startIdentification(created.body.id).expect(200);
     await f.runVinLookup(created.body.id).expect(200);
 
     const spent = await f.store.getVinLookupSpendCentsSince(new Date(0).toISOString());

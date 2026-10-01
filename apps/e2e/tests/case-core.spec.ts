@@ -70,8 +70,8 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
   expect(createResponse.status()).toBeLessThan(300);
 
   // Creation now shows a live progress view (intake left, activity stream
-  // right) while identification runs in the background, then hands off to
-  // the case detail screen on a terminal event.
+  // right) while identification runs inside the awaited start_identification
+  // request, then hands off to the case detail screen on a terminal event.
   await expect(page.getByRole("heading", { name: "Creating case…" })).toBeVisible();
 
   await expect(page.locator("h1")).toHaveText(/^RRA-\d{6}$/, { timeout: 60000 });
@@ -82,7 +82,7 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
   // NHTSA returns the make uppercase, so match case-insensitively.
   await expect(page.getByText(/2018 jeep wrangler/i).first()).toBeVisible();
   await expect(page.getByText("1C4HJXEG3JW224862")).toBeVisible();
-  // Phase 2: identification auto-runs after intake.
+  // Phase 2: identification runs via the awaited start_identification action.
   // Phase 3: sourcing + pricing auto-advance from GLASS_IDENTIFIED.
   // Provider-aware: mock resolves to PRICE_APPROVED; live MyGrant YMM
   // returns multiple candidates and routes to VIN_NEEDED (no paid lookup).

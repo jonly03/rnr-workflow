@@ -108,8 +108,9 @@ describe("Sourcing + Pricing", () => {
   it("auto-sources and auto-prices a standard case on creation", async () => {
     const f = await fixture();
     const res = await f.createCase().expect(201);
+    await act(f, res.body.id, "start_identification").expect(200);
 
-    // Full automatic chain: identification → sourcing → pricing.
+    // Awaited chain: identification → sourcing → pricing.
     const settled = await waitForState(f, res.body.id, ["PRICE_APPROVED"]);
     expect(settled.body.current_state).toBe("PRICE_APPROVED");
 
@@ -201,7 +202,13 @@ describe("Sourcing + Pricing", () => {
       })
       .expect(201);
 
-    // Identification → sourcing → pricing run in the background now.
+    // Identification → sourcing → pricing run inside this awaited action now.
+    await request(app)
+      .post(`/api/v1/cases/${res.body.id}/actions`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ action: "start_identification" })
+      .expect(200);
+
     const started = Date.now();
     let settled = res;
     for (;;) {
@@ -264,6 +271,12 @@ describe("Sourcing + Pricing", () => {
       })
       .expect(201);
 
+    await request(app)
+      .post(`/api/v1/cases/${created.body.id}/actions`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ action: "start_identification" })
+      .expect(200);
+
     const pollStart = Date.now();
     let settled = created;
     for (;;) {
@@ -295,6 +308,8 @@ describe("Sourcing + Pricing", () => {
     const f = await fixture();
     const first = await f.createCase().expect(201);
     const second = await f.createCase().expect(201);
+    await act(f, first.body.id, "start_identification").expect(200);
+    await act(f, second.body.id, "start_identification").expect(200);
     const firstSettled = await waitForState(f, first.body.id, ["PRICE_APPROVED"]);
     const secondSettled = await waitForState(f, second.body.id, ["PRICE_APPROVED"]);
 
@@ -402,6 +417,12 @@ describe("Sourcing + Pricing", () => {
       })
       .expect(201);
 
+    await request(app)
+      .post(`/api/v1/cases/${res.body.id}/actions`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ action: "start_identification" })
+      .expect(200);
+
     const badStart = Date.now();
     let badSettled = res;
     for (;;) {
@@ -445,7 +466,9 @@ describe("Sourcing + Pricing", () => {
     const f = await fixture();
     const res = await f.createCase().expect(201);
     const caseId = res.body.id as string;
-    // Wait for the background run to finish; then the case is PRICE_APPROVED.
+    // The awaited start_identification request runs the full chain; then the
+    // case is PRICE_APPROVED.
+    await act(f, caseId, "start_identification").expect(200);
     await waitForState(f, caseId, ["PRICE_APPROVED"]);
     // Case is already PRICE_APPROVED; approve_price is not legal here.
     const bad = await act(f, caseId, "approve_price").expect(409);
@@ -460,6 +483,7 @@ describe("Sourcing + Pricing", () => {
     // Ambiguous YMM routes to VIN lookup; the mock VIN result carries two
     // interchange part numbers (<primary>-ALT1 / -ALT2).
     const created = await f.createCase({ model: "Ambiguous" }).expect(201);
+    await act(f, created.body.id, "start_identification").expect(200);
     await waitForState(f, created.body.id, ["VIN_LOOKUP_REQUIRED"]);
 
     const res = await act(f, created.body.id, "request_vin_lookup").expect(200);
@@ -549,6 +573,11 @@ describe("Sourcing + Pricing", () => {
         glass_request: { glass_type: "WINDSHIELD" }
       })
       .expect(201);
+    await request(app)
+      .post(`/api/v1/cases/${created.body.id}/actions`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ action: "start_identification" })
+      .expect(200);
     const altStart = Date.now();
     for (;;) {
       const r = await request(app)
@@ -597,6 +626,7 @@ describe("Sourcing + Pricing", () => {
     // Ambiguous YMM routes to VIN lookup; the mock VIN result carries two
     // interchange part numbers, so sourcing searches 3 part numbers.
     const created = await f.createCase({ model: "Ambiguous" }).expect(201);
+    await act(f, created.body.id, "start_identification").expect(200);
     await waitForState(f, created.body.id, ["VIN_LOOKUP_REQUIRED"]);
     const res = await act(f, created.body.id, "request_vin_lookup").expect(200);
     expect(res.body.current_state).toBe("PRICE_APPROVED");
@@ -615,6 +645,7 @@ describe("Sourcing + Pricing", () => {
       return orig(partNumber);
     };
     const created = await f.createCase({ model: "Ambiguous" }).expect(201);
+    await act(f, created.body.id, "start_identification").expect(200);
     await waitForState(f, created.body.id, ["VIN_LOOKUP_REQUIRED"]);
     // The VIN lookup succeeds but sourcing fails loudly.
     await act(f, created.body.id, "request_vin_lookup").expect(200);
