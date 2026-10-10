@@ -1,0 +1,21 @@
+{
+  "name": "mygrant-browser",
+  "version": "1.0.0",
+  "description": "Headless browser service for MyGrant web automation. Returns raw HTML of MyGrant pages as an authenticated user; all parsing and business logic stays in the Case Core API.",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "playwright": "1.48.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "ts-node": "^10.9.2"
+  }
+}
