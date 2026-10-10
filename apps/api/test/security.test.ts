@@ -114,6 +114,28 @@ describe("Security hardening", () => {
       .expect(401);
   });
 
+  it("does not expose X-Powered-By", async () => {
+    const { app } = await fixture();
+    const res = await request(app).get("/health").expect(200);
+    expect(res.headers["x-powered-by"]).toBeUndefined();
+  });
+
+  it("rejects oversized photo uploads with 413, not 500", async () => {
+    const { app } = await fixture();
+    const login = await request(app)
+      .post("/api/v1/auth/login")
+      .send({ email: "staff@example.com", password: "password123" })
+      .expect(200);
+    const token = login.body.token;
+
+    const res = await request(app)
+      .post("/api/v1/vin/ocr")
+      .set("Authorization", `Bearer ${token}`)
+      .attach("photo", Buffer.alloc(11 * 1024 * 1024), "big.jpg")
+      .expect(413);
+    expect(res.body.error.code).toBe("PAYLOAD_TOO_LARGE");
+  });
+
   it("does not leak stack traces or internals on errors", async () => {
     const { app } = await fixture();
     const res = await request(app)

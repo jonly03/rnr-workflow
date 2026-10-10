@@ -113,6 +113,9 @@ export function createApp(
   const pricingConfig = deps.pricingConfig ?? loadPricingConfig();
   const app = express();
 
+  // Do not fingerprint the framework: Express sets X-Powered-By by default.
+  app.disable("x-powered-by");
+
   // Trust the first proxy hop (Vercel edge / web proxy) so req.ip reflects the
   // real client. Required for the login rate limiter to key on client IPs.
   app.set("trust proxy", 1);
@@ -571,6 +574,26 @@ export function createApp(
         error: {
           code: "VALIDATION_ERROR",
           message: "Request body is not valid JSON."
+        }
+      });
+    }
+    // multer reports upload problems (e.g. a VIN photo over the 10MB limit)
+    // as MulterError, which carries a `code` instead of an HTTP `status`.
+    // Answer 413 for oversized files and 400 for other upload rejections —
+    // never 500, and never leak internals.
+    if (error instanceof multer.MulterError) {
+      if (error.code === "LIMIT_FILE_SIZE") {
+        return res.status(413).json({
+          error: {
+            code: "PAYLOAD_TOO_LARGE",
+            message: "Uploaded file is too large."
+          }
+        });
+      }
+      return res.status(400).json({
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "File upload was rejected."
         }
       });
     }
