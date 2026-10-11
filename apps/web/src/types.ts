@@ -98,3 +98,55 @@ export interface CaseEvent {
   actor_type: string;
   payload: Record<string, unknown>;
 }
+
+/** Phase 4b: install tracking. One status stream drives the tech view,
+ *  the dispatcher map monitor, and the client tracker. */
+export type AppointmentStatus =
+  | "SCHEDULED"
+  | "EN_ROUTE"
+  | "ARRIVED"
+  | "COMPLETE";
+
+export interface DispatchAppointment {
+  id: string;
+  case_id: string;
+  case_ref: string;
+  lat: number;
+  lng: number;
+  status: AppointmentStatus;
+  tech: { id: string; name: string } | null;
+  address: string;
+  time_window: string;
+  customer_name: string;
+  vehicle: { year: number; make: string; model: string } | null;
+  glass_type: string | null;
+}
+
+export interface DispatchDay {
+  date: string;
+  appointments: DispatchAppointment[];
+}
+
+export interface TrackingTimelineStep {
+  stage: "confirmed" | "en_route" | "arrived" | "done";
+  at: string | null;
+}
+
+/** Client-safe tracking payload: no economics, no supplier info. */
+export interface TrackingInfo {
+  case_ref: string;
+  vehicle: { year: number; make: string; model: string } | null;
+  glass_type: string | null;
+  customer_name: string;
+  address: string;
+  time_window: string;
+  tech_name: string;
+  status: AppointmentStatus;
+  timeline: TrackingTimelineStep[];
+}
+
+export interface TrackingLink {
+  tracking_token: string;
+  tracking_url: string;
+  expires_at: string;
+}

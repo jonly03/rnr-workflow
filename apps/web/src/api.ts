@@ -1,4 +1,5 @@
 import type { CaseEvent, CaseRecord, Channel, GlassType } from "./types";
+import type { DispatchDay, TrackingInfo, TrackingLink } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001/api/v1";
 
@@ -439,4 +440,40 @@ export function createCase(input: CreateCaseInput) {
  */
 export function startIdentification(caseId: string) {
   return performAction(caseId, "start_identification");
+}
+
+// --- Phase 4b: dispatch / install tracking ---------------------------------
+
+/** Dispatcher map monitor: today's appointments as map pins (staff only). */
+export function getDispatchToday() {
+  return fetch(`${API_BASE}/dispatch/today`, { headers: authHeaders() }).then(
+    json<DispatchDay>
+  );
+}
+
+/** Technician view: my assigned jobs for today. */
+export function getMyJobs() {
+  return fetch(`${API_BASE}/dispatch/my-jobs`, { headers: authHeaders() }).then(
+    json<DispatchDay>
+  );
+}
+
+/** Advance one job's tracking status (tech_en_route | tech_arrived | tech_complete). */
+export function advanceTracking(caseId: string, action: string) {
+  return performAction(caseId, action);
+}
+
+/** Mint a read-only client tracking link for a case (staff). */
+export function mintTrackingLink(caseId: string) {
+  return fetch(`${API_BASE}/cases/${caseId}/tracking-link`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" })
+  }).then(json<TrackingLink>);
+}
+
+/** Public client tracker — no staff login. The token is the credential. */
+export function getTracking(token: string) {
+  return fetch(`${API_BASE}/track/${encodeURIComponent(token)}`).then(
+    json<TrackingInfo>
+  );
 }
