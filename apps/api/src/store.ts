@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
+  Appointment,
+  AppointmentStatus,
   ApprovalTokenRecord,
   CaseEvent,
   CaseRecord,
@@ -149,6 +151,19 @@ export interface SavePriceCalculationInput {
   status: PriceStatus;
 }
 
+export interface CreateAppointmentInput {
+  caseId: string;
+  technicianId?: string | null;
+  technicianName: string;
+  serviceAddress: string;
+  lat: number;
+  lng: number;
+  /** YYYY-MM-DD */
+  scheduledDate: string;
+  timeWindow?: string;
+  customerName?: string;
+}
+
 export interface CaseStore {
   health(): Promise<void>;
   listCases(): Promise<CaseRecord[]>;
@@ -200,6 +215,11 @@ export interface CaseStore {
   clearSupplierOffers(glassRequestId: string): Promise<void>;
   savePriceCalculation(input: SavePriceCalculationInput): Promise<PriceCalculation>;
   getLatestPriceCalculation(glassRequestId: string): Promise<PriceCalculation | null>;
+  /** Phase 4b install tracking. One appointment per case for now. */
+  createAppointment(input: CreateAppointmentInput): Promise<Appointment>;
+  listAppointmentsByDate(date: string): Promise<Appointment[]>;
+  getAppointmentByCaseId(caseId: string): Promise<Appointment | null>;
+  updateAppointmentStatus(id: string, status: AppointmentStatus): Promise<Appointment | null>;
 }
 
 const emptyStore = (): StoreShape => ({
@@ -214,7 +234,8 @@ const emptyStore = (): StoreShape => ({
   vin_lookups: [],
   vin_lookup_spend: [],
   supplier_offers: [],
-  price_calculations: []
+  price_calculations: [],
+  appointments: []
 });
 
 export class JsonCaseStore implements CaseStore {
@@ -620,5 +641,52 @@ export class JsonCaseStore implements CaseStore {
       p => p.glass_request_id === glassRequestId
     );
     return matches.length ? matches[matches.length - 1] : null;
+  }
+
+  async createAppointment(input: CreateAppointmentInput): Promise<Appointment> {
+    const now = new Date().toISOString();
+    const record: Appointment = {
+      id: randomUUID(),
+      case_id: input.caseId,
+      technician_id: input.technicianId ?? null,
+      technician_name: input.technicianName,
+      service_address: input.serviceAddress,
+      lat: input.lat,
+      lng: input.lng,
+      scheduled_date: input.scheduledDate,
+      time_window: input.timeWindow ?? "",
+      customer_name: input.customerName ?? "",
+      status: "SCHEDULED",
+      created_at: now,
+      updated_at: now
+    };
+    const next = structuredClone(this.data);
+    next.appointments.push(record);
+    this.persist(next);
+    return record;
+  }
+
+  async listAppointmentsByDate(date: string): Promise<Appointment[]> {
+    return this.data.appointments
+      .filter(a => a.scheduled_date === date)
+      .sort((a, b) => a.time_window.localeCompare(b.time_window));
+  }
+
+  async getAppointmentByCaseId(caseId: string): Promise<Appointment | null> {
+    const matches = this.data.appointments.filter(a => a.case_id === caseId);
+    return matches.length ? matches[matches.length - 1] : null;
+  }
+
+  async updateAppointmentStatus(
+    id: string,
+    status: AppointmentStatus
+  ): Promise<Appointment | null> {
+    const next = structuredClone(this.data);
+    const record = next.appointments.find(a => a.id === id);
+    if (!record) return null;
+    record.status = status;
+    record.updated_at = new Date().toISOString();
+    this.persist(next);
+    return record;
   }
 }

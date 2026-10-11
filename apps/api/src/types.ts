@@ -67,7 +67,7 @@ export interface StaffUserRecord extends StaffUser {
   password_hash: string;
 }
 
-export type ApprovalTokenPurpose = "quote-approval";
+export type ApprovalTokenPurpose = "quote-approval" | "job-tracking";
 
 /**
  * Opaque single-use token granting an external party scoped access to one
@@ -199,6 +199,41 @@ export interface PriceCalculation {
   created_at: string;
 }
 
+/**
+ * Install-appointment tracking status. One status stream drives the
+ * technician view, the dispatcher map monitor, and the client tracker.
+ * (Phase 4b; the install slice will create these rows for real at
+ * schedule time. Seeded demo rows use the same shape.)
+ */
+export type AppointmentStatus =
+  | "SCHEDULED"
+  | "EN_ROUTE"
+  | "ARRIVED"
+  | "COMPLETE";
+
+export interface Appointment {
+  id: string;
+  case_id: string;
+  /** Staff user id of the assigned technician; null when unassigned. */
+  technician_id: string | null;
+  /** Display name of the technician (denormalized for the map). */
+  technician_name: string;
+  /** Where the install happens. Cases don't carry addresses — this is new. */
+  service_address: string;
+  /** Geocoded coordinates. Seeds use fixed pins; real geocoding comes later. */
+  lat: number;
+  lng: number;
+  /** YYYY-MM-DD: the day this appointment is scheduled. */
+  scheduled_date: string;
+  /** Human time window, e.g. "9:00–11:00 AM". */
+  time_window: string;
+  /** Customer display name (denormalized; real customer model later). */
+  customer_name: string;
+  status: AppointmentStatus;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface StoreShape {
   cases: CaseRecord[];
   vehicles: Vehicle[];
@@ -212,4 +247,5 @@ export interface StoreShape {
   vin_lookup_spend: VinLookupSpendRecord[];
   supplier_offers: SupplierOffer[];
   price_calculations: PriceCalculation[];
+  appointments: Appointment[];
 }

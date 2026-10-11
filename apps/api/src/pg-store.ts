@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type pg from "pg";
 import type {
+  Appointment,
+  AppointmentStatus,
   ApprovalTokenRecord,
   CaseEvent,
   CaseRecord,
@@ -17,6 +19,7 @@ import type {
 import type {
   AppendEventInput,
   CaseStore,
+  CreateAppointmentInput,
   CreateApprovalTokenInput,
   CreateCaseStoreInput,
   CreateStaffUserInput,
@@ -187,6 +190,27 @@ function priceCalculationRow(row: any): PriceCalculation {
     pricing_config: parseJson<Record<string, unknown>>(row.pricing_config, {}),
     status: row.status,
     created_at: iso(row.created_at)
+  };
+}
+
+function appointmentRow(row: any): Appointment {
+  return {
+    id: row.id,
+    case_id: row.case_id,
+    technician_id: row.technician_id,
+    technician_name: row.technician_name ?? "",
+    service_address: row.service_address,
+    lat: Number(row.lat),
+    lng: Number(row.lng),
+    scheduled_date:
+      row.scheduled_date instanceof Date
+        ? row.scheduled_date.toISOString().slice(0, 10)
+        : String(row.scheduled_date).slice(0, 10),
+    time_window: row.time_window ?? "",
+    customer_name: row.customer_name ?? "",
+    status: row.status as AppointmentStatus,
+    created_at: iso(row.created_at),
+    updated_at: iso(row.updated_at)
   };
 }
 
@@ -684,5 +708,59 @@ export class PgCaseStore implements CaseStore {
       [glassRequestId]
     );
     return result.rowCount ? priceCalculationRow(result.rows[0]) : null;
+  }
+
+  async createAppointment(input: CreateAppointmentInput): Promise<Appointment> {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    await this.pool.query(
+      `insert into appointments(id, case_id, technician_id, technician_name,
+        service_address, lat, lng, scheduled_date, time_window, customer_name,
+        status, created_at, updated_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'SCHEDULED',$11,$11)`,
+      [
+        id,
+        input.caseId,
+        input.technicianId ?? null,
+        input.technicianName,
+        input.serviceAddress,
+        input.lat,
+        input.lng,
+        input.scheduledDate,
+        input.timeWindow ?? "",
+        input.customerName ?? "",
+        now
+      ]
+    );
+    const result = await this.pool.query("select * from appointments where id = $1", [id]);
+    return appointmentRow(result.rows[0]);
+  }
+
+  async listAppointmentsByDate(date: string): Promise<Appointment[]> {
+    const result = await this.pool.query(
+      `select * from appointments where scheduled_date = $1::date order by time_window asc`,
+      [date]
+    );
+    return result.rows.map(appointmentRow);
+  }
+
+  async getAppointmentByCaseId(caseId: string): Promise<Appointment | null> {
+    const result = await this.pool.query(
+      `select * from appointments where case_id = $1 order by created_at desc limit 1`,
+      [caseId]
+    );
+    return result.rowCount ? appointmentRow(result.rows[0]) : null;
+  }
+
+  async updateAppointmentStatus(
+    id: string,
+    status: AppointmentStatus
+  ): Promise<Appointment | null> {
+    const result = await this.pool.query(
+      `update appointments set status = $1, updated_at = now()
+       where id = $2 returning *`,
+      [status, id]
+    );
+    return result.rowCount ? appointmentRow(result.rows[0]) : null;
   }
 }
