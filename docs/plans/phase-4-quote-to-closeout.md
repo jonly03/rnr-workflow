@@ -50,6 +50,28 @@
 
 **Actions:** `schedule_install`, `reschedule_install`, `complete_install`.
 
+### 3b. Technician view + staff map monitor (Phase 4b — after the core install slice)
+
+Nelly built the Map Monitor at AspenTech (Fleet Optimizer): the dispatcher sees
+groups, terminals, customers, and trucks live as the schedule executes. Same idea
+for installs, scoped to a small shop:
+
+- **Technician persona (new — not a customer channel).** "Channel" in Case Core
+  means customer channel (Direct/Auction/Insurance). Technicians get their own
+  mobile view: my jobs today, tap to advance status
+  (`en route` → `arrived` → `complete`). Status taps are the location signal —
+  no continuous GPS tracking in v1 (simpler, and respectful of the techs).
+- **Service address on the appointment.** Cases don't carry an address today;
+  scheduling needs one → geocode at schedule time → map pin.
+- **Staff map monitor (dispatcher view):** today's installs as pins, colored by
+  status; technician pins from their latest status tap; click a pin for case
+  detail. This is the "visualize the schedule as it is being executed" view.
+- **Stack:** Leaflet + OpenStreetMap (free; no Mapbox bill). Status-driven pins
+  first; real-time tracking only if the shop ever asks for it.
+
+**New actions:** `tech_en_route`, `tech_arrived` (both also usable by staff on
+the tech's behalf).
+
 ## 4. Invoice + sign-off + closeout (#19b)
 
 **States:** `INSTALL_COMPLETED` → `INVOICED` → `CLOSED` (terminal).
@@ -74,7 +96,8 @@
 3. Ordering (confirm + place, mock provider, idempotency).
 4. Installation (schedule / reschedule / complete).
 5. Invoice from actuals + in-app signature + closeout.
-6. Extend `case-core-e2e.mjs` through `CLOSED`; epic #20 proof across all three channels.
+6. **Phase 4b:** technician view + staff map monitor (needs 4 + addresses first).
+7. Extend `case-core-e2e.mjs` through `CLOSED`; epic #20 proof across all three channels.
 
 ## Out of scope
 
