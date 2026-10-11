@@ -12,6 +12,10 @@ import type {
   GlassType,
   IdentificationMethod,
   IdentificationStatus,
+  Invoice,
+  InvoiceActuals,
+  InvoiceSignature,
+  InvoiceStatus,
   PriceCalculation,
   PriceStatus,
   StaffUser,
@@ -136,6 +140,22 @@ export interface SaveSupplierOfferInput {
   isInterchange: boolean;
 }
 
+export interface SaveInvoiceInput {
+  caseId: string;
+  version: number;
+  actuals: InvoiceActuals;
+  status: InvoiceStatus;
+}
+
+export interface SignInvoiceInput {
+  invoiceId: string;
+  name: string;
+  signatureHash: string;
+  signatureDataUrl: string;
+  signedAt: string;
+  attribution: string;
+}
+
 export interface SavePriceCalculationInput {
   caseId: string;
   glassRequestId: string;
@@ -200,6 +220,13 @@ export interface CaseStore {
   clearSupplierOffers(glassRequestId: string): Promise<void>;
   savePriceCalculation(input: SavePriceCalculationInput): Promise<PriceCalculation>;
   getLatestPriceCalculation(glassRequestId: string): Promise<PriceCalculation | null>;
+  /** Persists a new invoice version (append-only; history is never mutated). */
+  saveInvoice(input: SaveInvoiceInput): Promise<Invoice>;
+  /** All invoice versions for a case, oldest first. */
+  listInvoices(caseId: string): Promise<Invoice[]>;
+  getLatestInvoice(caseId: string): Promise<Invoice | null>;
+  /** Records the client's signature on an invoice. Idempotent. */
+  signInvoice(input: SignInvoiceInput): Promise<Invoice>;
 }
 
 const emptyStore = (): StoreShape => ({
@@ -214,7 +241,8 @@ const emptyStore = (): StoreShape => ({
   vin_lookups: [],
   vin_lookup_spend: [],
   supplier_offers: [],
-  price_calculations: []
+  price_calculations: [],
+  invoices: []
 });
 
 export class JsonCaseStore implements CaseStore {
@@ -620,5 +648,52 @@ export class JsonCaseStore implements CaseStore {
       p => p.glass_request_id === glassRequestId
     );
     return matches.length ? matches[matches.length - 1] : null;
+  }
+
+  async saveInvoice(input: SaveInvoiceInput): Promise<Invoice> {
+    const now = new Date().toISOString();
+    const record: Invoice = {
+      id: randomUUID(),
+      case_id: input.caseId,
+      version: input.version,
+      actuals: input.actuals,
+      status: input.status,
+      signature: null,
+      created_at: now
+    };
+    const next = structuredClone(this.data);
+    next.invoices.push(record);
+    this.persist(next);
+    return record;
+  }
+
+  async listInvoices(caseId: string): Promise<Invoice[]> {
+    return this.data.invoices
+      .filter(i => i.case_id === caseId)
+      .sort((a, b) => a.version - b.version);
+  }
+
+  async getLatestInvoice(caseId: string): Promise<Invoice | null> {
+    const matches = await this.listInvoices(caseId);
+    return matches.length ? matches[matches.length - 1] : null;
+  }
+
+  async signInvoice(input: SignInvoiceInput): Promise<Invoice> {
+    const next = structuredClone(this.data);
+    const record = next.invoices.find(i => i.id === input.invoiceId);
+    if (!record) throw new Error("Invoice not found.");
+    // Idempotent: a second sign call returns the current record unchanged.
+    if (record.status !== "SIGNED") {
+      record.status = "SIGNED";
+      record.signature = {
+        name: input.name,
+        signed_at: input.signedAt,
+        attribution: input.attribution,
+        signature_hash: input.signatureHash,
+        signature_data_url: input.signatureDataUrl
+      };
+    }
+    this.persist(next);
+    return record;
   }
 }

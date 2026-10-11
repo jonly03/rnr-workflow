@@ -7,6 +7,8 @@ import type {
   GlassCandidate,
   GlassIdentification,
   GlassRequest,
+  Invoice,
+  InvoiceActuals,
   PriceCalculation,
   StaffUser,
   StaffUserRecord,
@@ -23,9 +25,11 @@ import type {
   ReserveVinLookupSpendInput,
   ReserveVinLookupSpendResult,
   SaveGlassIdentificationInput,
+  SaveInvoiceInput,
   SavePriceCalculationInput,
   SaveSupplierOfferInput,
   SaveVinLookupInput,
+  SignInvoiceInput,
   VinLookupGlassResult
 } from "./store.js";
 import type { GlassType } from "./types.js";
@@ -186,6 +190,26 @@ function priceCalculationRow(row: any): PriceCalculation {
     sell_price_cents: Number(row.sell_price_cents),
     pricing_config: parseJson<Record<string, unknown>>(row.pricing_config, {}),
     status: row.status,
+    created_at: iso(row.created_at)
+  };
+}
+
+function invoiceRow(row: any): Invoice {
+  return {
+    id: row.id,
+    case_id: row.case_id,
+    version: Number(row.version),
+    actuals: parseJson<InvoiceActuals>(row.actuals, {
+      glass_cost_cents: 0,
+      labor_cents: 0,
+      profit_cents: 0,
+      tax_cents: 0,
+      sell_price_cents: 0,
+      price_calculation_id: "",
+      source: "unknown"
+    }),
+    status: row.status,
+    signature: row.signature == null ? null : parseJson(row.signature, null),
     created_at: iso(row.created_at)
   };
 }
@@ -684,5 +708,69 @@ export class PgCaseStore implements CaseStore {
       [glassRequestId]
     );
     return result.rowCount ? priceCalculationRow(result.rows[0]) : null;
+  }
+
+  async saveInvoice(input: SaveInvoiceInput): Promise<Invoice> {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    await this.pool.query(
+      `insert into invoices(id, case_id, version, actuals, status, signature, created_at)
+       values ($1,$2,$3,$4::jsonb,$5,$6::jsonb,$7)`,
+      [
+        id,
+        input.caseId,
+        input.version,
+        JSON.stringify(input.actuals),
+        input.status,
+        null,
+        now
+      ]
+    );
+    const result = await this.pool.query("select * from invoices where id = $1", [id]);
+    return invoiceRow(result.rows[0]);
+  }
+
+  async listInvoices(caseId: string): Promise<Invoice[]> {
+    const result = await this.pool.query(
+      "select * from invoices where case_id = $1 order by version asc",
+      [caseId]
+    );
+    return result.rows.map(invoiceRow);
+  }
+
+  async getLatestInvoice(caseId: string): Promise<Invoice | null> {
+    const result = await this.pool.query(
+      "select * from invoices where case_id = $1 order by version desc limit 1",
+      [caseId]
+    );
+    return result.rowCount ? invoiceRow(result.rows[0]) : null;
+  }
+
+  async signInvoice(input: SignInvoiceInput): Promise<Invoice> {
+    // Idempotent: only transition an unsigned invoice; a second sign call
+    // returns the current record unchanged.
+    const result = await this.pool.query(
+      `update invoices
+       set status = 'SIGNED',
+           signature = $2::jsonb
+       where id = $1 and status <> 'SIGNED'
+       returning *`,
+      [
+        input.invoiceId,
+        JSON.stringify({
+          name: input.name,
+          signed_at: input.signedAt,
+          attribution: input.attribution,
+          signature_hash: input.signatureHash,
+          signature_data_url: input.signatureDataUrl
+        })
+      ]
+    );
+    if (!result.rowCount) {
+      const current = await this.pool.query("select * from invoices where id = $1", [input.invoiceId]);
+      if (!current.rowCount) throw new Error("Invoice not found.");
+      return invoiceRow(current.rows[0]);
+    }
+    return invoiceRow(result.rows[0]);
   }
 }
