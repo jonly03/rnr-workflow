@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import multer from "multer";
 import { z } from "zod";
-import type { CaseRecord, Channel, StaffUser } from "./types.js";
+import type { Appointment, CaseRecord, Channel, StaffUser } from "./types.js";
 import type { CaseStore } from "./store.js";
 import type { GlassCatalogProvider } from "./glass-catalog.js";
 import { createGlassCatalogProvider } from "./mygrant.js";
@@ -40,6 +40,17 @@ import {
   type AuthConfig
 } from "./auth.js";
 import { createRateLimiter } from "./rate-limit.js";
+import {
+  advanceTracking,
+  DispatchError,
+  ensureDispatchDemoSeed,
+  todayDate,
+  type TrackingAction
+} from "./dispatch.js";
+import {
+  mintApprovalToken,
+  verifyApprovalToken
+} from "./approval-tokens.js";
 
 const createCaseSchema = z.object({
   channel: z.enum(["DIRECT", "AUCTION", "INSURANCE"]),
@@ -333,6 +344,147 @@ export function createApp(
   // All case routes require staff authentication.
   app.use("/api/v1/cases", auth);
 
+  // --- Phase 4b: dispatch / install tracking -------------------------------
+  // One status stream drives the technician view, the dispatcher map
+  // monitor, and the Domino's-style client tracker.
+
+  app.use("/api/v1/dispatch", auth);
+
+  /** One appointment shaped for the map monitor / tech view / tracker. */
+  const dispatchAppointment = async (a: Appointment) => {
+    const c = await store.getCase(a.case_id);
+    if (!c) return null;
+    const vehicle = await store.getVehicle(c.vehicle_id);
+    const glassRequest = await store.getGlassRequest(c.glass_request_id);
+    return {
+      id: a.id,
+      case_id: a.case_id,
+      case_ref: c.reference,
+      lat: a.lat,
+      lng: a.lng,
+      status: a.status,
+      tech: a.technician_id
+        ? { id: a.technician_id, name: a.technician_name }
+        : null,
+      address: a.service_address,
+      time_window: a.time_window,
+      customer_name: a.customer_name,
+      vehicle: vehicle
+        ? { year: vehicle.year, make: vehicle.make, model: vehicle.model }
+        : null,
+      glass_type: glassRequest?.glass_type ?? null
+    };
+  };
+
+  const dispatchDay = async (staff: StaffUser | undefined, onlyMine: boolean) => {
+    await ensureDispatchDemoSeed(store);
+    const date = todayDate();
+    const appointments = await store.listAppointmentsByDate(date);
+    const shaped = [];
+    for (const a of appointments) {
+      if (onlyMine && a.technician_id !== staff?.id) continue;
+      const c = await store.getCase(a.case_id);
+      if (!c || !canAccessChannel(staff, c.channel)) continue;
+      const s = await dispatchAppointment(a);
+      if (s) shaped.push(s);
+    }
+    return { date, appointments: shaped };
+  };
+
+  app.get("/api/v1/dispatch/today", async (req, res) => {
+    // The dispatcher map is a staff view: technicians see only their own
+    // jobs, via /dispatch/my-jobs.
+    if (req.staff?.role === "technician") {
+      return res.status(403).json({
+        error: {
+          code: "TECHNICIAN_USE_MY_JOBS",
+          message: "Technicians see their own jobs at /api/v1/dispatch/my-jobs."
+        }
+      });
+    }
+    res.json(await dispatchDay(req.staff, false));
+  });
+
+  app.get("/api/v1/dispatch/my-jobs", async (req, res) => {
+    res.json(await dispatchDay(req.staff, true));
+  });
+
+  /**
+   * Client tracking link: mints a read-only, expiring token the customer
+   * can open without a staff login (Domino's-style tracker). Tokens are
+   * never consumed — the client polls while the job runs.
+   */
+  app.post("/api/v1/cases/:caseId/tracking-link", async (req, res) => {
+    const c = await store.getCase(req.params.caseId);
+    if (!c || !canAccessChannel(req.staff, c.channel)) {
+      return channelNotFound(res);
+    }
+    if (req.staff?.role === "technician") {
+      const appt = await store.getAppointmentByCaseId(c.id);
+      if (!appt || appt.technician_id !== req.staff.id) {
+        return res.status(403).json({
+          error: {
+            code: "NOT_YOUR_JOB",
+            message: "Technicians can only share tracking for their own jobs."
+          }
+        });
+      }
+    }
+    const minted = await mintApprovalToken(store, {
+      caseId: c.id,
+      channel: c.channel,
+      purpose: "job-tracking",
+      ttlSeconds: 7 * 24 * 60 * 60
+    });
+    res.json({
+      tracking_token: minted.token,
+      tracking_url: `/?track=${minted.token}`,
+      expires_at: minted.expiresAt
+    });
+  });
+
+  /**
+   * Public client tracker. No auth: the token is the credential.
+   * Returns only what the customer may see — never economics, supplier
+   * info, or other customers' data.
+   */
+  app.get("/api/v1/track/:token", async (req, res) => {
+    const grant = await verifyApprovalToken(store, req.params.token, "job-tracking");
+    const c = grant ? await store.getCase(grant.caseId) : null;
+    const appt = c ? await store.getAppointmentByCaseId(c.id) : null;
+    if (!grant || !c || !appt) {
+      return res.status(404).json({
+        error: {
+          code: "TRACKING_NOT_FOUND",
+          message: "This tracking link is invalid or expired."
+        }
+      });
+    }
+    const vehicle = await store.getVehicle(c.vehicle_id);
+    const glassRequest = await store.getGlassRequest(c.glass_request_id);
+    const events = await store.getEvents(c.id);
+    const at = (type: string) =>
+      events.find(e => e.event_type === type)?.occurred_at ?? null;
+    res.json({
+      case_ref: c.reference,
+      vehicle: vehicle
+        ? { year: vehicle.year, make: vehicle.make, model: vehicle.model }
+        : null,
+      glass_type: glassRequest?.glass_type ?? null,
+      customer_name: appt.customer_name,
+      address: appt.service_address,
+      time_window: appt.time_window,
+      tech_name: appt.technician_name,
+      status: appt.status,
+      timeline: [
+        { stage: "confirmed", at: at("CASE_CREATED") },
+        { stage: "en_route", at: at("TECH_EN_ROUTE") },
+        { stage: "arrived", at: at("TECH_ARRIVED") },
+        { stage: "done", at: at("JOB_COMPLETE") }
+      ]
+    });
+  });
+
   /**
    * Channel isolation: staff whose token carries a `channels` claim may only
    * touch cases in those channels. Staff without the claim (e.g. the admin)
@@ -535,6 +687,23 @@ export function createApp(
         case "reject_price":
           await rejectPrice(store, c.id, staffActor);
           break;
+        case "tech_en_route":
+        case "tech_arrived":
+        case "tech_complete": {
+          // Phase 4b: one status tap updates the tech view, the dispatcher
+          // map, and the client tracker. Illegal transitions are 409s;
+          // technicians can only move their own jobs (403 otherwise) while
+          // other staff may advance on a tech's behalf.
+          const appointment = await advanceTracking(
+            store,
+            c.id,
+            action as TrackingAction,
+            req.staff
+          );
+          const updated = await store.getCase(c.id);
+          const d = await detail(updated!);
+          return res.json({ ...d, appointment });
+        }
         default:
           return res.status(409).json({
             error: {
@@ -555,6 +724,11 @@ export function createApp(
         });
       }
       if (error instanceof PricingError) {
+        return res.status(error.httpStatus).json({
+          error: { code: error.code, message: error.message }
+        });
+      }
+      if (error instanceof DispatchError) {
         return res.status(error.httpStatus).json({
           error: { code: error.code, message: error.message }
         });
