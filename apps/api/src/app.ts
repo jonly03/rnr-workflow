@@ -34,10 +34,14 @@ import {
 } from "./pricing.js";
 import {
   closeCase,
+  declineQuote,
   generateInvoice,
-  InvoicingError,
-  signInvoice
-} from "./invoicing.js";
+  generateQuote,
+  loadQuotingConfig,
+  QuotingError,
+  signQuote,
+  type QuotingConfig
+} from "./quoting.js";
 import {
   ensureSeedAdmin,
   requireAuth,
@@ -106,6 +110,8 @@ export interface AppDeps {
   sourcingProvider?: SourcingProvider;
   /** Pricing configuration override (for tests). Defaults to env vars. */
   pricingConfig?: PricingConfig;
+  /** Quoting configuration override (for tests). Defaults to env vars. */
+  quotingConfig?: QuotingConfig;
 }
 
 export function createApp(
@@ -117,6 +123,7 @@ export function createApp(
   const glassCatalog = deps.glassCatalog ?? createGlassCatalogProvider();
   const sourcingProvider = deps.sourcingProvider ?? createSourcingProvider();
   const pricingConfig = deps.pricingConfig ?? loadPricingConfig();
+  const quotingConfig = deps.quotingConfig ?? loadQuotingConfig();
   const app = express();
 
   // Do not fingerprint the framework: Express sets X-Powered-By by default.
@@ -176,7 +183,8 @@ export function createApp(
       ? await store.getLatestPriceCalculation(glass_request.id)
       : null;
     const invoice = await store.getLatestInvoice(c.id);
-    return { ...c, vehicle, glass_request, glass_identification, supplier_offers, price_calculation, invoice };
+    const quote = await store.getLatestQuote(c.id);
+    return { ...c, vehicle, glass_request, glass_identification, supplier_offers, price_calculation, quote, invoice };
   };
 
   /**
@@ -542,10 +550,15 @@ export function createApp(
         case "reject_price":
           await rejectPrice(store, c.id, staffActor);
           break;
-        case "generate_invoice":
-          await generateInvoice(store, c.id, staffActor);
+        case "generate_quote":
+          await generateQuote(store, quotingConfig, c.id, staffActor);
           break;
-        case "sign_invoice": {
+        case "requote":
+          // Requote = generate a new quote version (from QUOTE_EXPIRED or
+          // QUOTE_DECLINED); history is never mutated.
+          await generateQuote(store, quotingConfig, c.id, staffActor);
+          break;
+        case "sign_quote": {
           const name = req.body?.name;
           const signatureDataUrl = req.body?.signature_data_url;
           const attribution = req.body?.attribution;
@@ -559,7 +572,7 @@ export function createApp(
               error: { code: "VALIDATION_ERROR", message: "signature_data_url is required." }
             });
           }
-          await signInvoice(
+          await signQuote(
             store,
             c.id,
             {
@@ -571,6 +584,12 @@ export function createApp(
           );
           break;
         }
+        case "decline_quote":
+          await declineQuote(store, c.id, staffActor);
+          break;
+        case "generate_invoice":
+          await generateInvoice(store, c.id, staffActor);
+          break;
         case "close_case":
           await closeCase(store, c.id, staffActor);
           break;
@@ -598,7 +617,7 @@ export function createApp(
           error: { code: error.code, message: error.message }
         });
       }
-      if (error instanceof InvoicingError) {
+      if (error instanceof QuotingError) {
         return res.status(error.httpStatus).json({
           error: { code: error.code, message: error.message }
         });

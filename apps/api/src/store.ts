@@ -14,10 +14,12 @@ import type {
   IdentificationStatus,
   Invoice,
   InvoiceActuals,
-  InvoiceSignature,
-  InvoiceStatus,
   PriceCalculation,
   PriceStatus,
+  Quote,
+  QuoteSignature,
+  QuoteSnapshot,
+  QuoteStatus,
   StaffUser,
   StaffUserRecord,
   StoreShape,
@@ -140,20 +142,28 @@ export interface SaveSupplierOfferInput {
   isInterchange: boolean;
 }
 
-export interface SaveInvoiceInput {
+export interface SaveQuoteInput {
   caseId: string;
   version: number;
-  actuals: InvoiceActuals;
-  status: InvoiceStatus;
+  snapshot: QuoteSnapshot;
+  /** ISO timestamp after which the quote can no longer be signed. */
+  expiresAt: string;
+  status: QuoteStatus;
 }
 
-export interface SignInvoiceInput {
-  invoiceId: string;
+export interface SignQuoteInput {
+  quoteId: string;
   name: string;
   signatureHash: string;
   signatureDataUrl: string;
   signedAt: string;
   attribution: string;
+}
+
+export interface SaveInvoiceInput {
+  caseId: string;
+  version: number;
+  actuals: InvoiceActuals;
 }
 
 export interface SavePriceCalculationInput {
@@ -220,13 +230,20 @@ export interface CaseStore {
   clearSupplierOffers(glassRequestId: string): Promise<void>;
   savePriceCalculation(input: SavePriceCalculationInput): Promise<PriceCalculation>;
   getLatestPriceCalculation(glassRequestId: string): Promise<PriceCalculation | null>;
+  /** Persists a new quote version (append-only; history is never mutated). */
+  saveQuote(input: SaveQuoteInput): Promise<Quote>;
+  /** All quote versions for a case, oldest first. */
+  listQuotes(caseId: string): Promise<Quote[]>;
+  getLatestQuote(caseId: string): Promise<Quote | null>;
+  /** Records the client's signature on a quote (signature = approval). Idempotent. */
+  signQuote(input: SignQuoteInput): Promise<Quote>;
+  /** Sets a quote's status (DECLINED / EXPIRED). Returns the updated quote. */
+  updateQuoteStatus(quoteId: string, status: QuoteStatus): Promise<Quote>;
   /** Persists a new invoice version (append-only; history is never mutated). */
   saveInvoice(input: SaveInvoiceInput): Promise<Invoice>;
   /** All invoice versions for a case, oldest first. */
   listInvoices(caseId: string): Promise<Invoice[]>;
   getLatestInvoice(caseId: string): Promise<Invoice | null>;
-  /** Records the client's signature on an invoice. Idempotent. */
-  signInvoice(input: SignInvoiceInput): Promise<Invoice>;
 }
 
 const emptyStore = (): StoreShape => ({
@@ -242,6 +259,7 @@ const emptyStore = (): StoreShape => ({
   vin_lookup_spend: [],
   supplier_offers: [],
   price_calculations: [],
+  quotes: [],
   invoices: []
 });
 
@@ -650,6 +668,63 @@ export class JsonCaseStore implements CaseStore {
     return matches.length ? matches[matches.length - 1] : null;
   }
 
+  async saveQuote(input: SaveQuoteInput): Promise<Quote> {
+    const now = new Date().toISOString();
+    const record: Quote = {
+      id: randomUUID(),
+      case_id: input.caseId,
+      version: input.version,
+      snapshot: input.snapshot,
+      expires_at: input.expiresAt,
+      status: input.status,
+      signature: null,
+      created_at: now
+    };
+    const next = structuredClone(this.data);
+    next.quotes.push(record);
+    this.persist(next);
+    return record;
+  }
+
+  async listQuotes(caseId: string): Promise<Quote[]> {
+    return this.data.quotes
+      .filter(q => q.case_id === caseId)
+      .sort((a, b) => a.version - b.version);
+  }
+
+  async getLatestQuote(caseId: string): Promise<Quote | null> {
+    const matches = await this.listQuotes(caseId);
+    return matches.length ? matches[matches.length - 1] : null;
+  }
+
+  async signQuote(input: SignQuoteInput): Promise<Quote> {
+    const next = structuredClone(this.data);
+    const record = next.quotes.find(q => q.id === input.quoteId);
+    if (!record) throw new Error("Quote not found.");
+    // Idempotent: a second sign call returns the current record unchanged.
+    if (record.status !== "APPROVED") {
+      record.status = "APPROVED";
+      record.signature = {
+        name: input.name,
+        signed_at: input.signedAt,
+        attribution: input.attribution,
+        signature_hash: input.signatureHash,
+        signature_data_url: input.signatureDataUrl
+      };
+    }
+    this.persist(next);
+    return record;
+  }
+
+  async updateQuoteStatus(quoteId: string, status: QuoteStatus): Promise<Quote> {
+    const next = structuredClone(this.data);
+    const record = next.quotes.find(q => q.id === quoteId);
+    if (!record) throw new Error("Quote not found.");
+    record.status = status;
+    this.persist(next);
+    return record;
+  }
+
   async saveInvoice(input: SaveInvoiceInput): Promise<Invoice> {
     const now = new Date().toISOString();
     const record: Invoice = {
@@ -657,8 +732,6 @@ export class JsonCaseStore implements CaseStore {
       case_id: input.caseId,
       version: input.version,
       actuals: input.actuals,
-      status: input.status,
-      signature: null,
       created_at: now
     };
     const next = structuredClone(this.data);
@@ -676,24 +749,5 @@ export class JsonCaseStore implements CaseStore {
   async getLatestInvoice(caseId: string): Promise<Invoice | null> {
     const matches = await this.listInvoices(caseId);
     return matches.length ? matches[matches.length - 1] : null;
-  }
-
-  async signInvoice(input: SignInvoiceInput): Promise<Invoice> {
-    const next = structuredClone(this.data);
-    const record = next.invoices.find(i => i.id === input.invoiceId);
-    if (!record) throw new Error("Invoice not found.");
-    // Idempotent: a second sign call returns the current record unchanged.
-    if (record.status !== "SIGNED") {
-      record.status = "SIGNED";
-      record.signature = {
-        name: input.name,
-        signed_at: input.signedAt,
-        attribution: input.attribution,
-        signature_hash: input.signatureHash,
-        signature_data_url: input.signatureDataUrl
-      };
-    }
-    this.persist(next);
-    return record;
   }
 }

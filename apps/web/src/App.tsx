@@ -19,7 +19,7 @@ import {
 } from "./api";
 import type { CaseEvent, CaseRecord, Channel, GlassCandidate, GlassType } from "./types";
 
-type Screen = "queue" | "new" | "detail" | "invoice";
+type Screen = "queue" | "new" | "detail" | "quote";
 
 const humanize = (value: string) =>
   value.toLowerCase().replaceAll("_", " ").replace(/(^|\s)\S/g, c => c.toUpperCase());
@@ -384,7 +384,7 @@ export function App() {
             setNewCaseOrigin({ screen: "detail", caseId: selected.id, reference: selected.reference });
             setScreen("new");
           }}
-          onOpenClientView={() => setScreen("invoice")}
+          onOpenClientView={() => setScreen("quote")}
           loading={loading}
           staffEmail={staff.email}
         />
@@ -392,7 +392,7 @@ export function App() {
     );
   }
 
-  if (screen === "invoice" && selected) {
+  if (screen === "quote" && selected) {
     return (
       <Shell
         staff={staff}
@@ -400,10 +400,10 @@ export function App() {
         crumbs={[
           { label: "Case queue", onClick: () => setScreen("queue") },
           { label: selected.reference, onClick: () => { void openCase(selected.id); } },
-          { label: "Client invoice" }
+          { label: "Client quote" }
         ]}
       >
-        <ClientInvoiceView
+        <ClientQuoteView
           item={selected}
           onRefresh={() => refreshSelected(selected.id)}
           onBack={() => { void openCase(selected.id); }}
@@ -1211,9 +1211,9 @@ function ManualCaseForm({
  *  staff member in localStorage so each person sees their preferred layout.
  *  The "Staff action required" alert is separate: it pins itself above the
  *  cards only while the case waits on staff, then disappears. */
-export const CASE_CARDS = ["vehicle", "pricing", "invoice", "sourcing", "activity"] as const;
+export const CASE_CARDS = ["vehicle", "pricing", "quote", "invoice", "sourcing", "activity"] as const;
 export type CaseCardId = (typeof CASE_CARDS)[number];
-export const DEFAULT_CARD_ORDER: CaseCardId[] = ["vehicle", "pricing", "invoice", "sourcing", "activity"];
+export const DEFAULT_CARD_ORDER: CaseCardId[] = ["vehicle", "pricing", "quote", "invoice", "sourcing", "activity"];
 
 /** Case states where the workflow is blocked waiting on a person. */
 const STAFF_ACTION_STATES = [
@@ -1393,14 +1393,16 @@ function CaseDetail({
         );
       case "pricing":
         return <PricingSummary item={item} />;
-      case "invoice":
+      case "quote":
         return (
-          <InvoiceCard
+          <QuoteCard
             item={item}
             onRefresh={onRefresh}
             onOpenClientView={onOpenClientView}
           />
         );
+      case "invoice":
+        return <InvoiceCard item={item} onRefresh={onRefresh} />;
       case "sourcing":
         return <SourcingSummary item={item} events={events} onRefresh={onRefresh} />;
       case "activity":
@@ -1833,14 +1835,24 @@ export function describeEvent(e: CaseEvent): string {
       const reason = eventText(p, "reason");
       return `R&R declined the price${reason ? `: ${reason}` : "."}`;
     }
-    case "INVOICE_GENERATED": {
+    case "QUOTE_GENERATED": {
       const v = eventText(p, "version");
       const total = eventText(p, "sell_price_cents");
-      return `Invoice${v ? ` v${v}` : ""} generated${total ? ` — total $${(Number(total) / 100).toFixed(2)}` : ""}.`;
+      return `Quote${v ? ` v${v}` : ""} sent${total ? ` — total $${(Number(total) / 100).toFixed(2)}` : ""}.`;
     }
-    case "INVOICE_SIGNED": {
+    case "QUOTE_SIGNED": {
       const signer = eventText(p, "signer_name");
-      return signer ? `Invoice signed by ${signer}.` : "Invoice signed.";
+      return signer ? `Quote signed by ${signer}.` : "Quote signed.";
+    }
+    case "QUOTE_DECLINED":
+      return "Quote declined by the client.";
+    case "QUOTE_EXPIRED":
+      return "Quote expired before the client signed.";
+    case "INVOICE_GENERATED": {
+      const v = eventText(p, "version");
+      const qv = eventText(p, "quote_version");
+      const total = eventText(p, "sell_price_cents");
+      return `Invoice${v ? ` v${v}` : ""} generated${qv ? ` from signed quote v${qv}` : ""}${total ? ` — total $${(Number(total) / 100).toFixed(2)}` : ""}.`;
     }
     case "CASE_CLOSED":
       return "Case closed.";
@@ -2272,9 +2284,32 @@ function PricingSummary({ item }: { item: CaseRecord }) {
   );
 }
 
-/** Staff invoice card: generate from the approved price, track the client
- *  signature, and close the case once signed. Full actuals are staff-only. */
-function InvoiceCard({
+/** Channel-adapted noun for the commercial document. Labels only for now:
+ *  Direct sees a "quote", Auction a "work request", Insurance an "estimate". */
+function quoteNoun(channel: string): string {
+  if (channel === "AUCTION") return "work request";
+  if (channel === "INSURANCE") return "estimate";
+  return "quote";
+}
+
+function titleNoun(noun: string): string {
+  return noun.charAt(0).toUpperCase() + noun.slice(1);
+}
+
+/** Staff SLA view of the 72h quote validity: a countdown, or "Expired". */
+function quoteSlaLabel(expiresAt: string): string {
+  const ms = new Date(expiresAt).getTime() - Date.now();
+  if (ms <= 0) return "Expired";
+  const h = Math.floor(ms / 3600_000);
+  const m = Math.floor((ms % 3600_000) / 60_000);
+  if (h >= 48) return `SLA: expires in ${Math.floor(h / 24)}d ${h % 24}h`;
+  if (h >= 1) return `SLA: expires in ${h}h ${m}m`;
+  return `SLA: expires in ${m}m`;
+}
+
+/** Staff quote card: generate / re-quote, track signature (approval) and the
+ *  72h SLA, open the client sign-off view. Full economics are staff-only. */
+function QuoteCard({
   item,
   onRefresh,
   onOpenClientView
@@ -2283,13 +2318,111 @@ function InvoiceCard({
   onRefresh: () => Promise<void>;
   onOpenClientView: () => void;
 }) {
+  const quote = item.quote;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+  const noun = quoteNoun(item.channel);
+  const Noun = titleNoun(noun);
+
+  const quotableStates = [
+    "PRICE_APPROVED",
+    "QUOTE_SENT",
+    "QUOTE_DECLINED",
+    "QUOTE_EXPIRED",
+    "QUOTE_APPROVED",
+    "INVOICED",
+    "CLOSED"
+  ];
+  if (!quote && !quotableStates.includes(item.current_state)) return null;
+
+  async function run(action: string, extra: Record<string, unknown> = {}) {
+    setBusy(true);
+    setError(null);
+    try {
+      await performAction(item.id, action, extra);
+      await onRefresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Action failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const signed = quote?.status === "APPROVED" && quote.signature != null;
+  const closed = item.current_state === "CLOSED";
+  const canRequote =
+    !!quote && ["QUOTE_SENT", "QUOTE_DECLINED", "QUOTE_EXPIRED"].includes(item.current_state);
+
+  return (
+    <section className="card" style={{ marginBottom: 18 }}>
+      <h2>{Noun}</h2>
+      {!quote ? (
+        <>
+          <p className="muted">No {noun} yet. Generate one from the approved price.</p>
+          {error && <p className="error">{error}</p>}
+          <button className="primary" disabled={busy} onClick={() => run("generate_quote")}>
+            {busy ? "Generating…" : `Generate ${noun}`}
+          </button>
+        </>
+      ) : (
+        <>
+          <dl>
+            <dt>Version</dt><dd>v{quote.version}</dd>
+            <dt>Total</dt><dd><strong>{fmt(quote.snapshot.sell_price_cents)}</strong></dd>
+            <dt>Status</dt>
+            <dd>
+              {signed
+                ? `Signed by ${quote.signature!.name} at ${new Date(quote.signature!.signed_at).toLocaleString()}`
+                : quote.status === "DECLINED"
+                  ? "Declined by client"
+                  : quote.status === "EXPIRED" || item.current_state === "QUOTE_EXPIRED"
+                    ? "Expired — re-quote to proceed"
+                    : "Awaiting client signature"}
+            </dd>
+            <dt>Validity</dt>
+            <dd>{signed ? "Signed — no expiry" : quoteSlaLabel(quote.expires_at)}</dd>
+          </dl>
+          {error && <p className="error">{error}</p>}
+          {!closed && (
+            <div className="row">
+              {item.current_state === "QUOTE_SENT" && (
+                <button className="secondary" onClick={onOpenClientView}>
+                  Client sign-off view
+                </button>
+              )}
+              {canRequote && (
+                <button className="secondary" disabled={busy} onClick={() => run("requote")}>
+                  {busy ? "Working…" : `Re-quote (v${quote.version + 1})`}
+                </button>
+              )}
+            </div>
+          )}
+          <small>Supplier costs and margins are staff-only; never shown to customers.</small>
+        </>
+      )}
+    </section>
+  );
+}
+
+/** Staff invoice card: generate from the signed quote, then close the case.
+ *  The invoice records which quote version authorized it. */
+function InvoiceCard({
+  item,
+  onRefresh
+}: {
+  item: CaseRecord;
+  onRefresh: () => Promise<void>;
+}) {
   const invoice = item.invoice;
+  const quote = item.quote;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
-  // The card is relevant once an invoice can exist.
-  if (!invoice && item.current_state !== "PRICE_APPROVED") return null;
+  const signedQuote = quote?.status === "APPROVED" && quote.signature != null;
+  const relevantStates = ["QUOTE_APPROVED", "INVOICED", "CLOSED"];
+  if (!invoice && !relevantStates.includes(item.current_state)) return null;
 
   async function run(action: string) {
     setBusy(true);
@@ -2304,7 +2437,6 @@ function InvoiceCard({
     }
   }
 
-  const signed = invoice?.status === "SIGNED" && invoice.signature != null;
   const closed = item.current_state === "CLOSED";
 
   return (
@@ -2312,9 +2444,17 @@ function InvoiceCard({
       <h2>Invoice</h2>
       {!invoice ? (
         <>
-          <p className="muted">No invoice yet. Generate one from the approved price.</p>
+          <p className="muted">
+            {signedQuote
+              ? `No invoice yet. Generate one from signed quote v${quote!.version}.`
+              : "An invoice can be generated once the client signs the quote."}
+          </p>
           {error && <p className="error">{error}</p>}
-          <button className="primary" disabled={busy} onClick={() => run("generate_invoice")}>
+          <button
+            className="primary"
+            disabled={busy || !signedQuote}
+            onClick={() => run("generate_invoice")}
+          >
             {busy ? "Generating…" : "Generate invoice"}
           </button>
         </>
@@ -2322,6 +2462,7 @@ function InvoiceCard({
         <>
           <dl>
             <dt>Version</dt><dd>v{invoice.version}</dd>
+            <dt>From</dt><dd>Signed quote v{invoice.actuals.quote_version}</dd>
             <dt>Glass cost</dt><dd>{fmt(invoice.actuals.glass_cost_cents)}</dd>
             <dt>Labor</dt><dd>{fmt(invoice.actuals.labor_cents)}</dd>
             <dt>Profit</dt><dd>{fmt(invoice.actuals.profit_cents)}</dd>
@@ -2329,18 +2470,11 @@ function InvoiceCard({
             <dt><strong>Total</strong></dt>
             <dd><strong>{fmt(invoice.actuals.sell_price_cents)}</strong></dd>
             <dt>Status</dt>
-            <dd>
-              {signed
-                ? `Signed by ${invoice.signature!.name} at ${new Date(invoice.signature!.signed_at).toLocaleString()}`
-                : closed ? "Case closed" : "Awaiting client signature"}
-            </dd>
+            <dd>{closed ? "Case closed" : "Issued"}</dd>
           </dl>
           {error && <p className="error">{error}</p>}
           {!closed && (
             <div className="row">
-              <button className="secondary" onClick={onOpenClientView}>
-                Client sign-off view
-              </button>
               {item.current_state === "INVOICED" && (
                 <button className="secondary" disabled={busy} onClick={() => run("generate_invoice")}>
                   {busy ? "Working…" : "Re-invoice"}
@@ -2348,15 +2482,15 @@ function InvoiceCard({
               )}
               <button
                 className="primary"
-                disabled={busy || !signed || item.current_state !== "INVOICED"}
+                disabled={busy || item.current_state !== "INVOICED"}
                 onClick={() => run("close_case")}
               >
                 {busy ? "Closing…" : "Close case"}
               </button>
             </div>
           )}
-          {!signed && !closed && item.current_state === "INVOICED" && (
-            <small>Close case unlocks once the client signs.</small>
+          {!closed && item.current_state === "INVOICED" && signedQuote && (
+            <small>Quote is signed — the case can be closed.</small>
           )}
           <small>Supplier costs and margins are staff-only; never shown to customers.</small>
         </>
@@ -2463,10 +2597,11 @@ function SignaturePad({ onChange }: { onChange: (dataUrl: string | null) => void
   );
 }
 
-/** Client-facing invoice: totals only (never supplier cost/margins), a
- *  signature pad, and a typed name. After signing it becomes a read-only
- *  receipt. Opened by staff on a phone/tablet and handed to the customer. */
-function ClientInvoiceView({
+/** Client-facing quote: totals only (never supplier cost/margins), channel-
+ *  adapted labels, a signature pad, and a typed name. Signing = approval.
+ *  After signing it becomes a read-only receipt. Opened by staff on a
+ *  phone/tablet and handed to the customer. */
+function ClientQuoteView({
   item,
   onRefresh,
   onBack
@@ -2475,20 +2610,24 @@ function ClientInvoiceView({
   onRefresh: () => Promise<void>;
   onBack: () => void;
 }) {
-  const invoice = item.invoice;
+  const quote = item.quote;
   const [name, setName] = useState("");
   const [sigUrl, setSigUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
-  const signed = invoice?.status === "SIGNED" && invoice.signature != null;
+  const noun = quoteNoun(item.channel);
+  const Noun = titleNoun(noun);
+  const signed = quote?.status === "APPROVED" && quote.signature != null;
+  const expired =
+    !!quote && (quote.status === "EXPIRED" || new Date(quote.expires_at).getTime() <= Date.now());
 
   async function sign() {
-    if (!invoice || !sigUrl) return;
+    if (!quote || !sigUrl) return;
     setBusy(true);
     setError(null);
     try {
-      await performAction(item.id, "sign_invoice", {
+      await performAction(item.id, "sign_quote", {
         name: name.trim(),
         signature_data_url: sigUrl,
         attribution: "client signature captured in-app"
@@ -2501,11 +2640,25 @@ function ClientInvoiceView({
     }
   }
 
-  if (!invoice) {
+  async function decline() {
+    if (!quote) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await performAction(item.id, "decline_quote");
+      await onRefresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Decline failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!quote) {
     return (
       <section className="card">
-        <h2>Invoice</h2>
-        <p className="muted">No invoice has been generated for this case yet.</p>
+        <h2>{Noun}</h2>
+        <p className="muted">No {noun} has been prepared for this case yet.</p>
         <button className="secondary" onClick={onBack}>← Back to case</button>
       </section>
     );
@@ -2513,26 +2666,39 @@ function ClientInvoiceView({
 
   return (
     <section className="card">
-      <p className="eyebrow">R&R Finest Auto Glass — invoice</p>
+      <p className="eyebrow">R&R Finest Auto Glass — {noun}</p>
       <h1>{item.reference}</h1>
       <p className="muted">
-        {item.vehicle.year} {item.vehicle.make} {item.vehicle.model} ·{" "}
-        {item.glass_request.glass_type.toLowerCase().replaceAll("_", " ")} replacement
+        {quote.snapshot.vehicle.year} {quote.snapshot.vehicle.make} {quote.snapshot.vehicle.model} ·{" "}
+        {quote.snapshot.glass_type.toLowerCase().replaceAll("_", " ")} replacement
       </p>
       <dl>
-        <dt>Labor</dt><dd>{fmt(invoice.actuals.labor_cents)}</dd>
-        <dt>Tax</dt><dd>{fmt(invoice.actuals.tax_cents)}</dd>
+        <dt>Labor</dt><dd>{fmt(quote.snapshot.labor_cents)}</dd>
+        <dt>Tax</dt><dd>{fmt(quote.snapshot.tax_cents)}</dd>
         <dt><strong>Total due</strong></dt>
-        <dd><strong>{fmt(invoice.actuals.sell_price_cents)}</strong></dd>
+        <dd><strong>{fmt(quote.snapshot.sell_price_cents)}</strong></dd>
       </dl>
+      {!signed && !expired && (
+        <p className="muted">
+          This {noun} is valid until {new Date(quote.expires_at).toLocaleString()}.
+        </p>
+      )}
 
       {signed ? (
         <>
           <p className="muted">
-            ✓ Signed by <strong>{invoice.signature!.name}</strong> on{" "}
-            {new Date(invoice.signature!.signed_at).toLocaleString()}.
+            ✓ Signed by <strong>{quote.signature!.name}</strong> on{" "}
+            {new Date(quote.signature!.signed_at).toLocaleString()}.
           </p>
           <p className="muted">Thank you — please hand the device back to our staff.</p>
+          <button className="secondary" onClick={onBack}>← Back to case</button>
+        </>
+      ) : expired ? (
+        <>
+          <p className="error">
+            This {noun} expired on {new Date(quote.expires_at).toLocaleString()}. Please
+            ask our staff for a new one.
+          </p>
           <button className="secondary" onClick={onBack}>← Back to case</button>
         </>
       ) : (
@@ -2557,14 +2723,17 @@ function ClientInvoiceView({
               disabled={busy || !name.trim() || !sigUrl}
               onClick={sign}
             >
-              {busy ? "Signing…" : "Sign invoice"}
+              {busy ? "Signing…" : `Sign ${noun}`}
+            </button>
+            <button className="secondary" disabled={busy} onClick={decline}>
+              Decline
             </button>
             <button className="secondary" disabled={busy} onClick={onBack}>
               Cancel
             </button>
           </div>
           <small>
-            By signing you confirm the work described above at the total shown.
+            By signing you approve the work described above at the total shown.
           </small>
         </>
       )}

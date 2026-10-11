@@ -86,24 +86,28 @@ export interface CaseRecord {
   supplier_offers: SupplierOffer[];
   price_calculation: PriceCalculation | null;
   invoice: Invoice | null;
+  quote: Quote | null;
   created_at: string;
   updated_at: string;
 }
 
-export type InvoiceStatus = "DRAFT" | "SENT" | "SIGNED";
+export type QuoteStatus = "SENT" | "APPROVED" | "DECLINED" | "EXPIRED";
 
-/** Line items copied from the price snapshot at generation time (integer cents). */
-export interface InvoiceActuals {
+/** Immutable snapshot captured at quote generation (integer cents). */
+export interface QuoteSnapshot {
+  vehicle: { year: number; make: string; model: string; vin: string };
+  glass_type: string;
+  part_number: string | null;
+  supplier_name: string | null;
   glass_cost_cents: number;
   labor_cents: number;
   profit_cents: number;
   tax_cents: number;
   sell_price_cents: number;
   price_calculation_id: string;
-  source: string;
 }
 
-export interface InvoiceSignature {
+export interface QuoteSignature {
   name: string;
   signed_at: string;
   attribution: string;
@@ -112,13 +116,36 @@ export interface InvoiceSignature {
   signature_data_url: string;
 }
 
+export interface Quote {
+  id: string;
+  case_id: string;
+  version: number;
+  snapshot: QuoteSnapshot;
+  expires_at: string;
+  status: QuoteStatus;
+  signature: QuoteSignature | null;
+  created_at: string;
+}
+
+/** Line items copied from the signed quote's snapshot (integer cents).
+ *  `quote_id`/`quote_version` record which quote authorized the invoice. */
+export interface InvoiceActuals {
+  glass_cost_cents: number;
+  labor_cents: number;
+  profit_cents: number;
+  tax_cents: number;
+  sell_price_cents: number;
+  price_calculation_id: string;
+  quote_id: string;
+  quote_version: number;
+  source: string;
+}
+
 export interface Invoice {
   id: string;
   case_id: string;
   version: number;
   actuals: InvoiceActuals;
-  status: InvoiceStatus;
-  signature: InvoiceSignature | null;
   created_at: string;
 }
 
