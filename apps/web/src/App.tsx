@@ -1,15 +1,20 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  advanceTracking,
   createCase,
   decodeVin,
   getCase,
   getCaseEvents,
+  getDispatchToday,
   getHealth,
   getMe,
+  getMyJobs,
   getToken,
+  getTracking,
   listCases,
   login,
   logout,
+  mintTrackingLink,
   ocrVinPhoto,
   performAction,
   startIdentification,
@@ -17,9 +22,19 @@ import {
   type DecodedVehicle,
   type StaffUser
 } from "./api";
-import type { CaseEvent, CaseRecord, Channel, GlassCandidate, GlassType } from "./types";
+import type {
+  AppointmentStatus,
+  CaseEvent,
+  CaseRecord,
+  Channel,
+  DispatchAppointment,
+  DispatchDay,
+  GlassCandidate,
+  GlassType,
+  TrackingInfo
+} from "./types";
 
-type Screen = "queue" | "new" | "detail";
+type Screen = "queue" | "new" | "detail" | "dispatch" | "tech";
 
 const humanize = (value: string) =>
   value.toLowerCase().replaceAll("_", " ").replace(/(^|\s)\S/g, c => c.toUpperCase());
@@ -166,6 +181,12 @@ export function App() {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [caseEvents, setCaseEvents] = useState<Record<string, CaseEvent[]>>({});
 
+  // Public client tracker: ?track=<token> renders without a staff login.
+  const trackToken = useMemo(
+    () => new URLSearchParams(window.location.search).get("track"),
+    []
+  );
+
   /** Refresh one expanded card's detail + events without flashing the queue loader. */
   const refreshExpandedCase = async (id: string) => {
     try {
@@ -307,6 +328,16 @@ export function App() {
     setScreen("queue");
   };
 
+  // Public client tracker (?track=<token>) renders without staff login
+  // and without waiting for the auth check.
+  if (trackToken) {
+    return (
+      <Shell staff={null} onSignOut={signOut}>
+        <TrackView token={trackToken} />
+      </Shell>
+    );
+  }
+
   if (!authChecked) {
     return (
       <Shell staff={null} onSignOut={signOut}>
@@ -323,11 +354,41 @@ export function App() {
     );
   }
 
+  if (screen === "dispatch") {
+    return (
+      <Shell
+        staff={staff}
+        onSignOut={signOut}
+        screen={screen}
+        onNavigate={setScreen}
+        crumbs={[{ label: "Dispatch map" }]}
+      >
+        <DispatchMap onOpenCase={id => void openCase(id)} />
+      </Shell>
+    );
+  }
+
+  if (screen === "tech") {
+    return (
+      <Shell
+        staff={staff}
+        onSignOut={signOut}
+        screen={screen}
+        onNavigate={setScreen}
+        crumbs={[{ label: "My jobs" }]}
+      >
+        <TechJobs />
+      </Shell>
+    );
+  }
+
   if (screen === "new") {
     return (
       <Shell
         staff={staff}
         onSignOut={signOut}
+        screen={screen}
+        onNavigate={setScreen}
         crumbs={[
           { label: "Case queue", onClick: () => setScreen("queue") },
           ...(newCaseOrigin.screen === "detail"
@@ -358,6 +419,8 @@ export function App() {
       <Shell
         staff={staff}
         onSignOut={signOut}
+        screen={screen}
+        onNavigate={setScreen}
         crumbs={[
           { label: "Case queue", onClick: () => setScreen("queue") },
           { label: selected.reference }
@@ -379,7 +442,13 @@ export function App() {
   }
 
   return (
-    <Shell staff={staff} onSignOut={signOut} crumbs={[{ label: "Case queue" }]}>
+    <Shell
+      staff={staff}
+      onSignOut={signOut}
+      screen={screen}
+      onNavigate={setScreen}
+      crumbs={[{ label: "Case queue" }]}
+    >
       <section className="page-head">
         <div>
           <p className="eyebrow">R&R Operations</p>
@@ -624,12 +693,16 @@ function Shell({
   children,
   staff,
   onSignOut,
-  crumbs = []
+  crumbs = [],
+  screen,
+  onNavigate
 }: {
   children: React.ReactNode;
   staff: StaffUser | null;
   onSignOut: () => void;
   crumbs?: Crumb[];
+  screen?: Screen;
+  onNavigate?: (s: Screen) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -708,6 +781,29 @@ function Shell({
           </div>
         )}
       </header>
+      {staff && onNavigate && (
+        <nav className="app-nav" aria-label="Primary">
+          {(
+            [
+              { id: "queue", label: "Case queue" },
+              ...(staff.role === "technician"
+                ? []
+                : [{ id: "dispatch", label: "Dispatch map" }]),
+              { id: "tech", label: "My jobs" }
+            ] as Array<{ id: Screen; label: string }>
+          ).map(n => (
+            <button
+              key={n.id}
+              type="button"
+              className={screen === n.id ? "app-nav-active" : ""}
+              aria-current={screen === n.id ? "page" : undefined}
+              onClick={() => onNavigate(n.id)}
+            >
+              {n.label}
+            </button>
+          ))}
+        </nav>
+      )}
       <main>{children}</main>
     </div>
   );
@@ -1374,7 +1470,10 @@ function CaseDetail({
             <code>{item.current_state}</code>
           </div>
         </div>
-        <button className="primary" onClick={onNewCase}>+ New Case</button>
+        <div className="page-head-actions">
+          <TrackingLinkButton caseId={item.id} />
+          <button className="primary" onClick={onNewCase}>+ New Case</button>
+        </div>
       </section>
 
       {isStaffActionRequired(item.current_state) && (
@@ -2214,5 +2313,458 @@ function PricingSummary({ item }: { item: CaseRecord }) {
       </dl>
       <small>Supplier costs and margins are staff-only; never shown to customers.</small>
     </section>
+  );
+}
+
+// --- Phase 4b: dispatch / install tracking ---------------------------------
+// One status stream drives the technician view, the dispatcher map monitor,
+// and the Domino's-style client tracker.
+
+const TRACKING_META: Record<
+  AppointmentStatus,
+  { label: string; color: string; action: string; button: string }
+> = {
+  SCHEDULED: { label: "Scheduled", color: "#3b82f6", action: "tech_en_route", button: "I'm on my way" },
+  EN_ROUTE: { label: "En route", color: "#f59e0b", action: "tech_arrived", button: "I've arrived" },
+  ARRIVED: { label: "Arrived", color: "#8b5cf6", action: "tech_complete", button: "Job complete" },
+  COMPLETE: { label: "Complete", color: "#22c55e", action: "", button: "" }
+};
+
+const TRACKING_STAGES = [
+  { stage: "confirmed", label: "Job confirmed" },
+  { stage: "en_route", label: "Technician on the way" },
+  { stage: "arrived", label: "Technician arrived" },
+  { stage: "done", label: "Job complete" }
+] as const;
+
+function initials(name: string) {
+  return name
+    .split(/\s+/)
+    .map(w => w[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+}
+
+/** Dispatcher map monitor: today's installs as pins, tech pins distinct. */
+function DispatchMap({ onOpenCase }: { onOpenCase: (id: string) => void }) {
+  const mapRef = useRef<HTMLDivElement>(null);
+  const mapObj = useRef<any>(null);
+  const markersRef = useRef<any>(null);
+  const [day, setDay] = useState<DispatchDay | null>(null);
+  const [selected, setSelected] = useState<DispatchAppointment | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [mapFailed, setMapFailed] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setDay(await getDispatchToday());
+      setError("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load dispatch.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+    const t = setInterval(() => void load(), 15000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  // Init the Leaflet map once the CDN script is ready (retry briefly).
+  useEffect(() => {
+    let attempts = 0;
+    let cancelled = false;
+    const init = () => {
+      if (cancelled) return;
+      if (typeof L === "undefined") {
+        if (++attempts < 10) {
+          setTimeout(init, 500);
+          return;
+        }
+        setMapFailed(true);
+        return;
+      }
+      if (mapRef.current && !mapObj.current) {
+        const map = L.map(mapRef.current).setView([42.27, -71.79], 12);
+        L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 19,
+          attribution:
+            '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+        }).addTo(map);
+        markersRef.current = L.layerGroup().addTo(map);
+        mapObj.current = map;
+      }
+    };
+    init();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Re-draw pins when the data refreshes.
+  useEffect(() => {
+    const map = mapObj.current;
+    const layer = markersRef.current;
+    if (!map || !layer || !day || typeof L === "undefined") return;
+    layer.clearLayers();
+    const bounds: Array<[number, number]> = [];
+
+    for (const a of day.appointments) {
+      const meta = TRACKING_META[a.status];
+      const icon = L.divIcon({
+        className: "dispatch-pin-wrap",
+        html: `<div class="dispatch-pin" style="background:${meta.color}" title="${a.case_ref}">${a.status === "COMPLETE" ? "✓" : ""}</div>`,
+        iconSize: [26, 26],
+        iconAnchor: [13, 13]
+      });
+      const marker = L.marker([a.lat, a.lng], { icon });
+      marker.on("click", () => setSelected(a));
+      marker.addTo(layer);
+      bounds.push([a.lat, a.lng]);
+    }
+
+    // Technician pins: latest active job per tech (status-driven, no GPS).
+    const seen = new Set<string>();
+    for (const a of day.appointments) {
+      if (!a.tech || seen.has(a.tech.id)) continue;
+      if (a.status !== "EN_ROUTE" && a.status !== "ARRIVED") continue;
+      seen.add(a.tech.id);
+      const icon = L.divIcon({
+        className: "dispatch-pin-wrap",
+        html: `<div class="tech-pin" title="${a.tech.name}">${initials(a.tech.name)}</div>`,
+        iconSize: [34, 34],
+        iconAnchor: [17, 17]
+      });
+      // Offset slightly so the tech pin doesn't sit exactly on the job pin.
+      L.marker([a.lat + 0.003, a.lng + 0.003], { icon }).addTo(layer);
+    }
+
+    if (bounds.length > 0) map.fitBounds(bounds, { padding: [40, 40] });
+  }, [day]);
+
+  return (
+    <>
+      <section className="page-head">
+        <div>
+          <p className="eyebrow">R&R Operations</p>
+          <h1>Dispatch map</h1>
+          <p className="muted">
+            Today's installs as the schedule executes — tap a pin for the job.
+          </p>
+        </div>
+      </section>
+      {error && <div className="alert">{error}</div>}
+      {loading ? (
+        <div className="card">Loading today's jobs…</div>
+      ) : mapFailed ? (
+        <div className="card">
+          <p>The map couldn't load (network needed for map tiles). The jobs are listed below.</p>
+          <JobListFallback appointments={day?.appointments ?? []} onOpenCase={onOpenCase} />
+        </div>
+      ) : (
+        <div className="dispatch-layout">
+          <div ref={mapRef} className="dispatch-map" aria-label="Dispatch map" />
+          <aside className="dispatch-side" aria-label="Job detail">
+            {selected ? (
+              <div className="card">
+                <h2>{selected.case_ref}</h2>
+                <dl>
+                  <dt>Customer</dt><dd>{selected.customer_name}</dd>
+                  <dt>Address</dt><dd>{selected.address}</dd>
+                  <dt>Window</dt><dd>{selected.time_window}</dd>
+                  <dt>Vehicle</dt>
+                  <dd>
+                    {selected.vehicle
+                      ? `${selected.vehicle.year} ${selected.vehicle.make} ${selected.vehicle.model}`
+                      : "—"}
+                  </dd>
+                  <dt>Technician</dt><dd>{selected.tech?.name ?? "Unassigned"}</dd>
+                  <dt>Status</dt>
+                  <dd>
+                    <span
+                      className="status-dot"
+                      style={{ background: TRACKING_META[selected.status].color }}
+                    />{" "}
+                    {TRACKING_META[selected.status].label}
+                  </dd>
+                </dl>
+                <button className="primary" onClick={() => onOpenCase(selected.case_id)}>
+                  Open case
+                </button>
+              </div>
+            ) : (
+              <div className="card muted">Tap a pin to see the job.</div>
+            )}
+            <div className="card">
+              <h2>Legend</h2>
+              <ul className="legend">
+                {(Object.keys(TRACKING_META) as AppointmentStatus[]).map(s => (
+                  <li key={s}>
+                    <span className="status-dot" style={{ background: TRACKING_META[s].color }} />{" "}
+                    {TRACKING_META[s].label}
+                  </li>
+                ))}
+                <li><span className="tech-pin legend-pin">AB</span> Technician (latest status)</li>
+              </ul>
+            </div>
+          </aside>
+        </div>
+      )}
+    </>
+  );
+}
+
+function JobListFallback({
+  appointments,
+  onOpenCase
+}: {
+  appointments: DispatchAppointment[];
+  onOpenCase: (id: string) => void;
+}) {
+  return (
+    <ul className="job-list">
+      {appointments.map(a => (
+        <li key={a.id}>
+          <button type="button" className="link" onClick={() => onOpenCase(a.case_id)}>
+            {a.case_ref}
+          </button>{" "}
+          — {a.customer_name}, {a.address} ({TRACKING_META[a.status].label})
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Technician mobile view: my jobs today, one big status button per job. */
+function TechJobs() {
+  const [day, setDay] = useState<DispatchDay | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    try {
+      setDay(await getMyJobs());
+      setError("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load jobs.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+    const t = setInterval(() => void load(), 30000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  const tap = async (a: DispatchAppointment) => {
+    const meta = TRACKING_META[a.status];
+    if (!meta.action || busyId) return;
+    setBusyId(a.id);
+    setError("");
+    try {
+      await advanceTracking(a.case_id, meta.action);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Update failed.");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <>
+      <section className="page-head">
+        <div>
+          <p className="eyebrow">R&R Operations</p>
+          <h1>My jobs today</h1>
+          <p className="muted">Tap through each job as you go — the dispatcher and the customer see it live.</p>
+        </div>
+      </section>
+      {error && <div className="alert">{error}</div>}
+      {loading ? (
+        <div className="card">Loading your jobs…</div>
+      ) : !day || day.appointments.length === 0 ? (
+        <div className="card">No jobs assigned to you today.</div>
+      ) : (
+        <div className="tech-jobs">
+          {day.appointments.map(a => {
+            const meta = TRACKING_META[a.status];
+            const busy = busyId === a.id;
+            return (
+              <section key={a.id} className="card tech-job-card">
+                <div className="tech-job-head">
+                  <h2>{a.case_ref}</h2>
+                  <span className="tech-status" style={{ background: meta.color }}>
+                    {meta.label}
+                  </span>
+                </div>
+                <dl>
+                  <dt>Customer</dt><dd>{a.customer_name}</dd>
+                  <dt>Address</dt><dd>{a.address}</dd>
+                  <dt>Window</dt><dd>{a.time_window}</dd>
+                  <dt>Vehicle</dt>
+                  <dd>
+                    {a.vehicle ? `${a.vehicle.year} ${a.vehicle.make} ${a.vehicle.model}` : "—"}
+                    {a.glass_type ? ` · ${a.glass_type.toLowerCase().replaceAll("_", " ")}` : ""}
+                  </dd>
+                </dl>
+                {meta.action ? (
+                  <button
+                    type="button"
+                    className="primary tech-tap"
+                    disabled={busy}
+                    onClick={() => void tap(a)}
+                  >
+                    {busy ? "Updating…" : meta.button}
+                  </button>
+                ) : (
+                  <p className="muted">✓ Done — nice work.</p>
+                )}
+              </section>
+            );
+          })}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** Public client tracker (Domino's-style): no staff login, token-gated. */
+function TrackView({ token }: { token: string }) {
+  const [info, setInfo] = useState<TrackingInfo | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    try {
+      setInfo(await getTracking(token));
+      setError("");
+    } catch {
+      setError("This tracking link is invalid or expired.");
+    } finally {
+      setLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    void load();
+    const t = setInterval(() => void load(), 20000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  if (loading) {
+    return (
+      <div className="card track-card">
+        <h1>Job tracking</h1>
+        <p className="muted">Loading…</p>
+      </div>
+    );
+  }
+  if (error || !info) {
+    return (
+      <div className="card track-card">
+        <h1>Job tracking</h1>
+        <div className="alert">{error || "Unavailable."}</div>
+      </div>
+    );
+  }
+
+  const reached = (stage: string) => {
+    const order = ["confirmed", "en_route", "arrived", "done"];
+    const current = order.indexOf(
+      info.status === "SCHEDULED" ? "confirmed"
+      : info.status === "EN_ROUTE" ? "en_route"
+      : info.status === "ARRIVED" ? "arrived"
+      : "done"
+    );
+    return order.indexOf(stage) <= current;
+  };
+  const at = (stage: string) =>
+    info.timeline.find(t => t.stage === stage)?.at ?? null;
+
+  return (
+    <div className="card track-card">
+      <p className="eyebrow">R&R Finest Auto Glass</p>
+      <h1>Your install · {info.case_ref}</h1>
+      <p className="muted">
+        {info.vehicle ? `${info.vehicle.year} ${info.vehicle.make} ${info.vehicle.model} · ` : ""}
+        {info.glass_type?.toLowerCase().replaceAll("_", " ")}
+      </p>
+      <ol className="track-timeline">
+        {TRACKING_STAGES.map(s => {
+          const done = reached(s.stage);
+          const ts = at(s.stage);
+          return (
+            <li key={s.stage} className={done ? "track-step done" : "track-step"}>
+              <span className="track-dot" aria-hidden="true">
+                {done ? "✓" : ""}
+              </span>
+              <div>
+                <strong>{s.label}</strong>
+                {s.stage === "en_route" && done && info.tech_name && (
+                  <span className="muted"> — {info.tech_name} is on the way</span>
+                )}
+                <div className="muted small">
+                  {ts ? new Date(ts).toLocaleString() : done ? "" : "pending"}
+                </div>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+      <dl className="track-meta">
+        <dt>Service address</dt><dd>{info.address}</dd>
+        <dt>Time window</dt><dd>{info.time_window}</dd>
+      </dl>
+    </div>
+  );
+}
+
+/** Staff button: mint a read-only client tracking link for a case. */
+function TrackingLinkButton({ caseId }: { caseId: string }) {
+  const [link, setLink] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const mint = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const t = await mintTrackingLink(caseId);
+      setLink(window.location.origin + t.tracking_url);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not create the link.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (link) {
+    return (
+      <div className="tracking-link">
+        <input readOnly value={link} aria-label="Client tracking link" onFocus={e => e.target.select()} />
+        <button
+          type="button"
+          onClick={() => void navigator.clipboard?.writeText(link).catch(() => {})}
+        >
+          Copy
+        </button>
+      </div>
+    );
+  }
+  return (
+    <>
+      <button type="button" disabled={busy} onClick={() => void mint()}>
+        {busy ? "Creating…" : "Client tracking link"}
+      </button>
+      {error && <span className="alert inline">{error}</span>}
+    </>
   );
 }
