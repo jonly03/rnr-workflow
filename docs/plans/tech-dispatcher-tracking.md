@@ -73,3 +73,45 @@ without quote/order/install existing.
 
 Continuous GPS tracking, route optimization, automated dispatching, customer
 notifications (SMS/email). The map is *visibility*, not optimization, in v1.
+
+## Build notes (implemented 2026-10-11, branch `plan/tech-dispatcher-tracking`)
+
+**What shipped:**
+- `appointments` table (migration `010_dispatch_appointments.sql`) + store
+  methods on both JsonCaseStore and PgCaseStore.
+- `GET /api/v1/dispatch/today` (dispatcher map; 403 for technicians),
+  `GET /api/v1/dispatch/my-jobs` (tech's own jobs).
+- Actions `tech_en_route` / `tech_arrived` / `tech_complete` on
+  `POST /api/v1/cases/:caseId/actions` — illegal transitions 409,
+  technicians limited to their own jobs (403), other staff may advance on
+  a tech's behalf. Each tap appends a case event (TECH_EN_ROUTE /
+  TECH_ARRIVED / JOB_COMPLETE) and updates the appointment.
+- Client tracking: `POST /api/v1/cases/:caseId/tracking-link` mints a
+  read-only 7-day token (purpose `job-tracking`); `GET /api/v1/track/:token`
+  is public and returns only the timeline — no economics, no suppliers.
+- Web: dispatcher map (Leaflet + OSM via CDN, pins colored by status, tech
+  pins distinct, tap pin → case), technician "my jobs" view (big status
+  buttons), public `?track=<token>` client timeline, "Client tracking link"
+  button on the case detail.
+- Seeded demo: 3 same-day appointments (Worcester MA area, fixed pins),
+  created lazily on first dispatch hit. Disable with
+  `DISPATCH_DEMO_SEED=false`.
+
+**Demo credentials (Lou's independent test):**
+- Technician: `tech@rnr.demo` / `demo-tech-1234` → "My jobs" tab, tap through.
+- Staff/admin: existing admin → "Dispatch map" tab, watch pins move.
+- Client: "Client tracking link" button on any seeded case → open in a
+  private window, watch the timeline advance as the tech taps.
+
+**Forward-compat assumptions for the install-slice integration:**
+- Tracking actions intentionally leave `case.current_state` untouched
+  (install states don't exist yet). When they land, `tech_en_route` should
+  also move the case (e.g. `INSTALL_IN_PROGRESS`).
+- `schedule_install` will create `appointments` rows for real: address
+  captured at schedule time, geocoded via Nominatim (seeds use fixed pins).
+- Technician assignment moves to schedule time (`technician_id`); the
+  `NOT_YOUR_JOB` rule already keys off it.
+- No continuous GPS in v1: the tech pin is the address of their latest
+  EN_ROUTE/ARRIVED job. Kept deliberately.
+- Approval-token purpose `job-tracking` is read-only and never consumed;
+  quote-approval semantics unchanged.
