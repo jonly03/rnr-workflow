@@ -111,8 +111,8 @@ describe("Sourcing + Pricing", () => {
     await act(f, res.body.id, "start_identification").expect(200);
 
     // Awaited chain: identification → sourcing → pricing.
-    const settled = await waitForState(f, res.body.id, ["PRICE_APPROVED"]);
-    expect(settled.body.current_state).toBe("PRICE_APPROVED");
+    const settled = await waitForState(f, res.body.id, ["QUOTE_SENT"]);
+    expect(settled.body.current_state).toBe("QUOTE_SENT");
 
     const offers = settled.body.supplier_offers as any[];
     expect(offers.length).toBe(4);
@@ -216,11 +216,11 @@ describe("Sourcing + Pricing", () => {
         .get(`/api/v1/cases/${res.body.id}`)
         .set("Authorization", `Bearer ${token}`)
         .expect(200);
-      if (r.body.current_state === "PRICE_APPROVED") { settled = r; break; }
-      if (Date.now() - started > 15000) throw new Error("timed out waiting for PRICE_APPROVED");
+      if (r.body.current_state === "QUOTE_SENT") { settled = r; break; }
+      if (Date.now() - started > 15000) throw new Error("timed out waiting for QUOTE_SENT");
       await new Promise(rr => setTimeout(rr, 100));
     }
-    expect(settled.body.current_state).toBe("PRICE_APPROVED");
+    expect(settled.body.current_state).toBe("QUOTE_SENT");
     expect(settled.body.price_calculation.status).toBe("APPROVED");
     expect(settled.body.price_calculation.glass_cost_cents).toBe(3000);
     expect(settled.body.price_calculation.profit_cents).toBe(25000); // $250 even for cheap glass
@@ -310,8 +310,8 @@ describe("Sourcing + Pricing", () => {
     const second = await f.createCase().expect(201);
     await act(f, first.body.id, "start_identification").expect(200);
     await act(f, second.body.id, "start_identification").expect(200);
-    const firstSettled = await waitForState(f, first.body.id, ["PRICE_APPROVED"]);
-    const secondSettled = await waitForState(f, second.body.id, ["PRICE_APPROVED"]);
+    const firstSettled = await waitForState(f, first.body.id, ["QUOTE_SENT"]);
+    const secondSettled = await waitForState(f, second.body.id, ["QUOTE_SENT"]);
 
     const firstSelected = (firstSettled.body.supplier_offers as any[]).find(o => o.selected);
     const secondSelected = (secondSettled.body.supplier_offers as any[]).find(o => o.selected);
@@ -430,11 +430,11 @@ describe("Sourcing + Pricing", () => {
         .get(`/api/v1/cases/${res.body.id}`)
         .set("Authorization", `Bearer ${token}`)
         .expect(200);
-      if (r.body.current_state === "PRICE_APPROVED") { badSettled = r; break; }
-      if (Date.now() - badStart > 15000) throw new Error("timed out waiting for PRICE_APPROVED");
+      if (r.body.current_state === "QUOTE_SENT") { badSettled = r; break; }
+      if (Date.now() - badStart > 15000) throw new Error("timed out waiting for QUOTE_SENT");
       await new Promise(rr => setTimeout(rr, 100));
     }
-    expect(badSettled.body.current_state).toBe("PRICE_APPROVED");
+    expect(badSettled.body.current_state).toBe("QUOTE_SENT");
     const offers = badSettled.body.supplier_offers as any[];
     const bad = offers.find(o => o.supplier_name === "Bad Supplier");
     expect(bad.excluded_reason).toMatch(/Invalid.*price/i);
@@ -467,13 +467,13 @@ describe("Sourcing + Pricing", () => {
     const res = await f.createCase().expect(201);
     const caseId = res.body.id as string;
     // The awaited start_identification request runs the full chain; then the
-    // case is PRICE_APPROVED.
+    // case is QUOTE_SENT (price approved + quote auto-generated).
     await act(f, caseId, "start_identification").expect(200);
-    await waitForState(f, caseId, ["PRICE_APPROVED"]);
-    // Case is already PRICE_APPROVED; approve_price is not legal here.
+    await waitForState(f, caseId, ["QUOTE_SENT"]);
+    // Case is already quoted; approve_price is not legal here.
     const bad = await act(f, caseId, "approve_price").expect(409);
     expect(bad.body.error.code).toBe("INVALID_TRANSITION");
-    // retry_sourcing is not legal from PRICE_APPROVED either.
+    // retry_sourcing is not legal from QUOTE_SENT either.
     const bad2 = await act(f, caseId, "retry_sourcing").expect(409);
     expect(bad2.body.error.code).toBe("INVALID_TRANSITION");
   });
@@ -487,7 +487,7 @@ describe("Sourcing + Pricing", () => {
     await waitForState(f, created.body.id, ["VIN_LOOKUP_REQUIRED"]);
 
     const res = await act(f, created.body.id, "request_vin_lookup").expect(200);
-    expect(res.body.current_state).toBe("PRICE_APPROVED");
+    expect(res.body.current_state).toBe("QUOTE_SENT");
 
     // The identification persists the interchange list for sourcing.
     const identification = res.body.glass_identification;
@@ -629,7 +629,7 @@ describe("Sourcing + Pricing", () => {
     await act(f, created.body.id, "start_identification").expect(200);
     await waitForState(f, created.body.id, ["VIN_LOOKUP_REQUIRED"]);
     const res = await act(f, created.body.id, "request_vin_lookup").expect(200);
-    expect(res.body.current_state).toBe("PRICE_APPROVED");
+    expect(res.body.current_state).toBe("QUOTE_SENT");
     expect(f.sourcing.offerSearches).toBe(3);
     expect(maxInFlight).toBe(1);
   });
@@ -656,7 +656,7 @@ describe("Sourcing + Pricing", () => {
     // (part-number searches are free) and the VIN result is cached.
     failSearches = false;
     const retried = await act(f, created.body.id, "retry_sourcing").expect(200);
-    expect(retried.body.current_state).toBe("PRICE_APPROVED");
+    expect(retried.body.current_state).toBe("QUOTE_SENT");
     const offers = retried.body.supplier_offers as any[];
     expect(offers.length).toBeGreaterThan(0);
     expect(offers.find((o: any) => o.selected)).toBeDefined();

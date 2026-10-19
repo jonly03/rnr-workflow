@@ -283,6 +283,35 @@ export function createApp(
   };
 
   /**
+   * Automation (Nelly, 2026-10-19): an approved price IS a quote — staff
+   * never click "Generate quote". After any staff action, if the case is
+   * sitting at PRICE_APPROVED with no quote yet, generate one. If a
+   * reprice (supplier/glass override, sourcing retry) produced a NEWER
+   * approved price than the outstanding quote was built from, requote:
+   * the new version supersedes the stale one. A signed quote is the
+   * customer's contract and is never requoted.
+   */
+  const autoQuoteIfPriced = async (
+    caseId: string,
+    actor: { type: string; id: string | null }
+  ): Promise<void> => {
+    const c = await store.getCase(caseId);
+    if (!c) return;
+    if (c.current_state !== "PRICE_APPROVED" && c.current_state !== "QUOTE_SENT") return;
+    const glassRequest = await store.getGlassRequest(c.glass_request_id);
+    if (!glassRequest) return;
+    const latestPrice = await store.getLatestPriceCalculation(glassRequest.id);
+    if (!latestPrice || latestPrice.status !== "APPROVED") return;
+    const latestQuote = await store.getLatestQuote(caseId);
+    if (latestQuote?.signature) return;
+    if (latestQuote && latestQuote.snapshot.price_calculation_id === latestPrice.id) return;
+    await generateQuote(store, quotingConfig, caseId, actor, {
+      auto: true,
+      trigger: latestQuote ? "reprice" : "price_approved"
+    });
+  };
+
+  /**
    * NOTE (serverless safety): case creation used to kick off identification
    * as a fire-and-forget promise chain after returning the case shell. On
    * serverless platforms the runtime may freeze the moment the response is
@@ -1211,6 +1240,16 @@ export function createApp(
         });
       }
       throw error;
+    }
+
+    // Auto-quote: an approved price becomes a quote (and a requote after
+    // a reprice) without a staff click. A failure here must not fail the
+    // action that just succeeded — the case stays at PRICE_APPROVED and
+    // the manual Generate button remains as the fallback.
+    try {
+      await autoQuoteIfPriced(c.id, staffActor);
+    } catch (err) {
+      console.error(`auto-quote failed for case ${c.id}:`, err);
     }
 
     const updated = await store.getCase(c.id);

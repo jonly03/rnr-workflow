@@ -118,7 +118,8 @@ async function approvedCase(f: Fixture): Promise<{ caseId: string; created: requ
   }).expect(200);
 
   const priced = await getCase(f, caseId).expect(200);
-  expect(priced.body.current_state).toBe("PRICE_APPROVED");
+  // Auto-quote: price approval settles the case at QUOTE_SENT.
+  expect(priced.body.current_state).toBe("QUOTE_SENT");
   return { caseId, created: priced };
 }
 
@@ -144,7 +145,10 @@ describe("Staff overrides (editable cards)", () => {
       expect(updated.body.glass_identification.selected_candidate.part_number).toBe(
         newCandidate.part_number
       );
-      expect(updated.body.current_state).toBe("PRICE_APPROVED");
+      // Re-sourced + re-priced + auto-requoted off the new part.
+      expect(updated.body.current_state).toBe("QUOTE_SENT");
+      expect(updated.body.quote.snapshot.part_number ??
+        updated.body.quote.snapshot.glass_type).toBeTruthy();
       const offers = updated.body.supplier_offers as any[];
       expect(offers.every((o: any) => o.part_number === newCandidate.part_number)).toBe(true);
 
@@ -207,12 +211,20 @@ describe("Staff overrides (editable cards)", () => {
         (o: any) => o.selected
       );
       expect(newSelected.id).toBe(replacement.id);
-      expect(updated.body.current_state).toBe("PRICE_APPROVED");
-      // Pricing re-ran against the new offer's cost.
+      // Pricing re-ran, and the new price auto-requoted: the case settles
+      // back at QUOTE_SENT with a fresh quote version off the new calc.
+      expect(updated.body.current_state).toBe("QUOTE_SENT");
       expect(updated.body.price_calculation.glass_cost_cents).toBe(
         replacement.price_cents
       );
       expect(updated.body.price_calculation.id).not.toBe(oldCalc.id);
+      expect(updated.body.quote.version).toBe(2);
+      expect(updated.body.quote.snapshot.price_calculation_id).toBe(
+        updated.body.price_calculation.id
+      );
+      expect(updated.body.quote.snapshot.glass_cost_cents).toBe(
+        replacement.price_cents
+      );
 
       const events = await getEvents(f, caseId).expect(200);
       const override = (events.body as any[]).find(

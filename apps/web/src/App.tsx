@@ -2418,6 +2418,7 @@ function QuoteCard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [signUrl, setSignUrl] = useState<string | null>(null);
+  const [mintedForVersion, setMintedForVersion] = useState<number | null>(null);
 
   async function mintSignLink() {
     setBusy(true);
@@ -2431,6 +2432,19 @@ function QuoteCard({
       setBusy(false);
     }
   }
+
+  // The customer link appears on its own: whenever a sent quote is on
+  // screen without a link for THIS version, mint one — no button click.
+  // A requote (new version) mints a fresh link the same way. Minting never
+  // revokes earlier links, so a link already texted to the customer keeps
+  // working and simply shows the newest quote.
+  useEffect(() => {
+    if (item.current_state === "QUOTE_SENT" && quote && mintedForVersion !== quote.version) {
+      setMintedForVersion(quote.version);
+      void mintSignLink();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item.current_state, quote?.version]);
   const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
   const noun = quoteNoun(item.channel);
   const Noun = titleNoun(noun);
@@ -2501,7 +2515,7 @@ function QuoteCard({
                   Client sign-off view
                 </button>
               )}
-              {item.current_state === "QUOTE_SENT" && (
+              {item.current_state === "QUOTE_SENT" && !signUrl && (
                 <button className="secondary" disabled={busy} onClick={mintSignLink}>
                   {busy ? "Working…" : "Customer sign link"}
                 </button>

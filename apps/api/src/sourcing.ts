@@ -419,7 +419,14 @@ const OFFER_OVERRIDE_ELIGIBLE_STATES = new Set([
   "GLASS_SELECTED",
   "PRICE_CALCULATED",
   "PROFIT_REVIEW",
-  "PRICE_APPROVED"
+  "PRICE_APPROVED",
+  // A quote may already be out with the customer (quotes are generated
+  // automatically at price approval): staff can still swap the supplier,
+  // and the requote that follows supersedes the outstanding quote. A
+  // SIGNED quote is never overridable — the signature is the contract.
+  "QUOTE_SENT",
+  "QUOTE_DECLINED",
+  "QUOTE_EXPIRED"
 ]);
 
 export async function overrideSupplierOffer(

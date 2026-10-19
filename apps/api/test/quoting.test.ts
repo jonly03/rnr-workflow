@@ -99,7 +99,8 @@ async function approvedCase(f: Fixture): Promise<string> {
     part_number: ident.candidates[0].part_number
   }).expect(200);
   const priced = await getCase(f, caseId).expect(200);
-  expect(priced.body.current_state).toBe("PRICE_APPROVED");
+  // Auto-quote: price approval generates the quote in the same request.
+  expect(priced.body.current_state).toBe("QUOTE_SENT");
   return caseId;
 }
 
@@ -115,13 +116,14 @@ const signBody = (name = "Lou Customer") => ({
 });
 
 describe("Quote sign-off (signature = approval)", () => {
-  it("generates a versioned quote from the approved price snapshot", async () => {
+  it("auto-generates a versioned quote from the approved price snapshot", async () => {
     const f = await fixture();
     const caseId = await approvedCase(f);
     const before = await getCase(f, caseId).expect(200);
     const calc = before.body.price_calculation;
 
-    const res = await act(f, caseId, "generate_quote").expect(200);
+    // No generate_quote action was taken: approval produced the quote.
+    const res = before;
     expect(res.body.current_state).toBe("QUOTE_SENT");
     const quote = res.body.quote;
     expect(quote).toBeDefined();
@@ -148,6 +150,15 @@ describe("Quote sign-off (signature = approval)", () => {
     expect(generated).toHaveLength(1);
     expect(generated[0].payload.quote_id).toBe(quote.id);
     expect(generated[0].payload.expires_at).toBe(quote.expires_at);
+    expect(generated[0].payload.auto).toBe(true);
+    expect(generated[0].payload.trigger).toBe("price_approved");
+
+    // A manual generate_quote from QUOTE_SENT still works: new version,
+    // and the still-unsigned v1 is marked SUPERSEDED.
+    const regen = await act(f, caseId, "generate_quote").expect(200);
+    expect(regen.body.quote.version).toBe(2);
+    const quotes = await f.store.listQuotes(caseId);
+    expect(quotes.map(q => q.status)).toEqual(["SUPERSEDED", "SENT"]);
   });
 
   it("rejects generate_quote from a non-approved state", async () => {
@@ -160,7 +171,6 @@ describe("Quote sign-off (signature = approval)", () => {
   it("signs the quote (approval), idempotently", async () => {
     const f = await fixture();
     const caseId = await approvedCase(f);
-    await act(f, caseId, "generate_quote").expect(200);
 
     const name = "Lou Customer";
     const dataUrl = signatureDataUrl();
@@ -203,7 +213,6 @@ describe("Quote sign-off (signature = approval)", () => {
     // 36ms validity: the quote is born expired for practical purposes.
     const f = await fixture({ expiry_hours: 0.00001 });
     const caseId = await approvedCase(f);
-    await act(f, caseId, "generate_quote").expect(200);
     await new Promise(rr => setTimeout(rr, 100));
 
     const res = await act(f, caseId, "sign_quote", signBody()).expect(410);
@@ -221,7 +230,6 @@ describe("Quote sign-off (signature = approval)", () => {
   it("declines a quote and requotes as a new version", async () => {
     const f = await fixture();
     const caseId = await approvedCase(f);
-    await act(f, caseId, "generate_quote").expect(200);
 
     const declined = await act(f, caseId, "decline_quote").expect(200);
     expect(declined.body.current_state).toBe("QUOTE_DECLINED");
@@ -241,7 +249,6 @@ describe("Quote sign-off (signature = approval)", () => {
   it("requotes an expired quote as a new version", async () => {
     const f = await fixture({ expiry_hours: 0.00001 });
     const caseId = await approvedCase(f);
-    await act(f, caseId, "generate_quote").expect(200);
     await new Promise(rr => setTimeout(rr, 100));
     await act(f, caseId, "sign_quote", signBody()).expect(410);
 
@@ -253,7 +260,6 @@ describe("Quote sign-off (signature = approval)", () => {
   it("validates the signature payload", async () => {
     const f = await fixture();
     const caseId = await approvedCase(f);
-    await act(f, caseId, "generate_quote").expect(200);
 
     await act(f, caseId, "sign_quote", {
       name: "   ",
@@ -276,7 +282,7 @@ describe("Quote sign-off (signature = approval)", () => {
   it("rejects generate_invoice unless the quote is signed", async () => {
     const f = await fixture();
     const caseId = await approvedCase(f);
-    // No quote at all (PRICE_APPROVED): invoicing is not a legal action yet.
+    // Unsigned (auto-generated) quote: invoicing is not a legal action yet.
     const r1 = await act(f, caseId, "generate_invoice").expect(409);
     expect(r1.body.error.code).toBe("INVALID_TRANSITION");
 
@@ -297,7 +303,6 @@ describe("Quote sign-off (signature = approval)", () => {
   it("generates the invoice off the signed quote's snapshot", async () => {
     const f = await fixture();
     const caseId = await approvedCase(f);
-    await act(f, caseId, "generate_quote").expect(200);
     await act(f, caseId, "sign_quote", signBody()).expect(200);
 
     const res = await act(f, caseId, "generate_invoice").expect(200);
@@ -324,7 +329,6 @@ describe("Quote sign-off (signature = approval)", () => {
   it("runs the full flow: quote -> sign -> invoice -> fulfillment -> close", async () => {
     const f = await fixture();
     const caseId = await approvedCase(f);
-    await act(f, caseId, "generate_quote").expect(200);
     await act(f, caseId, "sign_quote", signBody()).expect(200);
     await act(f, caseId, "generate_invoice").expect(200);
 
@@ -352,13 +356,11 @@ describe("Quote sign-off (signature = approval)", () => {
   it("rejects close_case without a signed quote", async () => {
     const f = await fixture();
     const caseId = await approvedCase(f);
-    await act(f, caseId, "generate_quote").expect(200);
     await act(f, caseId, "sign_quote", signBody()).expect(200);
     // Invoice generated, then a re-invoice... still fine (quote is signed).
     // But without any invoice at all:
     const f2 = await fixture();
     const caseId2 = await approvedCase(f2);
-    await act(f2, caseId2, "generate_quote").expect(200);
     await act(f2, caseId2, "sign_quote", signBody()).expect(200);
     const res = await act(f2, caseId2, "close_case").expect(409);
     expect(["QUOTE_NOT_SIGNED", "NO_SIGNED_QUOTE", "INVALID_TRANSITION"]).toContain(res.body.error.code);
@@ -367,7 +369,6 @@ describe("Quote sign-off (signature = approval)", () => {
   it("re-invoicing creates a new version without mutating history", async () => {
     const f = await fixture();
     const caseId = await approvedCase(f);
-    await act(f, caseId, "generate_quote").expect(200);
     await act(f, caseId, "sign_quote", signBody()).expect(200);
     const first = await act(f, caseId, "generate_invoice").expect(200);
     const v1id = first.body.invoice.id as string;
@@ -383,7 +384,6 @@ describe("Quote sign-off (signature = approval)", () => {
   it("rejects sign_quote after the quote was already declined", async () => {
     const f = await fixture();
     const caseId = await approvedCase(f);
-    await act(f, caseId, "generate_quote").expect(200);
     await act(f, caseId, "decline_quote").expect(200);
     const res = await act(f, caseId, "sign_quote", signBody()).expect(409);
     expect(res.body.error.code).toBe("INVALID_TRANSITION");

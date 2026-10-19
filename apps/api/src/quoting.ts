@@ -109,12 +109,18 @@ function transition(caseRecord: CaseRecord, event: string): string {
  * price snapshot. Allowed from PRICE_APPROVED (first quote), QUOTE_SENT
  * (re-generate: new version), QUOTE_DECLINED and QUOTE_EXPIRED (requote:
  * new version).
+ *
+ * A still-unsigned SENT quote is marked SUPERSEDED when a new version is
+ * generated: history stays append-only, but only the newest version is
+ * live. `opts.auto` marks quotes the system generated itself (at price
+ * approval / after a reprice) versus an explicit staff action.
  */
 export async function generateQuote(
   store: CaseStore,
   config: QuotingConfig,
   caseId: string,
-  actor: Actor
+  actor: Actor,
+  opts: { auto?: boolean; trigger?: string } = {}
 ): Promise<Quote> {
   const caseRecord = await store.getCase(caseId);
   if (!caseRecord) throw new Error("Case not found.");
@@ -171,6 +177,12 @@ export async function generateQuote(
     price_calculation_id: latest.id
   };
   const expiresAt = new Date(now.getTime() + config.expiry_hours * 3600_000).toISOString();
+  const priorLatest = prior[prior.length - 1] ?? null;
+  const superseded =
+    priorLatest && priorLatest.status === "SENT" ? priorLatest : null;
+  if (superseded) {
+    await store.updateQuoteStatus(superseded.id, "SUPERSEDED");
+  }
   const quote = await store.saveQuote({
     caseId,
     version: prior.length + 1,
@@ -187,7 +199,9 @@ export async function generateQuote(
       quote_id: quote.id,
       version: quote.version,
       sell_price_cents: snapshot.sell_price_cents,
-      expires_at: expiresAt
+      expires_at: expiresAt,
+      superseded_version: superseded ? superseded.version : null,
+      ...(opts.auto ? { auto: true, trigger: opts.trigger ?? "price_approved" } : {})
     }
   });
   return quote;
