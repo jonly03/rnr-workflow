@@ -19,7 +19,7 @@ import {
 } from "./api";
 import type { CaseEvent, CaseRecord, Channel, GlassCandidate, GlassType } from "./types";
 
-type Screen = "queue" | "new" | "detail";
+type Screen = "queue" | "new" | "detail" | "invoice";
 
 const humanize = (value: string) =>
   value.toLowerCase().replaceAll("_", " ").replace(/(^|\s)\S/g, c => c.toUpperCase());
@@ -299,6 +299,19 @@ export function App() {
     }
   };
 
+  /** Refresh the selected case's detail + events without changing screen.
+   *  Used by the client invoice view so the customer stays on the receipt
+   *  after signing instead of being dropped into the staff detail view. */
+  const refreshSelected = async (id: string) => {
+    try {
+      const [detail, activity] = await Promise.all([getCase(id), getCaseEvents(id)]);
+      setSelected(detail);
+      setEvents([...activity].sort((a, b) => b.sequence - a.sequence));
+    } catch (error) {
+      loadError(error);
+    }
+  };
+
   const signOut = () => {
     logout();
     setStaff(null);
@@ -371,8 +384,29 @@ export function App() {
             setNewCaseOrigin({ screen: "detail", caseId: selected.id, reference: selected.reference });
             setScreen("new");
           }}
+          onOpenClientView={() => setScreen("invoice")}
           loading={loading}
           staffEmail={staff.email}
+        />
+      </Shell>
+    );
+  }
+
+  if (screen === "invoice" && selected) {
+    return (
+      <Shell
+        staff={staff}
+        onSignOut={signOut}
+        crumbs={[
+          { label: "Case queue", onClick: () => setScreen("queue") },
+          { label: selected.reference, onClick: () => { void openCase(selected.id); } },
+          { label: "Client invoice" }
+        ]}
+      >
+        <ClientInvoiceView
+          item={selected}
+          onRefresh={() => refreshSelected(selected.id)}
+          onBack={() => { void openCase(selected.id); }}
         />
       </Shell>
     );
@@ -1177,9 +1211,9 @@ function ManualCaseForm({
  *  staff member in localStorage so each person sees their preferred layout.
  *  The "Staff action required" alert is separate: it pins itself above the
  *  cards only while the case waits on staff, then disappears. */
-export const CASE_CARDS = ["vehicle", "pricing", "sourcing", "activity"] as const;
+export const CASE_CARDS = ["vehicle", "pricing", "invoice", "sourcing", "activity"] as const;
 export type CaseCardId = (typeof CASE_CARDS)[number];
-export const DEFAULT_CARD_ORDER: CaseCardId[] = ["vehicle", "pricing", "sourcing", "activity"];
+export const DEFAULT_CARD_ORDER: CaseCardId[] = ["vehicle", "pricing", "invoice", "sourcing", "activity"];
 
 /** Case states where the workflow is blocked waiting on a person. */
 const STAFF_ACTION_STATES = [
@@ -1329,6 +1363,7 @@ function CaseDetail({
   events,
   onRefresh,
   onNewCase,
+  onOpenClientView,
   loading,
   staffEmail
 }: {
@@ -1336,6 +1371,7 @@ function CaseDetail({
   events: CaseEvent[];
   onRefresh: () => Promise<void>;
   onNewCase: () => void;
+  onOpenClientView: () => void;
   loading: boolean;
   staffEmail: string;
 }) {
@@ -1357,6 +1393,14 @@ function CaseDetail({
         );
       case "pricing":
         return <PricingSummary item={item} />;
+      case "invoice":
+        return (
+          <InvoiceCard
+            item={item}
+            onRefresh={onRefresh}
+            onOpenClientView={onOpenClientView}
+          />
+        );
       case "sourcing":
         return <SourcingSummary item={item} events={events} onRefresh={onRefresh} />;
       case "activity":
@@ -1789,6 +1833,17 @@ export function describeEvent(e: CaseEvent): string {
       const reason = eventText(p, "reason");
       return `R&R declined the price${reason ? `: ${reason}` : "."}`;
     }
+    case "INVOICE_GENERATED": {
+      const v = eventText(p, "version");
+      const total = eventText(p, "sell_price_cents");
+      return `Invoice${v ? ` v${v}` : ""} generated${total ? ` — total $${(Number(total) / 100).toFixed(2)}` : ""}.`;
+    }
+    case "INVOICE_SIGNED": {
+      const signer = eventText(p, "signer_name");
+      return signer ? `Invoice signed by ${signer}.` : "Invoice signed.";
+    }
+    case "CASE_CLOSED":
+      return "Case closed.";
     default:
       return `${humanize(e.event_type)}.`;
   }
@@ -2213,6 +2268,306 @@ function PricingSummary({ item }: { item: CaseRecord }) {
         <dt>Status</dt><dd>{humanize(calc.status)}</dd>
       </dl>
       <small>Supplier costs and margins are staff-only; never shown to customers.</small>
+    </section>
+  );
+}
+
+/** Staff invoice card: generate from the approved price, track the client
+ *  signature, and close the case once signed. Full actuals are staff-only. */
+function InvoiceCard({
+  item,
+  onRefresh,
+  onOpenClientView
+}: {
+  item: CaseRecord;
+  onRefresh: () => Promise<void>;
+  onOpenClientView: () => void;
+}) {
+  const invoice = item.invoice;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+
+  // The card is relevant once an invoice can exist.
+  if (!invoice && item.current_state !== "PRICE_APPROVED") return null;
+
+  async function run(action: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await performAction(item.id, action);
+      await onRefresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Action failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const signed = invoice?.status === "SIGNED" && invoice.signature != null;
+  const closed = item.current_state === "CLOSED";
+
+  return (
+    <section className="card" style={{ marginBottom: 18 }}>
+      <h2>Invoice</h2>
+      {!invoice ? (
+        <>
+          <p className="muted">No invoice yet. Generate one from the approved price.</p>
+          {error && <p className="error">{error}</p>}
+          <button className="primary" disabled={busy} onClick={() => run("generate_invoice")}>
+            {busy ? "Generating…" : "Generate invoice"}
+          </button>
+        </>
+      ) : (
+        <>
+          <dl>
+            <dt>Version</dt><dd>v{invoice.version}</dd>
+            <dt>Glass cost</dt><dd>{fmt(invoice.actuals.glass_cost_cents)}</dd>
+            <dt>Labor</dt><dd>{fmt(invoice.actuals.labor_cents)}</dd>
+            <dt>Profit</dt><dd>{fmt(invoice.actuals.profit_cents)}</dd>
+            <dt>Tax</dt><dd>{fmt(invoice.actuals.tax_cents)}</dd>
+            <dt><strong>Total</strong></dt>
+            <dd><strong>{fmt(invoice.actuals.sell_price_cents)}</strong></dd>
+            <dt>Status</dt>
+            <dd>
+              {signed
+                ? `Signed by ${invoice.signature!.name} at ${new Date(invoice.signature!.signed_at).toLocaleString()}`
+                : closed ? "Case closed" : "Awaiting client signature"}
+            </dd>
+          </dl>
+          {error && <p className="error">{error}</p>}
+          {!closed && (
+            <div className="row">
+              <button className="secondary" onClick={onOpenClientView}>
+                Client sign-off view
+              </button>
+              {item.current_state === "INVOICED" && (
+                <button className="secondary" disabled={busy} onClick={() => run("generate_invoice")}>
+                  {busy ? "Working…" : "Re-invoice"}
+                </button>
+              )}
+              <button
+                className="primary"
+                disabled={busy || !signed || item.current_state !== "INVOICED"}
+                onClick={() => run("close_case")}
+              >
+                {busy ? "Closing…" : "Close case"}
+              </button>
+            </div>
+          )}
+          {!signed && !closed && item.current_state === "INVOICED" && (
+            <small>Close case unlocks once the client signs.</small>
+          )}
+          <small>Supplier costs and margins are staff-only; never shown to customers.</small>
+        </>
+      )}
+    </section>
+  );
+}
+
+/** Finger/stylus signature pad. Pointer Events cover touch, mouse, and pen;
+ *  `touch-action: none` keeps the page from scrolling mid-stroke on phones. */
+function SignaturePad({ onChange }: { onChange: (dataUrl: string | null) => void }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const drawing = useRef(false);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = Math.max(1, Math.round(rect.width * dpr));
+    canvas.height = Math.max(1, Math.round(rect.height * dpr));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#111827";
+  }, []);
+
+  const point = (e: React.PointerEvent) => {
+    const rect = canvasRef.current!.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
+
+  const emit = () => {
+    const canvas = canvasRef.current;
+    onChange(canvas ? canvas.toDataURL("image/png") : null);
+  };
+
+  return (
+    <div>
+      <canvas
+        ref={canvasRef}
+        data-testid="signature-pad"
+        aria-label="Signature pad — sign with your finger or stylus"
+        style={{
+          width: "100%",
+          height: 180,
+          border: "2px dashed #9ca3af",
+          borderRadius: 8,
+          background: "#ffffff",
+          touchAction: "none",
+          cursor: "crosshair"
+        }}
+        onPointerDown={e => {
+          const canvas = canvasRef.current;
+          const ctx = canvas?.getContext("2d");
+          if (!canvas || !ctx) return;
+          drawing.current = true;
+          canvas.setPointerCapture(e.pointerId);
+          const p = point(e);
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          // A dot for tap-only "signatures" so they still record ink.
+          ctx.lineTo(p.x + 0.5, p.y + 0.5);
+          ctx.stroke();
+          e.preventDefault();
+        }}
+        onPointerMove={e => {
+          if (!drawing.current) return;
+          const ctx = canvasRef.current?.getContext("2d");
+          if (!ctx) return;
+          const p = point(e);
+          ctx.lineTo(p.x, p.y);
+          ctx.stroke();
+          e.preventDefault();
+        }}
+        onPointerUp={e => {
+          if (!drawing.current) return;
+          drawing.current = false;
+          try { canvasRef.current?.releasePointerCapture(e.pointerId); } catch { /* noop */ }
+          emit();
+        }}
+        onPointerCancel={() => { drawing.current = false; }}
+      />
+      <button
+        type="button"
+        className="secondary"
+        style={{ marginTop: 8 }}
+        onClick={() => {
+          const canvas = canvasRef.current;
+          const ctx = canvas?.getContext("2d");
+          if (canvas && ctx) {
+            const rect = canvas.getBoundingClientRect();
+            ctx.clearRect(0, 0, rect.width, rect.height);
+          }
+          onChange(null);
+        }}
+      >
+        Clear
+      </button>
+    </div>
+  );
+}
+
+/** Client-facing invoice: totals only (never supplier cost/margins), a
+ *  signature pad, and a typed name. After signing it becomes a read-only
+ *  receipt. Opened by staff on a phone/tablet and handed to the customer. */
+function ClientInvoiceView({
+  item,
+  onRefresh,
+  onBack
+}: {
+  item: CaseRecord;
+  onRefresh: () => Promise<void>;
+  onBack: () => void;
+}) {
+  const invoice = item.invoice;
+  const [name, setName] = useState("");
+  const [sigUrl, setSigUrl] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+  const signed = invoice?.status === "SIGNED" && invoice.signature != null;
+
+  async function sign() {
+    if (!invoice || !sigUrl) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await performAction(item.id, "sign_invoice", {
+        name: name.trim(),
+        signature_data_url: sigUrl,
+        attribution: "client signature captured in-app"
+      });
+      await onRefresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Signing failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!invoice) {
+    return (
+      <section className="card">
+        <h2>Invoice</h2>
+        <p className="muted">No invoice has been generated for this case yet.</p>
+        <button className="secondary" onClick={onBack}>← Back to case</button>
+      </section>
+    );
+  }
+
+  return (
+    <section className="card">
+      <p className="eyebrow">R&R Finest Auto Glass — invoice</p>
+      <h1>{item.reference}</h1>
+      <p className="muted">
+        {item.vehicle.year} {item.vehicle.make} {item.vehicle.model} ·{" "}
+        {item.glass_request.glass_type.toLowerCase().replaceAll("_", " ")} replacement
+      </p>
+      <dl>
+        <dt>Labor</dt><dd>{fmt(invoice.actuals.labor_cents)}</dd>
+        <dt>Tax</dt><dd>{fmt(invoice.actuals.tax_cents)}</dd>
+        <dt><strong>Total due</strong></dt>
+        <dd><strong>{fmt(invoice.actuals.sell_price_cents)}</strong></dd>
+      </dl>
+
+      {signed ? (
+        <>
+          <p className="muted">
+            ✓ Signed by <strong>{invoice.signature!.name}</strong> on{" "}
+            {new Date(invoice.signature!.signed_at).toLocaleString()}.
+          </p>
+          <p className="muted">Thank you — please hand the device back to our staff.</p>
+          <button className="secondary" onClick={onBack}>← Back to case</button>
+        </>
+      ) : (
+        <>
+          <label>
+            Printed name
+            <input
+              type="text"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="Type your full name"
+              autoComplete="name"
+              style={{ display: "block", width: "100%", marginTop: 4 }}
+            />
+          </label>
+          <p className="muted" style={{ marginTop: 12 }}>Sign below with your finger or stylus:</p>
+          <SignaturePad onChange={setSigUrl} />
+          {error && <p className="error">{error}</p>}
+          <div className="row" style={{ marginTop: 12 }}>
+            <button
+              className="primary"
+              disabled={busy || !name.trim() || !sigUrl}
+              onClick={sign}
+            >
+              {busy ? "Signing…" : "Sign invoice"}
+            </button>
+            <button className="secondary" disabled={busy} onClick={onBack}>
+              Cancel
+            </button>
+          </div>
+          <small>
+            By signing you confirm the work described above at the total shown.
+          </small>
+        </>
+      )}
     </section>
   );
 }

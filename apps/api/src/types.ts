@@ -212,4 +212,45 @@ export interface StoreShape {
   vin_lookup_spend: VinLookupSpendRecord[];
   supplier_offers: SupplierOffer[];
   price_calculations: PriceCalculation[];
+  invoices: Invoice[];
+}
+
+/** Invoice lifecycle: generated (ready for signature) -> signed by the client. */
+export type InvoiceStatus = "DRAFT" | "SENT" | "SIGNED";
+
+/** Line items copied from the price snapshot at generation time.
+ *  All money is integer cents. `source` records which numbers the invoice
+ *  was built from ("price_snapshot" today; the completed job's actuals once
+ *  the install slice lands). */
+export interface InvoiceActuals {
+  glass_cost_cents: number;
+  labor_cents: number;
+  profit_cents: number;
+  tax_cents: number;
+  sell_price_cents: number;
+  price_calculation_id: string;
+  source: string;
+}
+
+/** The client's ESIGN-style signature record. The raw signature image
+ *  (data URL) is stored alongside, staff-visible only; clients and API
+ *  consumers see the hash, name, and timestamp. */
+export interface InvoiceSignature {
+  name: string;
+  signed_at: string;
+  attribution: string;
+  signature_hash: string;
+  signature_data_url: string;
+}
+
+/** A persisted invoice. Versions are append-only: re-invoicing creates a new
+ *  version; history is never mutated. */
+export interface Invoice {
+  id: string;
+  case_id: string;
+  version: number;
+  actuals: InvoiceActuals;
+  status: InvoiceStatus;
+  signature: InvoiceSignature | null;
+  created_at: string;
 }

@@ -33,6 +33,12 @@ import {
   type PricingConfig
 } from "./pricing.js";
 import {
+  closeCase,
+  generateInvoice,
+  InvoicingError,
+  signInvoice
+} from "./invoicing.js";
+import {
   ensureSeedAdmin,
   requireAuth,
   signToken,
@@ -169,7 +175,8 @@ export function createApp(
     const price_calculation = glass_request
       ? await store.getLatestPriceCalculation(glass_request.id)
       : null;
-    return { ...c, vehicle, glass_request, glass_identification, supplier_offers, price_calculation };
+    const invoice = await store.getLatestInvoice(c.id);
+    return { ...c, vehicle, glass_request, glass_identification, supplier_offers, price_calculation, invoice };
   };
 
   /**
@@ -535,6 +542,38 @@ export function createApp(
         case "reject_price":
           await rejectPrice(store, c.id, staffActor);
           break;
+        case "generate_invoice":
+          await generateInvoice(store, c.id, staffActor);
+          break;
+        case "sign_invoice": {
+          const name = req.body?.name;
+          const signatureDataUrl = req.body?.signature_data_url;
+          const attribution = req.body?.attribution;
+          if (typeof name !== "string" || !name.trim()) {
+            return res.status(422).json({
+              error: { code: "VALIDATION_ERROR", message: "name is required." }
+            });
+          }
+          if (typeof signatureDataUrl !== "string" || !signatureDataUrl.trim()) {
+            return res.status(422).json({
+              error: { code: "VALIDATION_ERROR", message: "signature_data_url is required." }
+            });
+          }
+          await signInvoice(
+            store,
+            c.id,
+            {
+              name: name.trim(),
+              signatureDataUrl: signatureDataUrl.trim(),
+              attribution: typeof attribution === "string" ? attribution : ""
+            },
+            staffActor
+          );
+          break;
+        }
+        case "close_case":
+          await closeCase(store, c.id, staffActor);
+          break;
         default:
           return res.status(409).json({
             error: {
@@ -555,6 +594,11 @@ export function createApp(
         });
       }
       if (error instanceof PricingError) {
+        return res.status(error.httpStatus).json({
+          error: { code: error.code, message: error.message }
+        });
+      }
+      if (error instanceof InvoicingError) {
         return res.status(error.httpStatus).json({
           error: { code: error.code, message: error.message }
         });

@@ -85,8 +85,41 @@ export interface CaseRecord {
   glass_identification: GlassIdentification | null;
   supplier_offers: SupplierOffer[];
   price_calculation: PriceCalculation | null;
+  invoice: Invoice | null;
   created_at: string;
   updated_at: string;
+}
+
+export type InvoiceStatus = "DRAFT" | "SENT" | "SIGNED";
+
+/** Line items copied from the price snapshot at generation time (integer cents). */
+export interface InvoiceActuals {
+  glass_cost_cents: number;
+  labor_cents: number;
+  profit_cents: number;
+  tax_cents: number;
+  sell_price_cents: number;
+  price_calculation_id: string;
+  source: string;
+}
+
+export interface InvoiceSignature {
+  name: string;
+  signed_at: string;
+  attribution: string;
+  signature_hash: string;
+  /** Raw signature image. Staff-visible only — never rendered in the client view. */
+  signature_data_url: string;
+}
+
+export interface Invoice {
+  id: string;
+  case_id: string;
+  version: number;
+  actuals: InvoiceActuals;
+  status: InvoiceStatus;
+  signature: InvoiceSignature | null;
+  created_at: string;
 }
 
 export interface CaseEvent {
