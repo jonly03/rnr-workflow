@@ -615,7 +615,14 @@ const OVERRIDE_ELIGIBLE_STATES = new Set([
   "GLASS_SELECTED",
   "PRICE_CALCULATED",
   "PROFIT_REVIEW",
-  "PRICE_APPROVED"
+  "PRICE_APPROVED",
+  // Quotes are auto-generated at price approval, so a case with an
+  // outstanding (unsigned) quote must still allow a glass swap — the
+  // requote that follows supersedes the stale quote. A signed quote is
+  // never overridable.
+  "QUOTE_SENT",
+  "QUOTE_DECLINED",
+  "QUOTE_EXPIRED"
 ]);
 
 export async function overrideGlassCandidate(

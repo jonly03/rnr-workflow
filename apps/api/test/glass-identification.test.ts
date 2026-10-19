@@ -98,8 +98,8 @@ describe("Glass Identification", () => {
     const res = await f.createCase().expect(201);
     await act(f, res.body.id, "start_identification").expect(200);
 
-    const settled = await waitForState(f, res.body.id, ["PRICE_APPROVED"]);
-    expect(settled.body.current_state).toBe("PRICE_APPROVED");
+    const settled = await waitForState(f, res.body.id, ["QUOTE_SENT"]);
+    expect(settled.body.current_state).toBe("QUOTE_SENT");
     expect(settled.body.glass_identification).toMatchObject({
       method: "YMM",
       status: "RESOLVED",
@@ -138,7 +138,7 @@ describe("Glass Identification", () => {
     await act(f, created.body.id, "start_identification").expect(200);
     await waitForState(f, created.body.id, ["VIN_LOOKUP_REQUIRED"]);
     const res = await act(f, created.body.id, "request_vin_lookup").expect(200);
-    expect(res.body.current_state).toBe("PRICE_APPROVED");
+    expect(res.body.current_state).toBe("QUOTE_SENT");
     expect(res.body.glass_identification).toMatchObject({ method: "VIN", status: "RESOLVED" });
     expect(f.provider.vinLookups).toBe(1);
 
@@ -175,7 +175,7 @@ describe("Glass Identification", () => {
     await act(f, second.body.id, "start_identification").expect(200);
     await waitForState(f, second.body.id, ["VIN_LOOKUP_REQUIRED"]);
     const res = await act(f, second.body.id, "request_vin_lookup").expect(200);
-    expect(res.body.current_state).toBe("PRICE_APPROVED");
+    expect(res.body.current_state).toBe("QUOTE_SENT");
     expect(f.provider.vinLookups).toBe(1);
 
     const events = await request(f.app)
@@ -214,7 +214,7 @@ describe("Glass Identification", () => {
     const selected = await act(f, res.body.id, "select_glass_candidate", {
       part_number: partNumber
     }).expect(200);
-    expect(selected.body.current_state).toBe("PRICE_APPROVED");
+    expect(selected.body.current_state).toBe("QUOTE_SENT");
     expect(selected.body.glass_identification.selected_candidate.part_number).toBe(partNumber);
     expect(selected.body.glass_identification.status).toBe("RESOLVED");
   });
@@ -261,7 +261,7 @@ describe("Glass Identification", () => {
     const f = await fixture();
     const identified = await f.createCase().expect(201);
     await act(f, identified.body.id, "start_identification").expect(200);
-    await waitForState(f, identified.body.id, ["PRICE_APPROVED"]);
+    await waitForState(f, identified.body.id, ["QUOTE_SENT"]);
     const wrongState = await act(f, identified.body.id, "request_vin_lookup").expect(409);
     expect(wrongState.body.error.code).toBe("VIN_NOT_ELIGIBLE");
 
@@ -284,7 +284,7 @@ describe("Glass Identification", () => {
     await waitForState(f, created.body.id, ["VIN_LOOKUP_REQUIRED"]);
 
     const res = await act(f, created.body.id, "request_vin_lookup").expect(200);
-    expect(res.body.current_state).toBe("PRICE_APPROVED");
+    expect(res.body.current_state).toBe("QUOTE_SENT");
     const identification = res.body.glass_identification;
     expect(identification.method).toBe("VIN");
     expect(identification.candidates).toHaveLength(1);
@@ -364,8 +364,8 @@ describe("Glass Identification", () => {
     ]);
     expect(r1.status).toBe(200);
     expect(r2.status).toBe(200);
-    expect(r1.body.current_state).toBe("PRICE_APPROVED");
-    expect(r2.body.current_state).toBe("PRICE_APPROVED");
+    expect(r1.body.current_state).toBe("QUOTE_SENT");
+    expect(r2.body.current_state).toBe("QUOTE_SENT");
     expect(f.provider.vinLookups).toBe(1);
   });
 

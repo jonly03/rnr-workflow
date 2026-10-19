@@ -79,7 +79,8 @@ async function approvedCase(f: Fixture): Promise<string> {
     part_number: ident.candidates[0].part_number
   }).expect(200);
   const priced = await staff(f).get(`/api/v1/cases/${caseId}`).expect(200);
-  expect(priced.body.current_state).toBe("PRICE_APPROVED");
+  // Price approval auto-generates the quote: the case settles at QUOTE_SENT.
+  expect(priced.body.current_state).toBe("QUOTE_SENT");
   return caseId;
 }
 
@@ -88,7 +89,7 @@ const signatureDataUrl = (bytes = 1024) =>
 
 async function quotedCase(f: Fixture): Promise<{ caseId: string; linkToken: string }> {
   const caseId = await approvedCase(f);
-  await act(f, caseId, "generate_quote").expect(200);
+  // No generate_quote call: the quote already exists (auto-generated).
   const link = await staff(f).post(`/api/v1/cases/${caseId}/quote-link`).expect(200);
   expect(link.body.token).toMatch(/^rnappr_/);
   expect(link.body.path).toBe(`/quote/${link.body.token}`);
@@ -189,7 +190,6 @@ describe("Customer view (Direct): sign link + tracking link", () => {
   it("an expired quote's link dies with it — signing is impossible (404)", async () => {
     const f = await fixture({ expiry_hours: 0.001 }); // ~3.6 seconds
     const caseId = await approvedCase(f);
-    await act(f, caseId, "generate_quote").expect(200);
     const link = await staff(f).post(`/api/v1/cases/${caseId}/quote-link`).expect(200);
     // Let the quote lapse, then try to use the link. The token's TTL is
     // bound to the quote's expiry, so the link is simply dead — the sign

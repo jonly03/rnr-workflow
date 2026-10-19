@@ -74,11 +74,11 @@ suite("Case Core PostgreSQL adapter", () => {
     let settled = created;
     for (;;) {
       const r = await app.get(`/api/v1/cases/${created.body.id}`).expect(200);
-      if (r.body.current_state === "PRICE_APPROVED") { settled = r; break; }
-      if (Date.now() - pollStart > 15000) throw new Error("timed out waiting for PRICE_APPROVED");
+      if (r.body.current_state === "QUOTE_SENT") { settled = r; break; }
+      if (Date.now() - pollStart > 15000) throw new Error("timed out waiting for QUOTE_SENT");
       await new Promise(rr => setTimeout(rr, 100));
     }
-    expect(settled.body.current_state).toBe("PRICE_APPROVED");
+    expect(settled.body.current_state).toBe("QUOTE_SENT");
 
     const restartedApp = await authedApp();
 
@@ -98,8 +98,9 @@ suite("Case Core PostgreSQL adapter", () => {
       .expect(200);
 
     // Phase 2: CASE_CREATED + identification events.
-    // Phase 3: sourcing + pricing auto-advance adds 6 more events (11 total).
-    expect(events.body).toHaveLength(11);
+    // Phase 3: sourcing + pricing auto-advance adds 6 more events, and the
+    // auto-generated quote adds QUOTE_GENERATED (12 total).
+    expect(events.body).toHaveLength(12);
     expect(events.body[0]).toMatchObject({
       sequence: 1,
       event_type: "CASE_CREATED"

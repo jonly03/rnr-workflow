@@ -218,7 +218,7 @@ export interface StoreShape {
 
 /** Quote lifecycle: sent (awaiting signature) -> approved (signed) by the
  *  client, or declined / expired (staff can requote: new version). */
-export type QuoteStatus = "SENT" | "APPROVED" | "DECLINED" | "EXPIRED";
+export type QuoteStatus = "SENT" | "APPROVED" | "DECLINED" | "EXPIRED" | "SUPERSEDED";
 
 /** Immutable snapshot captured at quote generation: vehicle + glass +
  *  economics. All money is integer cents. */

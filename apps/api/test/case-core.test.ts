@@ -86,7 +86,8 @@ describe("Case Core API", () => {
     // Phase 2: CASE_CREATED plus the automatic identification event trail.
     // Phase 3: sourcing + pricing auto-advance from GLASS_IDENTIFIED.
     const evBody = events!.body as Array<{ event_type: string; sequence: number; actor_type: string; actor_id: string }>;
-    expect(evBody).toHaveLength(11);
+    // 12 events: the original 11 plus the auto-generated QUOTE_GENERATED.
+    expect(evBody).toHaveLength(12);
     expect(evBody[0]).toMatchObject({
       sequence: 1,
       event_type: "CASE_CREATED",
@@ -105,7 +106,8 @@ describe("Case Core API", () => {
       "EVALUATE_OFFERS",
       "ELIGIBLE_OFFER_SELECTED",
       "START_PRICING",
-      "STANDARD_PRICE_CALCULATED"
+      "STANDARD_PRICE_CALCULATED",
+      "QUOTE_GENERATED"
     ]);
   });
 
@@ -176,7 +178,7 @@ describe("Case Core API", () => {
     expect(second.body.error.code).toBe("IDENTIFICATION_ALREADY_STARTED");
 
     const detail = await authed.get(`/api/v1/cases/${create.body.id}`).expect(200);
-    expect(detail.body.current_state).toBe("PRICE_APPROVED");
+    expect(detail.body.current_state).toBe("QUOTE_SENT");
   });
 
   it("returns validation errors without persisting partial data", async () => {
