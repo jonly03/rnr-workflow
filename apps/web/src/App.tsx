@@ -1,25 +1,33 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createCase,
+  createQuoteLink,
+  createTrackingLink,
+  declinePublicQuote,
   decodeVin,
   getCase,
   getCaseEvents,
   getHealth,
   getMe,
+  getPublicQuote,
+  getPublicTracking,
   getToken,
   listCases,
   login,
   logout,
   ocrVinPhoto,
   performAction,
+  signPublicQuote,
   startIdentification,
   UnauthorizedError,
   type DecodedVehicle,
+  type PublicQuoteView,
+  type PublicTrackingView,
   type StaffUser
 } from "./api";
 import type { CaseEvent, CaseRecord, Channel, GlassCandidate, GlassType } from "./types";
 
-type Screen = "queue" | "new" | "detail" | "invoice";
+type Screen = "queue" | "new" | "detail" | "quote";
 
 const humanize = (value: string) =>
   value.toLowerCase().replaceAll("_", " ").replace(/(^|\s)\S/g, c => c.toUpperCase());
@@ -320,6 +328,22 @@ export function App() {
     setScreen("queue");
   };
 
+  // Customer-facing public pages live outside the staff app entirely:
+  // /quote/<token> (sign = approve) and /track/<token> (job tracking).
+  // They are gated by the token, never by a staff session.
+  const publicRoute = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    const m = window.location.pathname.match(/^\/(quote|track)\/([A-Za-z0-9_-]+)$/);
+    return m ? { kind: m[1] as "quote" | "track", token: m[2] } : null;
+  }, []);
+
+  if (publicRoute?.kind === "quote") {
+    return <PublicQuotePage token={publicRoute.token} />;
+  }
+  if (publicRoute?.kind === "track") {
+    return <PublicTrackingPage token={publicRoute.token} />;
+  }
+
   if (!authChecked) {
     return (
       <Shell staff={null} onSignOut={signOut}>
@@ -384,7 +408,7 @@ export function App() {
             setNewCaseOrigin({ screen: "detail", caseId: selected.id, reference: selected.reference });
             setScreen("new");
           }}
-          onOpenClientView={() => setScreen("invoice")}
+          onOpenClientView={() => setScreen("quote")}
           loading={loading}
           staffEmail={staff.email}
         />
@@ -392,7 +416,7 @@ export function App() {
     );
   }
 
-  if (screen === "invoice" && selected) {
+  if (screen === "quote" && selected) {
     return (
       <Shell
         staff={staff}
@@ -400,10 +424,10 @@ export function App() {
         crumbs={[
           { label: "Case queue", onClick: () => setScreen("queue") },
           { label: selected.reference, onClick: () => { void openCase(selected.id); } },
-          { label: "Client invoice" }
+          { label: "Client quote" }
         ]}
       >
-        <ClientInvoiceView
+        <ClientQuoteView
           item={selected}
           onRefresh={() => refreshSelected(selected.id)}
           onBack={() => { void openCase(selected.id); }}
@@ -1211,9 +1235,9 @@ function ManualCaseForm({
  *  staff member in localStorage so each person sees their preferred layout.
  *  The "Staff action required" alert is separate: it pins itself above the
  *  cards only while the case waits on staff, then disappears. */
-export const CASE_CARDS = ["vehicle", "pricing", "invoice", "sourcing", "activity"] as const;
+export const CASE_CARDS = ["vehicle", "pricing", "quote", "invoice", "fulfillment", "sourcing", "activity"] as const;
 export type CaseCardId = (typeof CASE_CARDS)[number];
-export const DEFAULT_CARD_ORDER: CaseCardId[] = ["vehicle", "pricing", "invoice", "sourcing", "activity"];
+export const DEFAULT_CARD_ORDER: CaseCardId[] = ["vehicle", "pricing", "quote", "invoice", "fulfillment", "sourcing", "activity"];
 
 /** Case states where the workflow is blocked waiting on a person. */
 const STAFF_ACTION_STATES = [
@@ -1393,14 +1417,18 @@ function CaseDetail({
         );
       case "pricing":
         return <PricingSummary item={item} />;
-      case "invoice":
+      case "quote":
         return (
-          <InvoiceCard
+          <QuoteCard
             item={item}
             onRefresh={onRefresh}
             onOpenClientView={onOpenClientView}
           />
         );
+      case "invoice":
+        return <InvoiceCard item={item} onRefresh={onRefresh} />;
+      case "fulfillment":
+        return <FulfillmentCard item={item} onRefresh={onRefresh} />;
       case "sourcing":
         return <SourcingSummary item={item} events={events} onRefresh={onRefresh} />;
       case "activity":
@@ -1833,15 +1861,41 @@ export function describeEvent(e: CaseEvent): string {
       const reason = eventText(p, "reason");
       return `R&R declined the price${reason ? `: ${reason}` : "."}`;
     }
-    case "INVOICE_GENERATED": {
+    case "QUOTE_GENERATED": {
       const v = eventText(p, "version");
       const total = eventText(p, "sell_price_cents");
-      return `Invoice${v ? ` v${v}` : ""} generated${total ? ` — total $${(Number(total) / 100).toFixed(2)}` : ""}.`;
+      return `Quote${v ? ` v${v}` : ""} sent${total ? ` — total $${(Number(total) / 100).toFixed(2)}` : ""}.`;
     }
-    case "INVOICE_SIGNED": {
+    case "QUOTE_SIGNED": {
       const signer = eventText(p, "signer_name");
-      return signer ? `Invoice signed by ${signer}.` : "Invoice signed.";
+      return signer ? `Quote signed by ${signer}.` : "Quote signed.";
     }
+    case "QUOTE_DECLINED":
+      return "Quote declined by the client.";
+    case "QUOTE_EXPIRED":
+      return "Quote expired before the client signed.";
+    case "INVOICE_GENERATED": {
+      const v = eventText(p, "version");
+      const qv = eventText(p, "quote_version");
+      const total = eventText(p, "sell_price_cents");
+      return `Invoice${v ? ` v${v}` : ""} generated${qv ? ` from signed quote v${qv}` : ""}${total ? ` — total $${(Number(total) / 100).toFixed(2)}` : ""}.`;
+    }
+    case "PARTS_ORDERED":
+      return "Parts ordered for this job.";
+    case "INSTALLATION_SCHEDULED": {
+      const at = eventText(p, "scheduled_at");
+      return at
+        ? `Installation scheduled for ${new Date(at).toLocaleString()}.`
+        : "Installation scheduled.";
+    }
+    case "TECH_DISPATCHED": {
+      const tech = eventText(p, "technician_name");
+      return tech ? `Technician dispatched: ${tech}.` : "Technician dispatched.";
+    }
+    case "SERVICE_STARTED":
+      return "Service started.";
+    case "SERVICE_COMPLETED":
+      return "Service completed.";
     case "CASE_CLOSED":
       return "Case closed.";
     default:
@@ -2272,9 +2326,32 @@ function PricingSummary({ item }: { item: CaseRecord }) {
   );
 }
 
-/** Staff invoice card: generate from the approved price, track the client
- *  signature, and close the case once signed. Full actuals are staff-only. */
-function InvoiceCard({
+/** Channel-adapted noun for the commercial document. Labels only for now:
+ *  Direct sees a "quote", Auction a "work request", Insurance an "estimate". */
+function quoteNoun(channel: string): string {
+  if (channel === "AUCTION") return "work request";
+  if (channel === "INSURANCE") return "estimate";
+  return "quote";
+}
+
+function titleNoun(noun: string): string {
+  return noun.charAt(0).toUpperCase() + noun.slice(1);
+}
+
+/** Staff SLA view of the 72h quote validity: a countdown, or "Expired". */
+function quoteSlaLabel(expiresAt: string): string {
+  const ms = new Date(expiresAt).getTime() - Date.now();
+  if (ms <= 0) return "Expired";
+  const h = Math.floor(ms / 3600_000);
+  const m = Math.floor((ms % 3600_000) / 60_000);
+  if (h >= 48) return `SLA: expires in ${Math.floor(h / 24)}d ${h % 24}h`;
+  if (h >= 1) return `SLA: expires in ${h}h ${m}m`;
+  return `SLA: expires in ${m}m`;
+}
+
+/** Staff quote card: generate / re-quote, track signature (approval) and the
+ *  72h SLA, open the client sign-off view. Full economics are staff-only. */
+function QuoteCard({
   item,
   onRefresh,
   onOpenClientView
@@ -2283,13 +2360,142 @@ function InvoiceCard({
   onRefresh: () => Promise<void>;
   onOpenClientView: () => void;
 }) {
+  const quote = item.quote;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [signUrl, setSignUrl] = useState<string | null>(null);
+
+  async function mintSignLink() {
+    setBusy(true);
+    setError(null);
+    try {
+      const link = await createQuoteLink(item.id);
+      setSignUrl(`${window.location.origin}${link.path}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not create the customer link.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+  const noun = quoteNoun(item.channel);
+  const Noun = titleNoun(noun);
+
+  const quotableStates = [
+    "PRICE_APPROVED",
+    "QUOTE_SENT",
+    "QUOTE_DECLINED",
+    "QUOTE_EXPIRED",
+    "QUOTE_APPROVED",
+    "INVOICED",
+    "CLOSED"
+  ];
+  if (!quote && !quotableStates.includes(item.current_state)) return null;
+
+  async function run(action: string, extra: Record<string, unknown> = {}) {
+    setBusy(true);
+    setError(null);
+    try {
+      await performAction(item.id, action, extra);
+      await onRefresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Action failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const signed = quote?.status === "APPROVED" && quote.signature != null;
+  const closed = item.current_state === "CLOSED";
+  const canRequote =
+    !!quote && ["QUOTE_SENT", "QUOTE_DECLINED", "QUOTE_EXPIRED"].includes(item.current_state);
+
+  return (
+    <section className="card" style={{ marginBottom: 18 }}>
+      <h2>{Noun}</h2>
+      {!quote ? (
+        <>
+          <p className="muted">No {noun} yet. Generate one from the approved price.</p>
+          {error && <p className="error">{error}</p>}
+          <button className="primary" disabled={busy} onClick={() => run("generate_quote")}>
+            {busy ? "Generating…" : `Generate ${noun}`}
+          </button>
+        </>
+      ) : (
+        <>
+          <dl>
+            <dt>Version</dt><dd>v{quote.version}</dd>
+            <dt>Total</dt><dd><strong>{fmt(quote.snapshot.sell_price_cents)}</strong></dd>
+            <dt>Status</dt>
+            <dd>
+              {signed
+                ? `Signed by ${quote.signature!.name} at ${new Date(quote.signature!.signed_at).toLocaleString()}`
+                : quote.status === "DECLINED"
+                  ? "Declined by client"
+                  : quote.status === "EXPIRED" || item.current_state === "QUOTE_EXPIRED"
+                    ? "Expired — re-quote to proceed"
+                    : "Awaiting client signature"}
+            </dd>
+            <dt>Validity</dt>
+            <dd>{signed ? "Signed — no expiry" : quoteSlaLabel(quote.expires_at)}</dd>
+          </dl>
+          {error && <p className="error">{error}</p>}
+          {!closed && (
+            <div className="row">
+              {item.current_state === "QUOTE_SENT" && (
+                <button className="secondary" onClick={onOpenClientView}>
+                  Client sign-off view
+                </button>
+              )}
+              {item.current_state === "QUOTE_SENT" && (
+                <button className="secondary" disabled={busy} onClick={mintSignLink}>
+                  {busy ? "Working…" : "Customer sign link"}
+                </button>
+              )}
+              {canRequote && (
+                <button className="secondary" disabled={busy} onClick={() => run("requote")}>
+                  {busy ? "Working…" : `Re-quote (v${quote.version + 1})`}
+                </button>
+              )}
+            </div>
+          )}
+          {signUrl && item.current_state === "QUOTE_SENT" && (
+            <>
+              <CustomerLinkBox url={signUrl} />
+              <small>
+                Send this link to the customer (text/WhatsApp). Signing approves the{" "}
+                {noun} and creates the invoice. The link expires with the {noun}.
+              </small>
+            </>
+          )}
+          <small>Supplier costs and margins are staff-only; never shown to customers.</small>
+        </>
+      )}
+    </section>
+  );
+}
+
+/** Staff invoice card: generate from the signed quote, then close the case.
+ *  The invoice records which quote version authorized it. */
+function InvoiceCard({
+  item,
+  onRefresh
+}: {
+  item: CaseRecord;
+  onRefresh: () => Promise<void>;
+}) {
   const invoice = item.invoice;
+  const quote = item.quote;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
-  // The card is relevant once an invoice can exist.
-  if (!invoice && item.current_state !== "PRICE_APPROVED") return null;
+  const signedQuote = quote?.status === "APPROVED" && quote.signature != null;
+  const relevantStates = [
+    "QUOTE_APPROVED", "INVOICED", "PARTS_ORDERED", "INSTALLATION_SCHEDULED",
+    "TECH_DISPATCHED", "INSTALLATION_IN_PROGRESS", "SERVICE_COMPLETED", "CLOSED"
+  ];
+  if (!invoice && !relevantStates.includes(item.current_state)) return null;
 
   async function run(action: string) {
     setBusy(true);
@@ -2304,7 +2510,6 @@ function InvoiceCard({
     }
   }
 
-  const signed = invoice?.status === "SIGNED" && invoice.signature != null;
   const closed = item.current_state === "CLOSED";
 
   return (
@@ -2312,9 +2517,17 @@ function InvoiceCard({
       <h2>Invoice</h2>
       {!invoice ? (
         <>
-          <p className="muted">No invoice yet. Generate one from the approved price.</p>
+          <p className="muted">
+            {signedQuote
+              ? `No invoice yet. Generate one from signed quote v${quote!.version}.`
+              : "An invoice can be generated once the client signs the quote."}
+          </p>
           {error && <p className="error">{error}</p>}
-          <button className="primary" disabled={busy} onClick={() => run("generate_invoice")}>
+          <button
+            className="primary"
+            disabled={busy || !signedQuote}
+            onClick={() => run("generate_invoice")}
+          >
             {busy ? "Generating…" : "Generate invoice"}
           </button>
         </>
@@ -2322,6 +2535,7 @@ function InvoiceCard({
         <>
           <dl>
             <dt>Version</dt><dd>v{invoice.version}</dd>
+            <dt>From</dt><dd>Signed quote v{invoice.actuals.quote_version}</dd>
             <dt>Glass cost</dt><dd>{fmt(invoice.actuals.glass_cost_cents)}</dd>
             <dt>Labor</dt><dd>{fmt(invoice.actuals.labor_cents)}</dd>
             <dt>Profit</dt><dd>{fmt(invoice.actuals.profit_cents)}</dd>
@@ -2329,38 +2543,196 @@ function InvoiceCard({
             <dt><strong>Total</strong></dt>
             <dd><strong>{fmt(invoice.actuals.sell_price_cents)}</strong></dd>
             <dt>Status</dt>
-            <dd>
-              {signed
-                ? `Signed by ${invoice.signature!.name} at ${new Date(invoice.signature!.signed_at).toLocaleString()}`
-                : closed ? "Case closed" : "Awaiting client signature"}
-            </dd>
+            <dd>{closed ? "Case closed" : "Issued"}</dd>
           </dl>
           {error && <p className="error">{error}</p>}
-          {!closed && (
+          {!closed && item.current_state === "INVOICED" && (
             <div className="row">
-              <button className="secondary" onClick={onOpenClientView}>
-                Client sign-off view
-              </button>
-              {item.current_state === "INVOICED" && (
-                <button className="secondary" disabled={busy} onClick={() => run("generate_invoice")}>
-                  {busy ? "Working…" : "Re-invoice"}
-                </button>
-              )}
-              <button
-                className="primary"
-                disabled={busy || !signed || item.current_state !== "INVOICED"}
-                onClick={() => run("close_case")}
-              >
-                {busy ? "Closing…" : "Close case"}
+              <button className="secondary" disabled={busy} onClick={() => run("generate_invoice")}>
+                {busy ? "Working…" : "Re-invoice"}
               </button>
             </div>
           )}
-          {!signed && !closed && item.current_state === "INVOICED" && (
-            <small>Close case unlocks once the client signs.</small>
+          {!closed && (
+            <small>Closing happens in the Fulfillment card once the service is completed.</small>
           )}
           <small>Supplier costs and margins are staff-only; never shown to customers.</small>
         </>
       )}
+    </section>
+  );
+}
+
+/** Shows a minted customer link with a copy button. The raw token exists
+ *  only in this URL — it is shown to staff once, at mint time. */
+function CustomerLinkBox({ url }: { url: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="row" style={{ marginTop: 8 }}>
+      <input
+        type="text"
+        readOnly
+        value={url}
+        aria-label="Customer link"
+        style={{ flex: 1, minWidth: 220 }}
+        onFocus={e => e.target.select()}
+      />
+      <button
+        type="button"
+        className="secondary"
+        onClick={() => {
+          void navigator.clipboard?.writeText(url).then(() => setCopied(true));
+        }}
+      >
+        {copied ? "Copied!" : "Copy"}
+      </button>
+    </div>
+  );
+}
+
+const FULFILLMENT_FLOW: {
+  state: string;
+  action: string;
+  label: string;
+  doneLabel: string;
+}[] = [
+  { state: "INVOICED", action: "order_parts", label: "Order parts", doneLabel: "Parts ordered" },
+  { state: "PARTS_ORDERED", action: "schedule_installation", label: "Schedule installation", doneLabel: "Installation scheduled" },
+  { state: "INSTALLATION_SCHEDULED", action: "dispatch_technician", label: "Dispatch technician", doneLabel: "Technician dispatched" },
+  { state: "TECH_DISPATCHED", action: "start_service", label: "Start service", doneLabel: "Service started" },
+  { state: "INSTALLATION_IN_PROGRESS", action: "complete_service", label: "Complete service", doneLabel: "Service completed" }
+];
+
+const FULFILLMENT_STATES = [
+  ...FULFILLMENT_FLOW.map(s => s.state),
+  "SERVICE_COMPLETED",
+  "CLOSED"
+];
+
+/** Staff fulfillment card: walks the job from invoiced to service-complete,
+ *  one action at a time. Every step lands on the customer's tracking page.
+ *  Also owns the final Close case and the customer tracking link. */
+function FulfillmentCard({
+  item,
+  onRefresh
+}: {
+  item: CaseRecord;
+  onRefresh: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [scheduledAt, setScheduledAt] = useState("");
+  const [technician, setTechnician] = useState("");
+  const [trackingUrl, setTrackingUrl] = useState<string | null>(null);
+
+  if (!FULFILLMENT_STATES.includes(item.current_state)) return null;
+
+  const stepIndex = FULFILLMENT_FLOW.findIndex(s => s.state === item.current_state);
+  const nextStep = stepIndex >= 0 ? FULFILLMENT_FLOW[stepIndex] : null;
+  const canClose = item.current_state === "SERVICE_COMPLETED";
+  const closed = item.current_state === "CLOSED";
+
+  async function run(action: string, extra: Record<string, unknown> = {}) {
+    setBusy(true);
+    setError(null);
+    try {
+      await performAction(item.id, action, extra);
+      await onRefresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Action failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function mintTracking() {
+    setBusy(true);
+    setError(null);
+    try {
+      const link = await createTrackingLink(item.id);
+      setTrackingUrl(`${window.location.origin}${link.path}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not create the tracking link.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="card" style={{ marginBottom: 18 }}>
+      <h2>Fulfillment</h2>
+      <ol style={{ margin: "8px 0", paddingLeft: 20 }}>
+        {FULFILLMENT_FLOW.map((s, i) => {
+          const done = closed || canClose || i < stepIndex || (stepIndex === -1);
+          const current = i === stepIndex;
+          return (
+            <li key={s.action} style={{ opacity: done || current ? 1 : 0.55 }}>
+              {done ? "✓ " : current ? "→ " : "• "}
+              {s.doneLabel}
+              {current ? " (next)" : ""}
+            </li>
+          );
+        })}
+        <li style={{ opacity: closed || canClose ? 1 : 0.55 }}>
+          {closed ? "✓ " : canClose ? "→ " : "• "}Case closed{canClose ? " (next)" : ""}
+        </li>
+      </ol>
+      {error && <p className="error">{error}</p>}
+      {!closed && nextStep?.action === "schedule_installation" && (
+        <label style={{ display: "block", marginBottom: 8 }}>
+          Appointment
+          <input
+            type="datetime-local"
+            value={scheduledAt}
+            onChange={e => setScheduledAt(e.target.value)}
+            style={{ display: "block", marginTop: 4 }}
+          />
+        </label>
+      )}
+      {!closed && nextStep?.action === "dispatch_technician" && (
+        <label style={{ display: "block", marginBottom: 8 }}>
+          Technician name (shown to the customer)
+          <input
+            type="text"
+            value={technician}
+            onChange={e => setTechnician(e.target.value)}
+            placeholder="e.g. Lou"
+            style={{ display: "block", marginTop: 4 }}
+          />
+        </label>
+      )}
+      {!closed && (
+        <div className="row">
+          {nextStep && (
+            <button
+              className="primary"
+              disabled={busy}
+              onClick={() =>
+                run(
+                  nextStep.action,
+                  nextStep.action === "schedule_installation"
+                    ? { scheduled_at: scheduledAt ? new Date(scheduledAt).toISOString() : "" }
+                    : nextStep.action === "dispatch_technician"
+                      ? { technician_name: technician }
+                      : {}
+                )
+              }
+            >
+              {busy ? "Working…" : nextStep.label}
+            </button>
+          )}
+          {canClose && (
+            <button className="primary" disabled={busy} onClick={() => run("close_case")}>
+              {busy ? "Closing…" : "Close case"}
+            </button>
+          )}
+          <button className="secondary" disabled={busy} onClick={mintTracking}>
+            Customer tracking link
+          </button>
+        </div>
+      )}
+      {trackingUrl && <CustomerLinkBox url={trackingUrl} />}
+      <small>Each step updates the customer's tracking page immediately.</small>
     </section>
   );
 }
@@ -2463,10 +2835,11 @@ function SignaturePad({ onChange }: { onChange: (dataUrl: string | null) => void
   );
 }
 
-/** Client-facing invoice: totals only (never supplier cost/margins), a
- *  signature pad, and a typed name. After signing it becomes a read-only
- *  receipt. Opened by staff on a phone/tablet and handed to the customer. */
-function ClientInvoiceView({
+/** Client-facing quote: totals only (never supplier cost/margins), channel-
+ *  adapted labels, a signature pad, and a typed name. Signing = approval.
+ *  After signing it becomes a read-only receipt. Opened by staff on a
+ *  phone/tablet and handed to the customer. */
+function ClientQuoteView({
   item,
   onRefresh,
   onBack
@@ -2475,20 +2848,24 @@ function ClientInvoiceView({
   onRefresh: () => Promise<void>;
   onBack: () => void;
 }) {
-  const invoice = item.invoice;
+  const quote = item.quote;
   const [name, setName] = useState("");
   const [sigUrl, setSigUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
-  const signed = invoice?.status === "SIGNED" && invoice.signature != null;
+  const noun = quoteNoun(item.channel);
+  const Noun = titleNoun(noun);
+  const signed = quote?.status === "APPROVED" && quote.signature != null;
+  const expired =
+    !!quote && (quote.status === "EXPIRED" || new Date(quote.expires_at).getTime() <= Date.now());
 
   async function sign() {
-    if (!invoice || !sigUrl) return;
+    if (!quote || !sigUrl) return;
     setBusy(true);
     setError(null);
     try {
-      await performAction(item.id, "sign_invoice", {
+      await performAction(item.id, "sign_quote", {
         name: name.trim(),
         signature_data_url: sigUrl,
         attribution: "client signature captured in-app"
@@ -2501,11 +2878,25 @@ function ClientInvoiceView({
     }
   }
 
-  if (!invoice) {
+  async function decline() {
+    if (!quote) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await performAction(item.id, "decline_quote");
+      await onRefresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Decline failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!quote) {
     return (
       <section className="card">
-        <h2>Invoice</h2>
-        <p className="muted">No invoice has been generated for this case yet.</p>
+        <h2>{Noun}</h2>
+        <p className="muted">No {noun} has been prepared for this case yet.</p>
         <button className="secondary" onClick={onBack}>← Back to case</button>
       </section>
     );
@@ -2513,26 +2904,39 @@ function ClientInvoiceView({
 
   return (
     <section className="card">
-      <p className="eyebrow">R&R Finest Auto Glass — invoice</p>
+      <p className="eyebrow">R&R Finest Auto Glass — {noun}</p>
       <h1>{item.reference}</h1>
       <p className="muted">
-        {item.vehicle.year} {item.vehicle.make} {item.vehicle.model} ·{" "}
-        {item.glass_request.glass_type.toLowerCase().replaceAll("_", " ")} replacement
+        {quote.snapshot.vehicle.year} {quote.snapshot.vehicle.make} {quote.snapshot.vehicle.model} ·{" "}
+        {quote.snapshot.glass_type.toLowerCase().replaceAll("_", " ")} replacement
       </p>
       <dl>
-        <dt>Labor</dt><dd>{fmt(invoice.actuals.labor_cents)}</dd>
-        <dt>Tax</dt><dd>{fmt(invoice.actuals.tax_cents)}</dd>
+        <dt>Labor</dt><dd>{fmt(quote.snapshot.labor_cents)}</dd>
+        <dt>Tax</dt><dd>{fmt(quote.snapshot.tax_cents)}</dd>
         <dt><strong>Total due</strong></dt>
-        <dd><strong>{fmt(invoice.actuals.sell_price_cents)}</strong></dd>
+        <dd><strong>{fmt(quote.snapshot.sell_price_cents)}</strong></dd>
       </dl>
+      {!signed && !expired && (
+        <p className="muted">
+          This {noun} is valid until {new Date(quote.expires_at).toLocaleString()}.
+        </p>
+      )}
 
       {signed ? (
         <>
           <p className="muted">
-            ✓ Signed by <strong>{invoice.signature!.name}</strong> on{" "}
-            {new Date(invoice.signature!.signed_at).toLocaleString()}.
+            ✓ Signed by <strong>{quote.signature!.name}</strong> on{" "}
+            {new Date(quote.signature!.signed_at).toLocaleString()}.
           </p>
           <p className="muted">Thank you — please hand the device back to our staff.</p>
+          <button className="secondary" onClick={onBack}>← Back to case</button>
+        </>
+      ) : expired ? (
+        <>
+          <p className="error">
+            This {noun} expired on {new Date(quote.expires_at).toLocaleString()}. Please
+            ask our staff for a new one.
+          </p>
           <button className="secondary" onClick={onBack}>← Back to case</button>
         </>
       ) : (
@@ -2557,17 +2961,319 @@ function ClientInvoiceView({
               disabled={busy || !name.trim() || !sigUrl}
               onClick={sign}
             >
-              {busy ? "Signing…" : "Sign invoice"}
+              {busy ? "Signing…" : `Sign ${noun}`}
+            </button>
+            <button className="secondary" disabled={busy} onClick={decline}>
+              Decline
             </button>
             <button className="secondary" disabled={busy} onClick={onBack}>
               Cancel
             </button>
           </div>
           <small>
-            By signing you confirm the work described above at the total shown.
+            By signing you approve the work described above at the total shown.
           </small>
         </>
       )}
     </section>
+  );
+}
+
+/** Countdown label for a quote deadline ("Valid for 41h 12m" / "Expired"). */
+function useNow(intervalMs = 1000): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(t);
+  }, [intervalMs]);
+  return now;
+}
+
+function validityLabel(expiresAt: string, now: number): string {
+  const ms = new Date(expiresAt).getTime() - now;
+  if (ms <= 0) return "Expired";
+  const totalMin = Math.floor(ms / 60_000);
+  const d = Math.floor(totalMin / (24 * 60));
+  const h = Math.floor((totalMin % (24 * 60)) / 60);
+  const m = totalMin % 60;
+  if (d >= 1) return `Valid for ${d}d ${h}h`;
+  if (h >= 1) return `Valid for ${h}h ${m}m`;
+  return `Valid for ${m}m`;
+}
+
+/**
+ * PUBLIC customer quote page (/quote/<token>): the customer opens the link
+ * staff sent, reviews the totals, and signs — signing IS the approval.
+ * Signing returns a tracking token and hands the customer their tracking
+ * link. No staff session exists (or is needed) here.
+ */
+export function PublicQuotePage({ token }: { token: string }) {
+  const [view, setView] = useState<PublicQuoteView | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [sigUrl, setSigUrl] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [trackingToken, setTrackingToken] = useState<string | null>(null);
+  const [declined, setDeclined] = useState(false);
+  const now = useNow();
+  const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+
+  useEffect(() => {
+    let alive = true;
+    getPublicQuote(token)
+      .then(v => { if (alive) setView(v); })
+      .catch(() => { if (alive) setLoadError("This link is invalid, expired, or has already been used."); });
+    return () => { alive = false; };
+  }, [token]);
+
+  if (loadError) {
+    return (
+      <div className="public-wrap">
+        <section className="card">
+          <p className="eyebrow">R&R Finest Auto Glass</p>
+          <h1>Link unavailable</h1>
+          <p className="muted">{loadError}</p>
+          <p className="muted">Please contact R&R Finest Auto Glass and ask for a new link.</p>
+        </section>
+      </div>
+    );
+  }
+  if (!view) {
+    return (
+      <div className="public-wrap">
+        <section className="card">Loading…</section>
+      </div>
+    );
+  }
+
+  const noun = view.noun;
+  const Noun = titleNoun(noun);
+  const trackingUrl = trackingToken ? `${window.location.origin}/track/${trackingToken}` : null;
+
+  async function sign() {
+    if (!sigUrl) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await signPublicQuote(token, {
+        name: name.trim(),
+        signature_data_url: sigUrl
+      });
+      setTrackingToken(res.tracking_token);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Signing failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function decline() {
+    setBusy(true);
+    setError(null);
+    try {
+      await declinePublicQuote(token);
+      setDeclined(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Decline failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="public-wrap">
+      <section className="card">
+        <p className="eyebrow">R&R Finest Auto Glass — {noun}</p>
+        <h1>{view.reference}</h1>
+        <p className="muted">
+          {view.vehicle.year} {view.vehicle.make} {view.vehicle.model} ·{" "}
+          {view.glass_type.toLowerCase().replaceAll("_", " ")} replacement
+        </p>
+        <dl>
+          <dt>Labor</dt><dd>{fmt(view.labor_cents)}</dd>
+          <dt>Tax</dt><dd>{fmt(view.tax_cents)}</dd>
+          <dt><strong>Total due</strong></dt>
+          <dd><strong>{fmt(view.total_cents)}</strong></dd>
+        </dl>
+
+        {trackingToken ? (
+          <>
+            <p>✓ Thank you, {name.trim()} — your {noun} is approved and your invoice has been created.</p>
+            <p className="muted">
+              Follow your job here — parts ordering, scheduling, your technician, and
+              completion will all appear on your tracking page:
+            </p>
+            {trackingUrl && <CustomerLinkBox url={trackingUrl} />}
+            <p>
+              <a href={trackingUrl ?? "#"}>Open my tracking page →</a>
+            </p>
+            <small>Save that link — it's how you'll follow the job to completion.</small>
+          </>
+        ) : declined || view.status === "DECLINED" ? (
+          <>
+            <p>You declined this {noun}. Nothing has been charged.</p>
+            <p className="muted">If this was a mistake, contact R&R Finest Auto Glass and we'll send a new {noun}.</p>
+          </>
+        ) : view.status === "APPROVED" ? (
+          <>
+            <p>
+              ✓ Signed by <strong>{view.signed_by}</strong> on{" "}
+              {view.signed_at ? new Date(view.signed_at).toLocaleString() : ""}.
+            </p>
+            <p className="muted">Your job is underway — R&R will keep you posted.</p>
+          </>
+        ) : view.status === "EXPIRED" ? (
+          <>
+            <p className="error">
+              This {noun} expired on {new Date(view.expires_at).toLocaleString()}.
+            </p>
+            <p className="muted">Please contact R&R Finest Auto Glass for a new {noun}.</p>
+          </>
+        ) : (
+          <>
+            <p className="muted">
+              <strong>{validityLabel(view.expires_at, now)}</strong> — until{" "}
+              {new Date(view.expires_at).toLocaleString()}.
+            </p>
+            <label>
+              Printed name
+              <input
+                type="text"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                placeholder="Type your full name"
+                autoComplete="name"
+                style={{ display: "block", width: "100%", marginTop: 4 }}
+              />
+            </label>
+            <p className="muted" style={{ marginTop: 12 }}>Sign below with your finger or stylus:</p>
+            <SignaturePad onChange={setSigUrl} />
+            {error && <p className="error">{error}</p>}
+            <div className="row" style={{ marginTop: 12 }}>
+              <button
+                className="primary"
+                disabled={busy || !name.trim() || !sigUrl}
+                onClick={sign}
+              >
+                {busy ? "Signing…" : `Sign & approve ${noun}`}
+              </button>
+              <button className="secondary" disabled={busy} onClick={decline}>
+                Decline
+              </button>
+            </div>
+            <small>
+              By signing you approve the work described above at the total shown.
+              Approving creates your invoice — you will get a tracking link for the job.
+            </small>
+          </>
+        )}
+      </section>
+    </div>
+  );
+}
+
+/**
+ * PUBLIC tracking page (/track/<token>): the customer follows their job
+ * from signed quote to closed — parts ordered, scheduled, technician
+ * dispatched, service done. View-only; refreshes every 30 seconds.
+ */
+export function PublicTrackingPage({ token }: { token: string }) {
+  const [view, setView] = useState<PublicTrackingView | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      getPublicTracking(token)
+        .then(v => { if (alive) setView(v); })
+        .catch(() => { if (alive) setLoadError("This tracking link is invalid or has expired."); });
+    void load();
+    const t = setInterval(load, 30_000);
+    return () => { alive = false; clearInterval(t); };
+  }, [token]);
+
+  if (loadError) {
+    return (
+      <div className="public-wrap">
+        <section className="card">
+          <p className="eyebrow">R&R Finest Auto Glass</p>
+          <h1>Link unavailable</h1>
+          <p className="muted">{loadError}</p>
+          <p className="muted">Please contact R&R Finest Auto Glass and ask for a new tracking link.</p>
+        </section>
+      </div>
+    );
+  }
+  if (!view) {
+    return (
+      <div className="public-wrap">
+        <section className="card">Loading…</section>
+      </div>
+    );
+  }
+
+  const next = view.milestones.find(m => !m.done);
+
+  return (
+    <div className="public-wrap">
+      <section className="card">
+        <p className="eyebrow">R&R Finest Auto Glass — job tracking</p>
+        <h1>{view.reference}</h1>
+        {view.vehicle && (
+          <p className="muted">
+            {view.vehicle.year} {view.vehicle.make} {view.vehicle.model}
+            {view.glass_type
+              ? ` · ${view.glass_type.toLowerCase().replaceAll("_", " ")} replacement`
+              : ""}
+          </p>
+        )}
+        <p style={{ fontSize: 18 }}>
+          <strong>{view.status}</strong>
+        </p>
+        <ol style={{ margin: "12px 0", paddingLeft: 20 }}>
+          {view.milestones.map(m => (
+            <li
+              key={m.key}
+              style={{
+                opacity: m.done || m.key === next?.key ? 1 : 0.55,
+                marginBottom: 6
+              }}
+            >
+              {m.done ? "✓ " : m.key === next?.key ? "→ " : "• "}
+              {m.label}
+              {m.at && (
+                <span className="muted"> — {new Date(m.at).toLocaleString()}</span>
+              )}
+              {m.detail && (
+                <span className="muted">
+                  {" "}({m.key === "scheduled"
+                    ? new Date(m.detail).toLocaleString()
+                    : m.detail})
+                </span>
+              )}
+            </li>
+          ))}
+        </ol>
+        {view.invoice && (
+          <dl>
+            <dt>Invoice</dt><dd>v{view.invoice.version} — from your approved quote</dd>
+            {view.labor_cents != null && (<><dt>Labor</dt><dd>{fmt(view.labor_cents)}</dd></>)}
+            {view.tax_cents != null && (<><dt>Tax</dt><dd>{fmt(view.tax_cents)}</dd></>)}
+            {view.total_cents != null && (
+              <><dt><strong>Total due</strong></dt><dd><strong>{fmt(view.total_cents)}</strong></dd></>
+            )}
+          </dl>
+        )}
+        {view.signed_by && (
+          <small>
+            Quote approved by {view.signed_by}
+            {view.signed_at ? ` on ${new Date(view.signed_at).toLocaleString()}` : ""}.
+            This page refreshes automatically.
+          </small>
+        )}
+      </section>
+    </div>
   );
 }

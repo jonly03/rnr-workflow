@@ -22,8 +22,8 @@ describe("case card ordering", () => {
   const email = "tech@rr.test";
   const key = cardOrderKey(email);
 
-  it("defaults to pricing, sourcing, activity below the vehicle card", () => {
-    expect(DEFAULT_CARD_ORDER).toEqual(["vehicle", "pricing", "invoice", "sourcing", "activity"]);
+  it("defaults to pricing, quote, invoice, sourcing, activity below the vehicle card", () => {
+    expect(DEFAULT_CARD_ORDER).toEqual(["vehicle", "pricing", "quote", "invoice", "fulfillment", "sourcing", "activity"]);
   });
 
   it("returns the default order when nothing is stored", () => {
@@ -34,7 +34,7 @@ describe("case card ordering", () => {
   it("returns the staff member's saved order", () => {
     localStorage.setItem(key, JSON.stringify(["activity", "vehicle", "sourcing", "pricing"]));
     // New cards staff hasn't positioned yet are appended in default order.
-    expect(loadCardOrder(email)).toEqual(["activity", "vehicle", "sourcing", "pricing", "invoice"]);
+    expect(loadCardOrder(email)).toEqual(["activity", "vehicle", "sourcing", "pricing", "quote", "invoice", "fulfillment"]);
     localStorage.removeItem(key);
   });
 
@@ -44,13 +44,13 @@ describe("case card ordering", () => {
     expect(order).not.toContain("bogus");
     expect(order.slice(0, 2)).toEqual(["sourcing", "vehicle"]);
     // remaining default cards appended in default relative order
-    expect(order).toEqual(["sourcing", "vehicle", "pricing", "invoice", "activity"]);
+    expect(order).toEqual(["sourcing", "vehicle", "pricing", "quote", "invoice", "fulfillment", "activity"]);
     localStorage.removeItem(key);
   });
 
   it("drops retired cards from saved orders", () => {
     localStorage.setItem(key, JSON.stringify(["action", "identification", "vehicle"]));
-    expect(loadCardOrder(email)).toEqual(["vehicle", "pricing", "invoice", "sourcing", "activity"]);
+    expect(loadCardOrder(email)).toEqual(["vehicle", "pricing", "quote", "invoice", "fulfillment", "sourcing", "activity"]);
     localStorage.removeItem(key);
   });
 
@@ -191,13 +191,13 @@ describe("staff action alert", () => {
     }
   });
 
-  it("orders detail cards: vehicle, pricing, invoice, sourcing, activity", () => {
-    expect(DEFAULT_CARD_ORDER).toEqual(["vehicle", "pricing", "invoice", "sourcing", "activity"]);
+  it("orders detail cards: vehicle, pricing, quote, invoice, sourcing, activity", () => {
+    expect(DEFAULT_CARD_ORDER).toEqual(["vehicle", "pricing", "quote", "invoice", "fulfillment", "sourcing", "activity"]);
   });
 
   it("migrates saved orders that reference retired cards", () => {
     localStorage.setItem(cardOrderKey("sam@example.com"), JSON.stringify(["action", "vehicle", "pricing"]));
-    expect(loadCardOrder("sam@example.com")).toEqual(["vehicle", "pricing", "invoice", "sourcing", "activity"]);
+    expect(loadCardOrder("sam@example.com")).toEqual(["vehicle", "pricing", "quote", "invoice", "fulfillment", "sourcing", "activity"]);
   });
 });
 
@@ -238,10 +238,16 @@ describe("describeEvent", () => {
       .toBe("Staff switched supplier from PGW to Local Glass Co at $180.00.");
     expect(describeEvent(evt("PRICE_APPROVED_BY_RNR", { sell_price_cents: 65017 })))
       .toBe("R&R approved the price at $650.17.");
-    expect(describeEvent(evt("INVOICE_GENERATED", { version: 1, sell_price_cents: 68954 })))
-      .toBe("Invoice v1 generated — total $689.54.");
-    expect(describeEvent(evt("INVOICE_SIGNED", { signer_name: "Lou Customer" })))
-      .toBe("Invoice signed by Lou Customer.");
+    expect(describeEvent(evt("QUOTE_GENERATED", { version: 1, sell_price_cents: 68954 })))
+      .toBe("Quote v1 sent — total $689.54.");
+    expect(describeEvent(evt("QUOTE_SIGNED", { signer_name: "Lou Customer" })))
+      .toBe("Quote signed by Lou Customer.");
+    expect(describeEvent(evt("QUOTE_DECLINED", {})))
+      .toBe("Quote declined by the client.");
+    expect(describeEvent(evt("QUOTE_EXPIRED", {})))
+      .toBe("Quote expired before the client signed.");
+    expect(describeEvent(evt("INVOICE_GENERATED", { version: 1, quote_version: 2, sell_price_cents: 68954 })))
+      .toBe("Invoice v1 generated from signed quote v2 — total $689.54.");
     expect(describeEvent(evt("CASE_CLOSED")))
       .toBe("Case closed.");
   });

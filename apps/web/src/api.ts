@@ -416,6 +416,96 @@ export function ocrVinPhoto(photo: File) {
     .finally(() => clearTimeout(timer));
 }
 
+/** A customer link minted server-side. The raw token is returned exactly
+ *  once; staff copy `path` onto the app origin and send it to the customer. */
+export interface CustomerLink {
+  token: string;
+  purpose: string;
+  expires_at: string;
+  path: string;
+}
+
+export function createQuoteLink(caseId: string) {
+  return fetch(`${API_BASE}/cases/${caseId}/quote-link`, {
+    method: "POST",
+    headers: authHeaders()
+  }).then(json<CustomerLink>);
+}
+
+export function createTrackingLink(caseId: string) {
+  return fetch(`${API_BASE}/cases/${caseId}/tracking-link`, {
+    method: "POST",
+    headers: authHeaders()
+  }).then(json<CustomerLink>);
+}
+
+export interface PublicQuoteView {
+  reference: string;
+  channel: string;
+  noun: string;
+  vehicle: { year: number; make: string; model: string };
+  glass_type: string;
+  labor_cents: number;
+  tax_cents: number;
+  total_cents: number;
+  quote_version: number;
+  expires_at: string;
+  status: "AWAITING_SIGNATURE" | "APPROVED" | "DECLINED" | "EXPIRED";
+  signed_by: string | null;
+  signed_at: string | null;
+}
+
+export function getPublicQuote(token: string) {
+  return fetch(`${API_BASE}/public/quote/${token}`).then(json<PublicQuoteView>);
+}
+
+export function signPublicQuote(
+  token: string,
+  input: { name: string; signature_data_url: string }
+) {
+  return fetch(`${API_BASE}/public/quote/${token}/sign`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input)
+  }).then(
+    json<{ ok: boolean; status: string; invoice_version: number; tracking_token: string }>
+  );
+}
+
+export function declinePublicQuote(token: string) {
+  return fetch(`${API_BASE}/public/quote/${token}/decline`, {
+    method: "POST"
+  }).then(json<{ ok: boolean; status: string }>);
+}
+
+export interface TrackingMilestone {
+  key: string;
+  label: string;
+  done: boolean;
+  at: string | null;
+  detail: string | null;
+}
+
+export interface PublicTrackingView {
+  reference: string;
+  channel: string;
+  vehicle: { year: number; make: string; model: string } | null;
+  glass_type: string | null;
+  status: string;
+  current_state: string;
+  signed_by: string | null;
+  signed_at: string | null;
+  invoice: { version: number; total_cents: number } | null;
+  labor_cents: number | null;
+  tax_cents: number | null;
+  total_cents: number | null;
+  milestones: TrackingMilestone[];
+}
+
+export function getPublicTracking(token: string) {
+  return fetch(`${API_BASE}/public/track/${token}`).then(json<PublicTrackingView>);
+}
+
 export function createCase(input: CreateCaseInput) {
   const idempotencyKey = crypto.randomUUID();
   return fetch(`${API_BASE}/cases`, {

@@ -311,3 +311,11 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 @media (max-width: 950px) {
   .creation-split { grid-template-columns: 1fr; }
 }
+
+/* Customer-facing public pages (quote sign + tracking): centered, narrow,
+   no staff chrome. */
+.public-wrap {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
