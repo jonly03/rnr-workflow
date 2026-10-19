@@ -319,3 +319,48 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
   margin: 0 auto;
   padding: 24px 16px 48px;
 }
+
+/* Staff queue/detail marker for client-submitted (QR intake) cases. */
+.client-badge {
+  color: #fecaca;
+  background: #7f1d1d;
+  border: 1px solid #b91c1c;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: .72rem;
+  font-weight: 700;
+  margin-left: 6px;
+  white-space: nowrap;
+}
+.client-contact { color: #e2e8f0; margin: 6px 0; }
+
+/* Public intake page (QR front door): R&R black/red brand band over the
+   shared public card. Mobile-first, one column. */
+.intake-hero {
+  background: #0b0b0d;
+  color: #f8fafc;
+  border-bottom: 4px solid #c1271b;
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+.intake-hero h1 { margin: 6px 0 8px; font-size: 1.6rem; line-height: 1.2; }
+.intake-hero p { margin: 0; color: #cbd5e1; }
+.intake-form h2 { margin: 22px 0 10px; font-size: 1.05rem; }
+.intake-form h2:first-child { margin-top: 0; }
+.intake-form label { display: block; margin-top: 12px; }
+.intake-glass { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 8px; }
+.intake-glass-btn {
+  border: 1px solid #475569;
+  background: transparent;
+  color: inherit;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: .95rem;
+  cursor: pointer;
+}
+.intake-glass-btn.selected { background: #c1271b; border-color: #c1271b; color: #fff; font-weight: 700; }
+.intake-ymm { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+.intake-ymm label { margin-top: 0; }
+.intake-submit { width: 100%; margin-top: 18px; padding: 12px; font-size: 1.05rem; }
+.intake-ref { font-size: 1.25rem; letter-spacing: .03em; }

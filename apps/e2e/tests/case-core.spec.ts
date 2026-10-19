@@ -147,4 +147,12 @@ test("Customer deep links load the app by direct navigation (SPA fallback)", asy
   const trackResponse = await page.goto("/track/rnappr_smoke-invalid-token");
   expect(trackResponse?.status()).toBe(200);
   await expect(page.getByRole("heading", { name: "Link unavailable" })).toBeVisible();
+
+  // The QR front door is also always a cold direct navigation (a phone
+  // camera scanning the shop's QR code), so /intake gets the same guard.
+  const intakeResponse = await page.goto("/intake");
+  expect(intakeResponse?.status()).toBe(200);
+  await expect(
+    page.getByRole("heading", { name: "How can we service your auto glass?" })
+  ).toBeVisible();
 });

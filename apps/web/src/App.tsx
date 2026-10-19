@@ -19,6 +19,7 @@ import {
   performAction,
   signPublicQuote,
   startIdentification,
+  submitPublicIntake,
   UnauthorizedError,
   type DecodedVehicle,
   type PublicQuoteView,
@@ -329,10 +330,15 @@ export function App() {
   };
 
   // Customer-facing public pages live outside the staff app entirely:
-  // /quote/<token> (sign = approve) and /track/<token> (job tracking).
-  // They are gated by the token, never by a staff session.
+  // /quote/<token> (sign = approve), /track/<token> (job tracking), and
+  // /intake (the QR front door — the customer creates the case).
+  // They are gated by the token (or, for intake, by rate limit +
+  // validation), never by a staff session.
   const publicRoute = useMemo(() => {
     if (typeof window === "undefined") return null;
+    if (window.location.pathname === "/intake") {
+      return { kind: "intake" as const, token: "" };
+    }
     const m = window.location.pathname.match(/^\/(quote|track)\/([A-Za-z0-9_-]+)$/);
     return m ? { kind: m[1] as "quote" | "track", token: m[2] } : null;
   }, []);
@@ -342,6 +348,9 @@ export function App() {
   }
   if (publicRoute?.kind === "track") {
     return <PublicTrackingPage token={publicRoute.token} />;
+  }
+  if (publicRoute?.kind === "intake") {
+    return <PublicIntakePage />;
   }
 
   if (!authChecked) {
@@ -581,6 +590,11 @@ export function App() {
                         <div>
                           <strong>{c.reference}</strong>
                           <span className="channel">{c.channel}</span>
+                          {c.client_intake && (
+                            <span className="client-badge" data-testid="client-intake-badge">
+                              Client QR
+                            </span>
+                          )}
                         </div>
                         <div className="vehicle">{vehicleName(c)}</div>
                         <div>{humanize(c.glass_request.glass_type)}</div>
@@ -611,6 +625,16 @@ export function App() {
                       </div>
                       {expanded && (
                         <div className="case-card-body">
+                          {c.client_intake && (
+                            <p className="client-contact">
+                              <strong>Client-submitted:</strong>{" "}
+                              {c.client_intake.customer_name ?? "Customer"}
+                              {c.client_intake.customer_phone
+                                ? ` · ${c.client_intake.customer_phone}`
+                                : ""}
+                              {c.client_intake.note ? ` — “${c.client_intake.note}”` : ""}
+                            </p>
+                          )}
                           <PricingSummary item={c} />
                           <SourcingSummary
                             item={c}
@@ -1463,6 +1487,18 @@ function CaseDetail({
           <div className="state-line">
             <code>{item.current_state}</code>
           </div>
+          {item.client_intake && (
+            <p className="client-contact">
+              <span className="client-badge" data-testid="client-intake-badge">Client QR</span>{" "}
+              Submitted by {item.client_intake.customer_name ?? "the customer"}
+              {item.client_intake.customer_phone
+                ? ` · ${item.client_intake.customer_phone}`
+                : ""}
+              {item.client_intake.vin_ocr_suggestion
+                ? ` · VIN photo reads: ${item.client_intake.vin_ocr_suggestion} (suggestion only)`
+                : ""}
+            </p>
+          )}
         </div>
         <button className="primary" onClick={onNewCase}>+ New Case</button>
       </section>
@@ -3292,6 +3328,241 @@ export function PublicTrackingPage({ token }: { token: string }) {
           </small>
         )}
       </section>
+    </div>
+  );
+}
+
+const INTAKE_GLASS_OPTIONS: { id: GlassType; label: string }[] = [
+  { id: "WINDSHIELD", label: "Windshield" },
+  { id: "BACK_GLASS", label: "Back glass" },
+  { id: "DOOR_GLASS", label: "Door glass" },
+  { id: "QUARTER_GLASS", label: "Quarter glass" },
+  { id: "VENT_GLASS", label: "Vent glass" }
+];
+
+/**
+ * PUBLIC client intake page (/intake — the QR front door): the customer
+ * creates the case themselves. No login, no prices (prices arrive later
+ * with the quote). On submit the API creates a DIRECT case flagged
+ * CLIENT_QR and the customer gets a case reference plus one promise:
+ * we'll text a quote link to the mobile number they gave us.
+ */
+export function PublicIntakePage() {
+  const [glassType, setGlassType] = useState<GlassType | "">("");
+  const [note, setNote] = useState("");
+  const [vin, setVin] = useState("");
+  const [year, setYear] = useState("");
+  const [make, setMake] = useState("");
+  const [model, setModel] = useState("");
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [vinPhoto, setVinPhoto] = useState<File | null>(null);
+  const [photos, setPhotos] = useState<File[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState<{ reference: string; message: string } | null>(null);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    if (!glassType) {
+      setError("Tell us which glass needs service.");
+      return;
+    }
+    if (!vin.trim() && !(year.trim() && make.trim() && model.trim())) {
+      setError("Add your VIN, or your vehicle's year, make and model.");
+      return;
+    }
+    if (!name.trim()) {
+      setError("We need your name.");
+      return;
+    }
+    if (!phone.trim()) {
+      setError("We need a mobile number to text your quote to.");
+      return;
+    }
+    const form = new FormData();
+    form.append("customer_name", name.trim());
+    form.append("customer_phone", phone.trim());
+    form.append("glass_type", glassType);
+    if (note.trim()) form.append("note", note.trim());
+    if (vin.trim()) form.append("vin", vin.trim().toUpperCase());
+    if (year.trim()) form.append("year", year.trim());
+    if (make.trim()) form.append("make", make.trim());
+    if (model.trim()) form.append("model", model.trim());
+    if (vinPhoto) form.append("vin_photo", vinPhoto);
+    for (const p of photos) form.append("photos", p);
+    setBusy(true);
+    try {
+      const res = await submitPublicIntake(form);
+      setConfirmation({ reference: res.reference, message: res.message });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong — please try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (confirmation) {
+    return (
+      <div className="public-wrap">
+        <section className="card intake-done">
+          <p className="eyebrow">R&R Finest Auto Glass</p>
+          <h1>✓ Request received</h1>
+          <p>
+            Your case reference is <strong className="intake-ref">{confirmation.reference}</strong>
+          </p>
+          <p className="muted">{confirmation.message}</p>
+          <p className="muted">
+            Save your reference — mention it if you call us. No payment is
+            due now; you'll see your price in the quote we text you, and
+            nothing moves forward until you approve it.
+          </p>
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <div className="public-wrap">
+      <div className="intake-hero">
+        <p className="eyebrow">R&R Finest Auto Glass</p>
+        <h1>How can we service your auto glass?</h1>
+        <p>
+          Tell us what happened and what car it's for — we'll text you a
+          quote link. No account, no payment due now.
+        </p>
+      </div>
+      <form className="card intake-form" onSubmit={submit}>
+        <h2>1 · What glass needs service?</h2>
+        <div className="intake-glass" role="radiogroup" aria-label="What glass needs service?">
+          {INTAKE_GLASS_OPTIONS.map(o => (
+            <button
+              key={o.id}
+              type="button"
+              role="radio"
+              aria-checked={glassType === o.id}
+              className={"intake-glass-btn" + (glassType === o.id ? " selected" : "")}
+              onClick={() => setGlassType(o.id)}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+        <label>
+          What happened? (optional)
+          <textarea
+            value={note}
+            onChange={e => setNote(e.target.value)}
+            placeholder="e.g. Rock hit the windshield on the highway — crack is spreading"
+            rows={3}
+            style={{ display: "block", width: "100%", marginTop: 4 }}
+          />
+        </label>
+
+        <h2>2 · Your vehicle</h2>
+        <label>
+          VIN (optional — fastest way to get your glass right)
+          <input
+            type="text"
+            value={vin}
+            onChange={e => setVin(e.target.value.toUpperCase())}
+            placeholder="17 characters — on the dash by the windshield, or your registration"
+            autoComplete="off"
+            style={{ display: "block", width: "100%", marginTop: 4 }}
+          />
+        </label>
+        <label>
+          Photo of your VIN (optional)
+          <input
+            type="file"
+            accept="image/*"
+            onChange={e => setVinPhoto(e.target.files?.[0] ?? null)}
+            style={{ display: "block", marginTop: 4 }}
+          />
+        </label>
+        <p className="muted">No VIN handy? Year, make and model work too:</p>
+        <div className="intake-ymm">
+          <label>
+            Year
+            <input
+              type="text"
+              inputMode="numeric"
+              value={year}
+              onChange={e => setYear(e.target.value)}
+              placeholder="2020"
+              style={{ display: "block", width: "100%", marginTop: 4 }}
+            />
+          </label>
+          <label>
+            Make
+            <input
+              type="text"
+              value={make}
+              onChange={e => setMake(e.target.value)}
+              placeholder="Honda"
+              style={{ display: "block", width: "100%", marginTop: 4 }}
+            />
+          </label>
+          <label>
+            Model
+            <input
+              type="text"
+              value={model}
+              onChange={e => setModel(e.target.value)}
+              placeholder="Accord"
+              style={{ display: "block", width: "100%", marginTop: 4 }}
+            />
+          </label>
+        </div>
+
+        <h2>3 · Photos of the damage</h2>
+        <label>
+          Damage photos (optional, up to 6)
+          <input
+            type="file"
+            accept="image/*"
+            multiple
+            onChange={e => setPhotos(Array.from(e.target.files ?? []).slice(0, 6))}
+            style={{ display: "block", marginTop: 4 }}
+          />
+        </label>
+        <p className="muted">Photos help us identify the right glass before we quote.</p>
+
+        <h2>4 · How do we reach you?</h2>
+        <label>
+          Your name
+          <input
+            type="text"
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder="Your full name"
+            autoComplete="name"
+            style={{ display: "block", width: "100%", marginTop: 4 }}
+          />
+        </label>
+        <label>
+          Mobile phone
+          <input
+            type="tel"
+            value={phone}
+            onChange={e => setPhone(e.target.value)}
+            placeholder="(617) 555-0123 — we'll text your quote link here"
+            autoComplete="tel"
+            style={{ display: "block", width: "100%", marginTop: 4 }}
+          />
+        </label>
+
+        {error && <p className="error">{error}</p>}
+        <button className="primary intake-submit" type="submit" disabled={busy}>
+          {busy ? "Sending…" : "Send my request"}
+        </button>
+        <small>
+          Sending this creates your service case with R&R Finest Auto
+          Glass. We'll review it and text your quote — you approve it
+          before any work (or charge) happens.
+        </small>
+      </form>
     </div>
   );
 }

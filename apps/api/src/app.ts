@@ -8,7 +8,7 @@ import type { GlassCatalogProvider } from "./glass-catalog.js";
 import { createGlassCatalogProvider } from "./mygrant.js";
 import { decodeVinNhtsa, VinDecodeError } from "./vin-decode.js";
 import { isValidVin } from "./vin-validation.js";
-import { ocrVinFromImage, OcrError } from "./vin-ocr.js";
+import { ocrVinFromImage, OcrError, type OcrVinResult } from "./vin-ocr.js";
 import {
   IdentificationError,
   markGlassUnidentifiable,
@@ -90,6 +90,50 @@ const loginSchema = z.object({
   password: z.string().min(1)
 });
 
+/**
+ * Public client intake (Slice A, QR front door). Fields arrive as strings
+ * (multipart form) or JSON. Empty strings are treated as "not provided"
+ * for the optional vehicle fields. Strict: unknown keys are stripped by
+ * zod's default object behavior, so a client cannot smuggle internal
+ * fields (channel, state, pricing) into case creation — the handler
+ * below pins channel DIRECT itself.
+ */
+const publicIntakeSchema = z.object({
+  customer_name: z.string().trim().min(1).max(120),
+  customer_phone: z.string().trim().min(7).max(32),
+  glass_type: z.enum(["WINDSHIELD", "BACK_GLASS", "DOOR_GLASS", "QUARTER_GLASS", "VENT_GLASS"]),
+  note: z.string().trim().max(1000).optional(),
+  vin: z.string().trim().max(17).optional(),
+  year: z.coerce.number().int().min(1886).max(2100).optional(),
+  make: z.string().trim().min(1).max(60).optional(),
+  model: z.string().trim().min(1).max(60).optional()
+});
+
+export interface ClientIntakeView {
+  source: string;
+  customer_name: string | null;
+  customer_phone: string | null;
+  note: string | null;
+  /** OCR reading of the client's VIN photo — a staff suggestion only. */
+  vin_ocr_suggestion: string | null;
+  photo_count: number;
+  submitted_at: string;
+}
+
+/** Defensive projection of the intake event payload for staff responses. */
+function clientIntakeView(payload: Record<string, unknown>, occurredAt: string): ClientIntakeView {
+  const str = (v: unknown) => (typeof v === "string" && v.length > 0 ? v : null);
+  return {
+    source: str(payload.source) ?? "CLIENT_QR",
+    customer_name: str(payload.customer_name),
+    customer_phone: str(payload.customer_phone),
+    note: str(payload.note),
+    vin_ocr_suggestion: str(payload.vin_ocr_suggestion),
+    photo_count: Array.isArray(payload.photos) ? payload.photos.length : 0,
+    submitted_at: occurredAt
+  };
+}
+
 export interface SecurityConfig {
   /** Exact origins allowed by CORS. Defaults to the CORS_ORIGIN env var. */
   corsOrigins?: string[];
@@ -97,6 +141,10 @@ export interface SecurityConfig {
   loginRateLimitMax?: number;
   /** Rate-limit window in ms. Defaults to LOGIN_RATE_LIMIT_WINDOW_MS (10 min). */
   loginRateLimitWindowMs?: number;
+  /** Max public intake submissions per window/IP. Defaults to INTAKE_RATE_LIMIT_MAX (20). */
+  intakeRateLimitMax?: number;
+  /** Rate-limit window in ms. Defaults to INTAKE_RATE_LIMIT_WINDOW_MS (10 min). */
+  intakeRateLimitWindowMs?: number;
 }
 
 function parseCorsOrigins(raw: string | undefined): string[] {
@@ -122,6 +170,12 @@ export interface AppDeps {
   pricingConfig?: PricingConfig;
   /** Quoting configuration override (for tests). Defaults to env vars. */
   quotingConfig?: QuotingConfig;
+  /**
+   * VIN-photo OCR used by the public intake (staff OCR route keeps the
+   * default). Injectable so tests can stub Tesseract, mirroring the
+   * recognizer injection inside vin-ocr.ts itself.
+   */
+  vinOcr?: (image: Buffer) => Promise<OcrVinResult>;
 }
 
 export function createApp(
@@ -194,7 +248,18 @@ export function createApp(
       : null;
     const invoice = await store.getLatestInvoice(c.id);
     const quote = await store.getLatestQuote(c.id);
-    return { ...c, vehicle, glass_request, glass_identification, supplier_offers, price_calculation, quote, invoice };
+    // Staff-only projection of a client self-service intake (Slice A):
+    // the CLIENT_INTAKE_SUBMITTED event is the source of truth for who
+    // sent the case in and how staff reach them. Staff-created cases
+    // have no such event and project null.
+    const events = await store.getEvents(c.id);
+    const intakeEvent = [...events]
+      .reverse()
+      .find(e => e.event_type === "CLIENT_INTAKE_SUBMITTED");
+    const client_intake = intakeEvent
+      ? clientIntakeView(intakeEvent.payload, intakeEvent.occurred_at)
+      : null;
+    return { ...c, vehicle, glass_request, glass_identification, supplier_offers, price_calculation, quote, invoice, client_intake };
   };
 
   /**
@@ -598,6 +663,187 @@ export function createApp(
     if (!c || c.channel !== grant.channel) return linkInvalid(res);
     return res.json(await publicTrackingView(c));
   });
+
+  // ---------------------------------------------------------------------
+  // Public client intake (Slice A — the QR front door).
+  //
+  // A customer who scanned R&R's QR code creates the case THEMSELVES:
+  // no staff session, no account. The case lands as a normal DIRECT case
+  // in REQUEST_RECEIVED, flagged CLIENT_QR via a CLIENT_INTAKE_SUBMITTED
+  // event that also carries the customer's name + mobile (staff need the
+  // mobile to text the quote link later) and the note/photos metadata.
+  // From there the existing staff flow takes over unchanged (identify →
+  // source → price → Generate Quote → sign link).
+  //
+  // Defenses: a strict zod schema (channel/state/pricing fields a client
+  // might smuggle in are stripped and never honored), VIN checksum via
+  // the shared ISO 3779 gate when a VIN is given, per-IP rate limiting,
+  // and photo caps mirrored from the staff VIN-photo upload (10MB each).
+  // Photo BYTES are never persisted — the only durable photo artifact is
+  // the OCR reading of a VIN photo, stored as a staff-side suggestion;
+  // OCR never overwrites what the client typed (same rule as staff OCR).
+  // The response is a client-safe confirmation ONLY: case reference +
+  // what happens next. No state names, no ids, no economics.
+  // ---------------------------------------------------------------------
+
+  const intakeLimiter = createRateLimiter({
+    windowMs:
+      securityConfig.intakeRateLimitWindowMs ??
+      Number(process.env.INTAKE_RATE_LIMIT_WINDOW_MS ?? 10 * 60 * 1000),
+    max:
+      securityConfig.intakeRateLimitMax ??
+      Number(process.env.INTAKE_RATE_LIMIT_MAX ?? 20)
+  });
+
+  const intakeUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 10 * 1024 * 1024, files: 7 }
+  });
+
+  const intakeValidationError = (
+    res: express.Response,
+    message: string,
+    field?: string
+  ) =>
+    res.status(422).json({
+      error: {
+        code: "VALIDATION_ERROR",
+        message,
+        ...(field ? { details: { field } } : {})
+      }
+    });
+
+  app.post(
+    "/api/v1/public/intake",
+    intakeLimiter,
+    intakeUpload.fields([
+      { name: "vin_photo", maxCount: 1 },
+      { name: "photos", maxCount: 6 }
+    ]),
+    async (req, res) => {
+      // Normalize: multipart fields are strings and untouched optional
+      // inputs arrive as "" — treat those as "not provided".
+      const raw: Record<string, unknown> = { ...(req.body ?? {}) };
+      for (const key of ["note", "vin", "year", "make", "model"]) {
+        if (typeof raw[key] === "string" && (raw[key] as string).trim() === "") {
+          delete raw[key];
+        }
+      }
+      const parsed = publicIntakeSchema.safeParse(raw);
+      if (!parsed.success) {
+        const first = parsed.error.issues[0];
+        return intakeValidationError(
+          res,
+          first?.message ?? "Invalid request.",
+          first?.path.join(".")
+        );
+      }
+      const input = parsed.data;
+
+      const phoneDigits = input.customer_phone.replace(/\D/g, "");
+      if (phoneDigits.length < 7 || phoneDigits.length > 15) {
+        return intakeValidationError(
+          res,
+          "Enter a mobile phone number we can text your quote to.",
+          "customer_phone"
+        );
+      }
+
+      // Vehicle resolution: VIN preferred. A client who gives only a VIN
+      // gets year/make/model from the free NHTSA decode (same source the
+      // staff VIN-first flow uses); a client with no VIN must give YMM.
+      let vin: string | null = null;
+      if (input.vin) {
+        if (!isValidVin(input.vin)) {
+          return intakeValidationError(
+            res,
+            "That VIN doesn't look right — check the 17 characters and try again, or enter your vehicle's year, make and model instead.",
+            "vin"
+          );
+        }
+        vin = input.vin.trim().toUpperCase();
+      }
+      let { year, make, model } = input;
+      if (vin && (year === undefined || !make || !model)) {
+        try {
+          const decoded = await decodeVinNhtsa(vin);
+          year = year ?? decoded.year;
+          make = make ?? decoded.make;
+          model = model ?? decoded.model;
+        } catch {
+          return intakeValidationError(
+            res,
+            "We couldn't read that VIN. Please add your vehicle's year, make and model.",
+            "vehicle"
+          );
+        }
+      }
+      if (year === undefined || !make || !model) {
+        return intakeValidationError(
+          res,
+          "Tell us your vehicle: enter your VIN, or your vehicle's year, make and model.",
+          "vehicle"
+        );
+      }
+
+      // Uploaded photos: validate count/shape via multer (already run);
+      // keep metadata only. A VIN photo additionally goes through the
+      // existing OCR pipeline; its reading is a staff suggestion.
+      const files = (req.files ?? {}) as {
+        vin_photo?: Express.Multer.File[];
+        photos?: Express.Multer.File[];
+      };
+      const photoMeta: { kind: string; size_bytes: number; content_type: string }[] = [];
+      for (const f of files.photos ?? []) {
+        photoMeta.push({ kind: "damage", size_bytes: f.size, content_type: f.mimetype });
+      }
+      let vinOcrSuggestion: string | null = null;
+      const vinPhoto = files.vin_photo?.[0];
+      if (vinPhoto) {
+        photoMeta.push({ kind: "vin", size_bytes: vinPhoto.size, content_type: vinPhoto.mimetype });
+        try {
+          const ocr = await (deps.vinOcr ?? ocrVinFromImage)(vinPhoto.buffer);
+          vinOcrSuggestion = ocr.vin;
+        } catch {
+          // OCR is an assist, never a gate: a failed read must not lose
+          // the customer's request. Staff see no suggestion and work
+          // from the typed vehicle details as usual.
+          vinOcrSuggestion = null;
+        }
+      }
+
+      const customerActor = { type: "CUSTOMER", id: null };
+      const result = await store.createCase({
+        channel: "DIRECT",
+        customer_id: null,
+        vehicle: { year, make, model, vin: vin ?? "" },
+        glass_type: input.glass_type,
+        actor: customerActor
+      });
+      const created = result.caseRecord;
+      await store.appendEvent({
+        caseId: created.id,
+        eventType: "CLIENT_INTAKE_SUBMITTED",
+        actor: customerActor,
+        payload: {
+          source: "CLIENT_QR",
+          customer_name: input.customer_name,
+          customer_phone: input.customer_phone,
+          note: input.note ?? null,
+          vin_provided: vin !== null,
+          vin_ocr_suggestion: vinOcrSuggestion,
+          photos: photoMeta
+        }
+      });
+
+      return res.status(201).json({
+        ok: true,
+        reference: created.reference,
+        message:
+          "Thanks — your request is in. We'll review it and text a quote link to the mobile number you gave us."
+      });
+    }
+  );
 
   // All case routes require staff authentication.
   app.use("/api/v1/cases", auth);
