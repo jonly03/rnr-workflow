@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, cardOrderKey, DEFAULT_CARD_ORDER, describeEvent, filterQueueCases, isStaffActionRequired, loadCardOrder, pinQuoteAfterPricing, PublicIntakePage, scanProgressForElapsed, shouldShowOverrideWarning, sortQueueCases } from "./App";
 import type { CaseRecord, CaseEvent } from "./types";
@@ -377,14 +377,24 @@ describe("activity timeline layout", () => {
 });
 
 describe("public intake page (QR front door)", () => {
-  it("renders Nelly's headline, submits the form, and confirms with the case reference — no prices anywhere", async () => {
-    let postedUrl = "";
-    let postedBody: FormData | null = null;
+  // This file has no global RTL auto-cleanup; each card-flow test renders
+  // a fresh page, so unmount explicitly to keep label queries unique.
+  afterEach(() => cleanup());
+
+  const VALID_VIN = "1HGCM82633A004352"; // ISO 3779 check digit valid
+
+  function stubIntakeFetch() {
+    const state: { url: string; body: FormData | null; calls: number } = {
+      url: "",
+      body: null,
+      calls: 0
+    };
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string | URL | Request, init?: { body?: unknown }) => {
-        postedUrl = String(url);
-        postedBody = (init?.body as FormData) ?? null;
+        state.calls += 1;
+        state.url = String(url);
+        state.body = (init?.body as FormData) ?? null;
         return {
           ok: true,
           json: async () => ({
@@ -396,42 +406,149 @@ describe("public intake page (QR front door)", () => {
         };
       })
     );
+    return state;
+  }
 
+  function continueButton() {
+    return screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement;
+  }
+
+  /** Walk card 1 (valid VIN) and card 2 (Windshield) to land on card 3. */
+  function walkToCard3() {
+    fireEvent.change(screen.getByLabelText(/^VIN/), {
+      target: { value: VALID_VIN }
+    });
+    fireEvent.click(continueButton());
+    fireEvent.click(screen.getByRole("radio", { name: "Windshield" }));
+    fireEvent.click(continueButton());
+  }
+
+  it("walks the 4 cards in order and submits the same payload shape as the one-page form — no prices anywhere", async () => {
+    const posted = stubIntakeFetch();
     render(<PublicIntakePage />);
+
+    // Card 1 only: headline + vehicle, no glass picker, YMM hidden.
     expect(
       screen.getByRole("heading", { name: "How can we service your auto glass?" })
     ).toBeInTheDocument();
+    expect(screen.getByText("Step 1 of 4")).toBeInTheDocument();
+    expect(screen.queryByRole("radio", { name: "Windshield" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Year/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/scan vin/i)).toBeInTheDocument();
+    expect(continueButton().disabled).toBe(true);
 
-    fireEvent.click(screen.getByRole("radio", { name: "Windshield" }));
-    fireEvent.change(screen.getByLabelText(/^VIN/), {
-      target: { value: "1HGCM82633A004352" }
+    // Scan VIN stays an optional attachment on card 1.
+    const vinPhoto = new File(["vin-bytes"], "vin.jpg", { type: "image/jpeg" });
+    fireEvent.change(screen.getByLabelText(/scan vin/i), {
+      target: { files: [vinPhoto] }
     });
+
+    fireEvent.change(screen.getByLabelText(/^VIN/), {
+      target: { value: VALID_VIN }
+    });
+    expect(continueButton().disabled).toBe(false);
+    fireEvent.click(continueButton());
+
+    // Card 2: headline is card-1 only; picking a glass enables Continue.
+    expect(screen.getByText("Step 2 of 4")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "How can we service your auto glass?" })
+    ).not.toBeInTheDocument();
+    expect(continueButton().disabled).toBe(true);
+    fireEvent.click(screen.getByRole("radio", { name: "Windshield" }));
+    expect(continueButton().disabled).toBe(false);
+    fireEvent.click(continueButton());
+
+    // Card 3 is skippable untouched.
+    expect(screen.getByText("Step 3 of 4")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Skip" }));
+
+    // Card 4: recap line, and Send stays blocked until name + mobile.
+    expect(screen.getByText("Step 4 of 4")).toBeInTheDocument();
+    expect(screen.getByText(/····4352 · Windshield/)).toBeInTheDocument();
+    const send = screen.getByRole("button", { name: "Send request" }) as HTMLButtonElement;
+    expect(send.disabled).toBe(true);
     fireEvent.change(screen.getByLabelText(/your name/i), {
       target: { value: "Jane Customer" }
     });
+    expect(send.disabled).toBe(true);
     fireEvent.change(screen.getByLabelText(/mobile phone/i), {
       target: { value: "(617) 555-0142" }
     });
-    fireEvent.click(screen.getByRole("button", { name: "Send my request" }));
+    expect(send.disabled).toBe(false);
+    // Nothing was submitted before this final card.
+    expect(posted.calls).toBe(0);
+    fireEvent.click(send);
 
     expect(await screen.findByRole("heading", { name: /Request received/ })).toBeInTheDocument();
     expect(screen.getByText("RRA-000042")).toBeInTheDocument();
     expect(screen.getByText(/text a quote link/)).toBeInTheDocument();
-    expect(postedUrl).toContain("/public/intake");
-    expect(postedBody!.get("glass_type")).toBe("WINDSHIELD");
-    expect(postedBody!.get("vin")).toBe("1HGCM82633A004352");
-    expect(postedBody!.get("customer_name")).toBe("Jane Customer");
-    expect(postedBody!.get("customer_phone")).toBe("(617) 555-0142");
+    expect(posted.calls).toBe(1);
+    expect(posted.url).toContain("/public/intake");
+    expect(posted.body!.get("glass_type")).toBe("WINDSHIELD");
+    expect(posted.body!.get("vin")).toBe(VALID_VIN);
+    expect(posted.body!.get("vin_photo")).toBe(vinPhoto);
+    expect(posted.body!.get("customer_name")).toBe("Jane Customer");
+    expect(posted.body!.get("customer_phone")).toBe("(617) 555-0142");
     // Prices come with the quote, never at intake.
     expect(document.body.textContent ?? "").not.toMatch(/\$\d/);
   });
 
-  it("blocks an empty submit with a friendly error and sends nothing", async () => {
-    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
-    vi.stubGlobal("fetch", fetchMock);
+  it("gates card 1 on a valid VIN or the 'I don't have the VIN' expander with complete YMM", () => {
+    stubIntakeFetch();
     render(<PublicIntakePage />);
-    fireEvent.click(screen.getByRole("button", { name: "Send my request" }));
-    expect(await screen.findByText("Tell us which glass needs service.")).toBeInTheDocument();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(continueButton().disabled).toBe(true);
+
+    // A typed VIN with a bad check digit does not open the gate.
+    fireEvent.change(screen.getByLabelText(/^VIN/), {
+      target: { value: "1HGCM82633A004353" }
+    });
+    expect(continueButton().disabled).toBe(true);
+
+    // The expander is the only way YMM ever appears.
+    fireEvent.change(screen.getByLabelText(/^VIN/), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: /I don't have the VIN/i }));
+    expect(screen.getByLabelText(/^Year/)).toBeInTheDocument();
+    expect(continueButton().disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText(/^Year/), { target: { value: "2023" } });
+    fireEvent.change(screen.getByLabelText(/^Make/), { target: { value: "Volkswagen" } });
+    fireEvent.change(screen.getByLabelText(/^Model/), { target: { value: "ID.4" } });
+    expect(continueButton().disabled).toBe(false);
+
+    // An entered VIN hides YMM again — they never show together.
+    fireEvent.change(screen.getByLabelText(/^VIN/), {
+      target: { value: VALID_VIN }
+    });
+    expect(screen.queryByLabelText(/^Year/)).not.toBeInTheDocument();
+    expect(continueButton().disabled).toBe(false);
+  });
+
+  it("card 3 reads Skip while empty and Continue once anything is added, and always advances", () => {
+    stubIntakeFetch();
+    render(<PublicIntakePage />);
+    walkToCard3();
+    expect(screen.getByText("Step 3 of 4")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Skip" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/what happened/i), {
+      target: { value: "Rock chip on the highway" }
+    });
+    expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(screen.getByText("Step 4 of 4")).toBeInTheDocument();
+    // The note rides along in the recap-free payload path: recap shows vehicle + glass.
+    expect(screen.getByText(/····4352 · Windshield/)).toBeInTheDocument();
+  });
+
+  it("Back is a quiet affordance that returns to the previous card with state kept", () => {
+    stubIntakeFetch();
+    render(<PublicIntakePage />);
+    fireEvent.change(screen.getByLabelText(/^VIN/), {
+      target: { value: VALID_VIN }
+    });
+    fireEvent.click(continueButton());
+    expect(screen.getByText("Step 2 of 4")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Back/i }));
+    expect(screen.getByText("Step 1 of 4")).toBeInTheDocument();
+    expect((screen.getByLabelText(/^VIN/) as HTMLInputElement).value).toBe(VALID_VIN);
   });
 });

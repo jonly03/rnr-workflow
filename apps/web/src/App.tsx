@@ -3355,16 +3355,43 @@ const INTAKE_GLASS_OPTIONS: { id: GlassType; label: string }[] = [
 ];
 
 /**
+ * ISO 3779 VIN check — mirrors apps/api/src/vin-validation.ts so card 1
+ * can gate its Continue button exactly the way the server gates the VIN.
+ * The server stays the real gate; this is a UX pre-check only.
+ */
+const VIN_TRANSLITERATION: Record<string, number> = {
+  A: 1, B: 2, C: 3, D: 4, E: 5, F: 6, G: 7, H: 8,
+  J: 1, K: 2, L: 3, M: 4, N: 5, P: 7, R: 9,
+  S: 2, T: 3, U: 4, V: 5, W: 6, X: 7, Y: 8, Z: 9
+};
+const VIN_POSITION_WEIGHTS = [8, 7, 6, 5, 4, 3, 2, 10, 0, 9, 8, 7, 6, 5, 4, 3, 2];
+
+function isValidVin(vin: string): boolean {
+  const v = vin.trim().toUpperCase();
+  if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(v)) return false;
+  let sum = 0;
+  for (let i = 0; i < 17; i++) {
+    const c = v[i];
+    sum += (c >= "0" && c <= "9" ? Number(c) : VIN_TRANSLITERATION[c]) * VIN_POSITION_WEIGHTS[i];
+  }
+  const remainder = sum % 11;
+  return v[8] === (remainder === 10 ? "X" : String(remainder));
+}
+
+/**
  * PUBLIC client intake page (/intake — the QR front door): the customer
  * creates the case themselves. No login, no prices (prices arrive later
- * with the quote). On submit the API creates a DIRECT case flagged
- * CLIENT_QR and the customer gets a case reference plus one promise:
- * we'll text a quote link to the mobile number they gave us.
+ * with the quote). A step-by-step card flow — one card at a time, vehicle
+ * first, contact last — and a single POST /public/intake from the final
+ * card creates a DIRECT case flagged CLIENT_QR. The customer gets a case
+ * reference plus one promise: we'll text a quote link to their mobile.
  */
 export function PublicIntakePage() {
+  const [step, setStep] = useState(1);
   const [glassType, setGlassType] = useState<GlassType | "">("");
   const [note, setNote] = useState("");
   const [vin, setVin] = useState("");
+  const [showYmm, setShowYmm] = useState(false);
   const [year, setYear] = useState("");
   const [make, setMake] = useState("");
   const [model, setModel] = useState("");
@@ -3376,14 +3403,45 @@ export function PublicIntakePage() {
   const [error, setError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<{ reference: string; message: string } | null>(null);
 
+  const vinValue = vin.trim().toUpperCase();
+  const ymmComplete = Boolean(year.trim() && make.trim() && model.trim());
+  // An entered VIN stands alone (YMM hides beside it); with no VIN, the
+  // "I don't have the VIN" expander's complete YMM is the vehicle ID.
+  const vehicleReady = vinValue ? isValidVin(vinValue) : showYmm && ymmComplete;
+  const glassLabel = INTAKE_GLASS_OPTIONS.find(o => o.id === glassType)?.label ?? "";
+  const vehicleRecap = vinValue
+    ? `VIN ····${vinValue.slice(-4)}`
+    : ymmComplete
+      ? `${year.trim()} ${make.trim()} ${model.trim()}`
+      : "";
+  const recap = [vehicleRecap, glassLabel].filter(Boolean).join(" · ");
+
+  function goBack() {
+    setError(null);
+    setStep(s => Math.max(1, s - 1));
+  }
+
+  function goNext() {
+    setError(null);
+    setStep(s => Math.min(4, s + 1));
+  }
+
   async function submit(e: FormEvent) {
     e.preventDefault();
+    // Cards 1-3 never submit: Enter/advance just moves to the next card
+    // when that card's gate is met. The one API call fires from card 4.
+    if (step < 4) {
+      if (step === 1 && vehicleReady) goNext();
+      if (step === 2 && glassType) goNext();
+      if (step === 3) goNext();
+      return;
+    }
     setError(null);
     if (!glassType) {
       setError("Tell us which glass needs service.");
       return;
     }
-    if (!vin.trim() && !(year.trim() && make.trim() && model.trim())) {
+    if (!vehicleReady) {
       setError("Add your VIN, or your vehicle's year, make and model.");
       return;
     }
@@ -3400,10 +3458,13 @@ export function PublicIntakePage() {
     form.append("customer_phone", phone.trim());
     form.append("glass_type", glassType);
     if (note.trim()) form.append("note", note.trim());
-    if (vin.trim()) form.append("vin", vin.trim().toUpperCase());
-    if (year.trim()) form.append("year", year.trim());
-    if (make.trim()) form.append("make", make.trim());
-    if (model.trim()) form.append("model", model.trim());
+    if (vinValue) {
+      form.append("vin", vinValue);
+    } else {
+      if (year.trim()) form.append("year", year.trim());
+      if (make.trim()) form.append("make", make.trim());
+      if (model.trim()) form.append("model", model.trim());
+    }
     if (vinPhoto) form.append("vin_photo", vinPhoto);
     for (const p of photos) form.append("photos", p);
     setBusy(true);
@@ -3439,143 +3500,217 @@ export function PublicIntakePage() {
 
   return (
     <div className="public-wrap">
-      <div className="intake-hero">
-        <p className="eyebrow">R&R Finest Auto Glass</p>
-        <h1>How can we service your auto glass?</h1>
-        <p>
-          Tell us what happened and what car it's for — we'll text you a
-          quote link. No account, no payment due now.
-        </p>
-      </div>
+      {step === 1 && (
+        <div className="intake-hero">
+          <p className="eyebrow">R&R Finest Auto Glass</p>
+          <h1>How can we service your auto glass?</h1>
+          <p>
+            Tell us about your car and the glass it needs — we'll text you
+            a quote link. No account, no payment due now.
+          </p>
+        </div>
+      )}
       <form className="card intake-form" onSubmit={submit}>
-        <h2>1 · What glass needs service?</h2>
-        <div className="intake-glass" role="radiogroup" aria-label="What glass needs service?">
-          {INTAKE_GLASS_OPTIONS.map(o => (
-            <button
-              key={o.id}
-              type="button"
-              role="radio"
-              aria-checked={glassType === o.id}
-              className={"intake-glass-btn" + (glassType === o.id ? " selected" : "")}
-              onClick={() => setGlassType(o.id)}
-            >
-              {o.label}
-            </button>
-          ))}
-        </div>
-        <label>
-          What happened? (optional)
-          <textarea
-            value={note}
-            onChange={e => setNote(e.target.value)}
-            placeholder="e.g. Rock hit the windshield on the highway — crack is spreading"
-            rows={3}
-            style={{ display: "block", width: "100%", marginTop: 4 }}
-          />
-        </label>
+        {step === 1 && (
+          <>
+            <h2>Your vehicle</h2>
+            <label>
+              VIN
+              <input
+                className="intake-vin"
+                type="text"
+                value={vin}
+                onChange={e => setVin(e.target.value.toUpperCase())}
+                placeholder="17 characters — on the dash by the windshield, or your registration"
+                autoComplete="off"
+                style={{ display: "block", width: "100%", marginTop: 4 }}
+              />
+            </label>
+            <p className="muted">Your VIN is the fastest way to get your glass right.</p>
+            {vinValue && !isValidVin(vinValue) && (
+              <p className="muted">A VIN is 17 characters — letters and numbers, no I, O or Q.</p>
+            )}
+            <label className="intake-scan">
+              <span className="intake-scan-btn">📷 Scan VIN (optional)</span>
+              <input
+                type="file"
+                accept="image/*"
+                hidden
+                onChange={e => setVinPhoto(e.target.files?.[0] ?? null)}
+              />
+              {vinPhoto && <span className="intake-scan-name">{vinPhoto.name}</span>}
+            </label>
+            {!vinValue && (
+              <button
+                type="button"
+                className="intake-toggle"
+                aria-expanded={showYmm}
+                onClick={() => setShowYmm(v => !v)}
+              >
+                I don't have the VIN
+              </button>
+            )}
+            {showYmm && !vinValue && (
+              <div className="intake-ymm">
+                <label>
+                  Year
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={year}
+                    onChange={e => setYear(e.target.value)}
+                    placeholder="2020"
+                    style={{ display: "block", width: "100%", marginTop: 4 }}
+                  />
+                </label>
+                <label>
+                  Make
+                  <input
+                    type="text"
+                    value={make}
+                    onChange={e => setMake(e.target.value)}
+                    placeholder="Honda"
+                    style={{ display: "block", width: "100%", marginTop: 4 }}
+                  />
+                </label>
+                <label>
+                  Model
+                  <input
+                    type="text"
+                    value={model}
+                    onChange={e => setModel(e.target.value)}
+                    placeholder="Accord"
+                    style={{ display: "block", width: "100%", marginTop: 4 }}
+                  />
+                </label>
+              </div>
+            )}
+          </>
+        )}
 
-        <h2>2 · Your vehicle</h2>
-        <label>
-          VIN (optional — fastest way to get your glass right)
-          <input
-            type="text"
-            value={vin}
-            onChange={e => setVin(e.target.value.toUpperCase())}
-            placeholder="17 characters — on the dash by the windshield, or your registration"
-            autoComplete="off"
-            style={{ display: "block", width: "100%", marginTop: 4 }}
-          />
-        </label>
-        <label>
-          Photo of your VIN (optional)
-          <input
-            type="file"
-            accept="image/*"
-            onChange={e => setVinPhoto(e.target.files?.[0] ?? null)}
-            style={{ display: "block", marginTop: 4 }}
-          />
-        </label>
-        <p className="muted">No VIN handy? Year, make and model work too:</p>
-        <div className="intake-ymm">
-          <label>
-            Year
-            <input
-              type="text"
-              inputMode="numeric"
-              value={year}
-              onChange={e => setYear(e.target.value)}
-              placeholder="2020"
+        {step === 2 && (
+          <>
+            <h2>What glass needs service?</h2>
+            <div className="intake-glass" role="radiogroup" aria-label="What glass needs service?">
+              {INTAKE_GLASS_OPTIONS.map(o => (
+                <button
+                  key={o.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={glassType === o.id}
+                  className={"intake-glass-btn" + (glassType === o.id ? " selected" : "")}
+                  onClick={() => setGlassType(o.id)}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
+        {step === 3 && (
+          <>
+            <h2>What happened? (optional)</h2>
+            <textarea
+              aria-label="What happened? (optional)"
+              value={note}
+              onChange={e => setNote(e.target.value)}
+              placeholder="e.g. Rock hit the windshield on the highway — crack is spreading"
+              rows={3}
               style={{ display: "block", width: "100%", marginTop: 4 }}
             />
-          </label>
-          <label>
-            Make
-            <input
-              type="text"
-              value={make}
-              onChange={e => setMake(e.target.value)}
-              placeholder="Honda"
-              style={{ display: "block", width: "100%", marginTop: 4 }}
-            />
-          </label>
-          <label>
-            Model
-            <input
-              type="text"
-              value={model}
-              onChange={e => setModel(e.target.value)}
-              placeholder="Accord"
-              style={{ display: "block", width: "100%", marginTop: 4 }}
-            />
-          </label>
-        </div>
+            <label>
+              Damage photos (optional, up to 6)
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={e => setPhotos(Array.from(e.target.files ?? []).slice(0, 6))}
+                style={{ display: "block", marginTop: 4 }}
+              />
+            </label>
+            <p className="muted">Photos help us identify the right glass before we quote.</p>
+          </>
+        )}
 
-        <h2>3 · Photos of the damage</h2>
-        <label>
-          Damage photos (optional, up to 6)
-          <input
-            type="file"
-            accept="image/*"
-            multiple
-            onChange={e => setPhotos(Array.from(e.target.files ?? []).slice(0, 6))}
-            style={{ display: "block", marginTop: 4 }}
-          />
-        </label>
-        <p className="muted">Photos help us identify the right glass before we quote.</p>
-
-        <h2>4 · How do we reach you?</h2>
-        <label>
-          Your name
-          <input
-            type="text"
-            value={name}
-            onChange={e => setName(e.target.value)}
-            placeholder="Your full name"
-            autoComplete="name"
-            style={{ display: "block", width: "100%", marginTop: 4 }}
-          />
-        </label>
-        <label>
-          Mobile phone
-          <input
-            type="tel"
-            value={phone}
-            onChange={e => setPhone(e.target.value)}
-            placeholder="(617) 555-0123 — we'll text your quote link here"
-            autoComplete="tel"
-            style={{ display: "block", width: "100%", marginTop: 4 }}
-          />
-        </label>
+        {step === 4 && (
+          <>
+            <h2>How do we reach you?</h2>
+            {recap && <p className="intake-recap">{recap}</p>}
+            <label>
+              Your name
+              <input
+                type="text"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                placeholder="Your full name"
+                autoComplete="name"
+                style={{ display: "block", width: "100%", marginTop: 4 }}
+              />
+            </label>
+            <label>
+              Mobile phone
+              <input
+                type="tel"
+                value={phone}
+                onChange={e => setPhone(e.target.value)}
+                placeholder="(617) 555-0123 — we'll text your quote link here"
+                autoComplete="tel"
+                style={{ display: "block", width: "100%", marginTop: 4 }}
+              />
+            </label>
+            <small>
+              Sending this creates your service case with R&R Finest Auto
+              Glass. We'll review it and text your quote — you approve it
+              before any work (or charge) happens.
+            </small>
+          </>
+        )}
 
         {error && <p className="error">{error}</p>}
-        <button className="primary intake-submit" type="submit" disabled={busy}>
-          {busy ? "Sending…" : "Send my request"}
-        </button>
-        <small>
-          Sending this creates your service case with R&R Finest Auto
-          Glass. We'll review it and text your quote — you approve it
-          before any work (or charge) happens.
-        </small>
+
+        <div className="intake-nav">
+          {step > 1 ? (
+            <button type="button" className="intake-back" onClick={goBack}>
+              ‹ Back
+            </button>
+          ) : (
+            <span />
+          )}
+          {step === 1 && (
+            <button type="button" className="primary intake-next" disabled={!vehicleReady} onClick={goNext}>
+              Continue
+            </button>
+          )}
+          {step === 2 && (
+            <button type="button" className="primary intake-next" disabled={!glassType} onClick={goNext}>
+              Continue
+            </button>
+          )}
+          {step === 3 && (
+            <button type="button" className="primary intake-next" onClick={goNext}>
+              {note.trim() || photos.length > 0 ? "Continue" : "Skip"}
+            </button>
+          )}
+          {step === 4 && (
+            <button
+              type="submit"
+              className="primary intake-next"
+              disabled={busy || !name.trim() || !phone.trim()}
+            >
+              {busy ? "Sending…" : "Send request"}
+            </button>
+          )}
+        </div>
+
+        <div className="intake-steps">
+          <div className="intake-dots" aria-hidden="true">
+            {[1, 2, 3, 4].map(n => (
+              <span key={n} className={"intake-dot" + (n === step ? " active" : "")} />
+            ))}
+          </div>
+          <span className="intake-step-text">Step {step} of 4</span>
+        </div>
       </form>
     </div>
   );
