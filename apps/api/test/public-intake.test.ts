@@ -1,0 +1,334 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import request from "supertest";
+import { describe, expect, it } from "vitest";
+import { createApp, type SecurityConfig } from "../src/app.js";
+import { hashPassword } from "../src/auth.js";
+import { MockGlassCatalogProvider } from "../src/glass-catalog.js";
+import { MockSourcingProvider } from "../src/sourcing.js";
+import { JsonCaseStore } from "../src/store.js";
+
+const TEST_AUTH_SECRET = "<redacted>";
+const VIN_17 = "1HGCM82633A004352";
+const OTHER_VIN = "1C4HJXEG3JW224862";
+const PRICING = { labor_cents: 12500, target_profit_cents: 25000, tax_rate: 0.0625 };
+
+/** 1x1 transparent PNG — a stand-in photo upload for intake tests. */
+const TINY_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8Xw8AAwMCAO+ip1sAAAAASUVORK5CYII=",
+  "base64"
+);
+
+interface Fixture {
+  app: ReturnType<typeof createApp>;
+  token: string;
+}
+
+async function fixture(
+  securityConfig: SecurityConfig = {},
+  deps: { vinOcr?: (image: Buffer) => Promise<{ vin: string | null; rawText: string }> } = {}
+): Promise<Fixture> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rnr-public-intake-"));
+  const store = new JsonCaseStore(path.join(dir, "cases.json"));
+  await store.createStaffUser({
+    email: "staff@example.com",
+    name: "Test Staff",
+    role: "staff",
+    passwordHash: await hashPassword("password123")
+  });
+  const app = createApp(
+    store,
+    { authSecret: TEST_AUTH_SECRET },
+    securityConfig,
+    {
+      glassCatalog: new MockGlassCatalogProvider(),
+      sourcingProvider: new MockSourcingProvider(),
+      pricingConfig: PRICING,
+      ...deps
+    }
+  );
+  const login = await request(app)
+    .post("/api/v1/auth/login")
+    .send({ email: "staff@example.com", password: "password123" })
+    .expect(200);
+  return { app, token: login.body.token as string };
+}
+
+const staffGet = (f: Fixture, url: string) =>
+  request(f.app).get(url).set("Authorization", `Bearer ${f.token}`);
+
+const intake = (f: Fixture, body: Record<string, unknown>) =>
+  request(f.app).post("/api/v1/public/intake").send(body);
+
+const VALID = {
+  customer_name: "Jane Customer",
+  customer_phone: "(617) 555-0142",
+  glass_type: "WINDSHIELD",
+  vin: VIN_17,
+  year: 2020,
+  make: "Honda",
+  model: "Accord"
+};
+
+describe("Public client intake (QR front door)", () => {
+  it("creates a well-formed DIRECT case flagged CLIENT_QR with customer contact for staff", async () => {
+    const f = await fixture();
+    const res = await intake(f, { ...VALID, note: "Cracked on the highway" }).expect(201);
+
+    // Client-safe confirmation ONLY: reference + what happens next.
+    expect(Object.keys(res.body).sort()).toEqual(["message", "ok", "reference"]);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.reference).toMatch(/^RRA-\d{6}$/);
+    expect(res.body.message).toContain("text a quote link");
+
+    const list = await staffGet(f, "/api/v1/cases").expect(200);
+    expect(list.body).toHaveLength(1);
+    const c = list.body[0];
+    expect(c.reference).toBe(res.body.reference);
+    expect(c.channel).toBe("DIRECT");
+    expect(c.current_state).toBe("REQUEST_RECEIVED");
+    expect(c.vehicle).toMatchObject({ year: 2020, make: "Honda", model: "Accord", vin: VIN_17 });
+    expect(c.glass_request.glass_type).toBe("WINDSHIELD");
+    // Staff see who sent it and how to reach them (quote link goes by text).
+    expect(c.client_intake).toMatchObject({
+      source: "CLIENT_QR",
+      customer_name: "Jane Customer",
+      customer_phone: "(617) 555-0142",
+      note: "Cracked on the highway",
+      vin_ocr_suggestion: null,
+      photo_count: 0
+    });
+
+    const events = await staffGet(f, `/api/v1/cases/${c.id}/events`).expect(200);
+    const created = events.body.find((e: { event_type: string }) => e.event_type === "CASE_CREATED");
+    expect(created.actor_type).toBe("CUSTOMER");
+    const submitted = events.body.find(
+      (e: { event_type: string }) => e.event_type === "CLIENT_INTAKE_SUBMITTED"
+    );
+    expect(submitted).toBeDefined();
+    expect(submitted.payload.source).toBe("CLIENT_QR");
+    expect(submitted.payload.customer_phone).toBe("(617) 555-0142");
+  });
+
+  it("accepts a YMM-only intake (no VIN) and stores an empty VIN", async () => {
+    const f = await fixture();
+    const { vin: _vin, ...ymmOnly } = VALID;
+    const res = await intake(f, ymmOnly).expect(201);
+    const list = await staffGet(f, "/api/v1/cases").expect(200);
+    const c = list.body.find((x: { reference: string }) => x.reference === res.body.reference);
+    expect(c.vehicle.vin).toBe("");
+    expect(c.client_intake.source).toBe("CLIENT_QR");
+  });
+
+  it("leaks nothing internal and nothing about other cases", async () => {
+    const f = await fixture();
+    // A pre-existing staff case with a distinctive VIN.
+    await request(f.app)
+      .post("/api/v1/cases")
+      .set("Authorization", `Bearer ${f.token}`)
+      .send({
+        channel: "DIRECT",
+        vehicle: { year: 2018, make: "Jeep", model: "Wrangler", vin: OTHER_VIN },
+        glass_request: { glass_type: "WINDSHIELD" }
+      })
+      .expect(201);
+
+    const res = await intake(f, VALID).expect(201);
+    const raw = JSON.stringify(res.body);
+    for (const forbidden of [
+      "supplier",
+      "glass_cost",
+      "profit",
+      "sell_price",
+      "current_state",
+      "REQUEST_RECEIVED",
+      VIN_17,
+      OTHER_VIN
+    ]) {
+      expect(raw).not.toContain(forbidden);
+    }
+  });
+
+  it("rejects a VIN with a bad check digit and creates no case", async () => {
+    const f = await fixture();
+    await intake(f, { ...VALID, vin: "1HGCM82633A004353" }).expect(422);
+    const list = await staffGet(f, "/api/v1/cases").expect(200);
+    expect(list.body).toHaveLength(0);
+  });
+
+  it("rejects missing name, missing/unusable phone, bad glass type, and no vehicle info", async () => {
+    const f = await fixture();
+    const { customer_name: _n, ...noName } = VALID;
+    await intake(f, noName).expect(422);
+    const { customer_phone: _p, ...noPhone } = VALID;
+    await intake(f, noPhone).expect(422);
+    await intake(f, { ...VALID, customer_phone: "call me" }).expect(422);
+    await intake(f, { ...VALID, glass_type: "SUNROOF" }).expect(422);
+    const { vin: _v, year: _y, make: _mk, model: _md, ...noVehicle } = VALID;
+    await intake(f, noVehicle).expect(422);
+    const list = await staffGet(f, "/api/v1/cases").expect(200);
+    expect(list.body).toHaveLength(0);
+  });
+
+  it("ignores smuggled internal fields (channel, state, pricing)", async () => {
+    const f = await fixture();
+    const res = await intake(f, {
+      ...VALID,
+      channel: "INSURANCE",
+      current_state: "PRICE_APPROVED",
+      customer_id: "00000000-0000-0000-0000-000000000000"
+    }).expect(201);
+    const list = await staffGet(f, "/api/v1/cases").expect(200);
+    const c = list.body.find((x: { reference: string }) => x.reference === res.body.reference);
+    expect(c.channel).toBe("DIRECT");
+    expect(c.current_state).toBe("REQUEST_RECEIVED");
+    expect(c.customer_id).toBeNull();
+  });
+
+  it("accepts multipart damage photos and records metadata only", async () => {
+    const f = await fixture();
+    const res = await request(f.app)
+      .post("/api/v1/public/intake")
+      .field("customer_name", "Jane Customer")
+      .field("customer_phone", "6175550142")
+      .field("glass_type", "WINDSHIELD")
+      .field("vin", VIN_17)
+      .field("year", "2020")
+      .field("make", "Honda")
+      .field("model", "Accord")
+      .attach("photos", TINY_PNG, "crack.jpg")
+      .expect(201);
+    const list = await staffGet(f, "/api/v1/cases").expect(200);
+    const c = list.body.find((x: { reference: string }) => x.reference === res.body.reference);
+    expect(c.client_intake.photo_count).toBe(1);
+    const events = await staffGet(f, `/api/v1/cases/${c.id}/events`).expect(200);
+    const submitted = events.body.find(
+      (e: { event_type: string }) => e.event_type === "CLIENT_INTAKE_SUBMITTED"
+    );
+    expect(submitted.payload.photos).toEqual([
+      { kind: "damage", size_bytes: TINY_PNG.length, content_type: "image/jpeg" }
+    ]);
+  });
+
+  it("rejects an oversized photo with 413 and too many photos with 400", async () => {
+    const f = await fixture();
+    const big = Buffer.alloc(10 * 1024 * 1024 + 1, 1);
+    await request(f.app)
+      .post("/api/v1/public/intake")
+      .field("customer_name", "Jane Customer")
+      .field("customer_phone", "6175550142")
+      .field("glass_type", "WINDSHIELD")
+      .field("year", "2020")
+      .field("make", "Honda")
+      .field("model", "Accord")
+      .attach("photos", big, "huge.jpg")
+      .expect(413);
+
+    let tooMany = request(f.app)
+      .post("/api/v1/public/intake")
+      .field("customer_name", "Jane Customer")
+      .field("customer_phone", "6175550142")
+      .field("glass_type", "WINDSHIELD")
+      .field("year", "2020")
+      .field("make", "Honda")
+      .field("model", "Accord");
+    for (let i = 0; i < 7; i++) {
+      tooMany = tooMany.attach("photos", TINY_PNG, `p${i}.jpg`);
+    }
+    await tooMany.expect(400);
+
+    const list = await staffGet(f, "/api/v1/cases").expect(200);
+    expect(list.body).toHaveLength(0);
+  });
+
+  it("rate-limits repeated submissions per IP", async () => {
+    const f = await fixture({ intakeRateLimitMax: 3 });
+    await intake(f, VALID).expect(201);
+    await intake(f, VALID).expect(201);
+    await intake(f, VALID).expect(201);
+    const limited = await intake(f, VALID).expect(429);
+    expect(limited.body.error.code).toBe("RATE_LIMITED");
+  });
+
+  it("runs VIN-photo OCR as a suggestion only — it never overwrites a typed VIN and never fills an untyped one", async () => {
+    // OCR "reads" a completely different VIN from the photo. Neither
+    // case may adopt it as the vehicle VIN: it is staff-suggestion only.
+    const OCR_VIN = "1FTFW1ET5DFC10312";
+    const f = await fixture({}, {
+      vinOcr: async () => ({ vin: OCR_VIN, rawText: `plate ${OCR_VIN}` })
+    });
+    const typed = await request(f.app)
+      .post("/api/v1/public/intake")
+      .field("customer_name", "Jane Customer")
+      .field("customer_phone", "6175550142")
+      .field("glass_type", "WINDSHIELD")
+      .field("vin", VIN_17)
+      .field("year", "2020")
+      .field("make", "Honda")
+      .field("model", "Accord")
+      .attach("vin_photo", TINY_PNG, "vin.jpg")
+      .expect(201);
+    const untyped = await request(f.app)
+      .post("/api/v1/public/intake")
+      .field("customer_name", "John Customer")
+      .field("customer_phone", "6175550143")
+      .field("glass_type", "BACK_GLASS")
+      .field("year", "2021")
+      .field("make", "Ford")
+      .field("model", "F-150")
+      .attach("vin_photo", TINY_PNG, "vin.jpg")
+      .expect(201);
+
+    const list = await staffGet(f, "/api/v1/cases").expect(200);
+    const typedCase = list.body.find(
+      (x: { reference: string }) => x.reference === typed.body.reference
+    );
+    expect(typedCase.vehicle.vin).toBe(VIN_17);
+    expect(typedCase.client_intake.vin_ocr_suggestion).toBe(OCR_VIN);
+    expect(typedCase.client_intake.photo_count).toBe(1);
+    const untypedCase = list.body.find(
+      (x: { reference: string }) => x.reference === untyped.body.reference
+    );
+    expect(untypedCase.vehicle.vin).toBe("");
+    expect(untypedCase.client_intake.vin_ocr_suggestion).toBe(OCR_VIN);
+  });
+
+  it("still creates the case when VIN-photo OCR itself fails", async () => {
+    const f = await fixture({}, {
+      vinOcr: async () => {
+        throw new Error("tesseract exploded");
+      }
+    });
+    const res = await request(f.app)
+      .post("/api/v1/public/intake")
+      .field("customer_name", "Jane Customer")
+      .field("customer_phone", "6175550142")
+      .field("glass_type", "WINDSHIELD")
+      .field("vin", VIN_17)
+      .field("year", "2020")
+      .field("make", "Honda")
+      .field("model", "Accord")
+      .attach("vin_photo", TINY_PNG, "vin.jpg")
+      .expect(201);
+    const list = await staffGet(f, "/api/v1/cases").expect(200);
+    const c = list.body.find((x: { reference: string }) => x.reference === res.body.reference);
+    expect(c.vehicle.vin).toBe(VIN_17);
+    expect(c.client_intake.vin_ocr_suggestion).toBeNull();
+  });
+
+  it("staff-created cases project client_intake as null (no badge data)", async () => {
+    const f = await fixture();
+    await request(f.app)
+      .post("/api/v1/cases")
+      .set("Authorization", `Bearer ${f.token}`)
+      .send({
+        channel: "DIRECT",
+        vehicle: { year: 2020, make: "Honda", model: "Accord", vin: VIN_17 },
+        glass_request: { glass_type: "WINDSHIELD" }
+      })
+      .expect(201);
+    const list = await staffGet(f, "/api/v1/cases").expect(200);
+    expect(list.body[0].client_intake).toBeNull();
+  });
+});

@@ -74,12 +74,27 @@ export interface PriceCalculation {
   created_at: string;
 }
 
+/** Staff-only projection of a client self-service intake (QR front door).
+ *  Present when the customer created the case themselves; null for
+ *  staff-created cases. Customer contact lives here so staff can text
+ *  the quote link to the mobile the customer provided. */
+export interface ClientIntake {
+  source: string;
+  customer_name: string | null;
+  customer_phone: string | null;
+  note: string | null;
+  vin_ocr_suggestion: string | null;
+  photo_count: number;
+  submitted_at: string;
+}
+
 export interface CaseRecord {
   id: string;
   reference: string;
   channel: Channel;
   current_state: string;
   customer_id: string | null;
+  client_intake?: ClientIntake | null;
   vehicle: Vehicle;
   glass_request: GlassRequest;
   glass_identification: GlassIdentification | null;

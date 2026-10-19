@@ -27,6 +27,15 @@ describe("vercel.json SPA fallback for customer links", () => {
     });
   });
 
+  it("rewrites /intake (the QR front door) to the SPA entry", () => {
+    // The QR code IS a direct navigation: a phone camera opens /intake
+    // cold. Same 404 failure mode as the customer links if this is lost.
+    expect(config.rewrites).toContainEqual({
+      source: "/intake",
+      destination: "/index.html"
+    });
+  });
+
   it("keeps the API proxy rewrite first", () => {
     expect(config.rewrites[0]).toEqual({
       source: "/api/v1/:path*",

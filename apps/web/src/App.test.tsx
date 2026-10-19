@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App, cardOrderKey, DEFAULT_CARD_ORDER, describeEvent, filterQueueCases, isStaffActionRequired, loadCardOrder, pinQuoteAfterPricing, scanProgressForElapsed, shouldShowOverrideWarning, sortQueueCases } from "./App";
+import { App, cardOrderKey, DEFAULT_CARD_ORDER, describeEvent, filterQueueCases, isStaffActionRequired, loadCardOrder, pinQuoteAfterPricing, PublicIntakePage, scanProgressForElapsed, shouldShowOverrideWarning, sortQueueCases } from "./App";
 import type { CaseRecord, CaseEvent } from "./types";
 
 vi.stubGlobal("fetch", vi.fn(async () => ({
@@ -373,5 +373,65 @@ describe("activity timeline layout", () => {
     const block = css.split(".timeline-details pre")[1]?.split("}")[0] ?? "";
     expect(block).toMatch(/white-space\s*:\s*pre-wrap/);
     expect(block).toMatch(/overflow-wrap\s*:\s*anywhere/);
+  });
+});
+
+describe("public intake page (QR front door)", () => {
+  it("renders Nelly's headline, submits the form, and confirms with the case reference — no prices anywhere", async () => {
+    let postedUrl = "";
+    let postedBody: FormData | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: { body?: unknown }) => {
+        postedUrl = String(url);
+        postedBody = (init?.body as FormData) ?? null;
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            reference: "RRA-000042",
+            message:
+              "Thanks — your request is in. We'll review it and text a quote link to the mobile number you gave us."
+          })
+        };
+      })
+    );
+
+    render(<PublicIntakePage />);
+    expect(
+      screen.getByRole("heading", { name: "How can we service your auto glass?" })
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("radio", { name: "Windshield" }));
+    fireEvent.change(screen.getByLabelText(/^VIN/), {
+      target: { value: "1HGCM82633A004352" }
+    });
+    fireEvent.change(screen.getByLabelText(/your name/i), {
+      target: { value: "Jane Customer" }
+    });
+    fireEvent.change(screen.getByLabelText(/mobile phone/i), {
+      target: { value: "(617) 555-0142" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send my request" }));
+
+    expect(await screen.findByRole("heading", { name: /Request received/ })).toBeInTheDocument();
+    expect(screen.getByText("RRA-000042")).toBeInTheDocument();
+    expect(screen.getByText(/text a quote link/)).toBeInTheDocument();
+    expect(postedUrl).toContain("/public/intake");
+    expect(postedBody!.get("glass_type")).toBe("WINDSHIELD");
+    expect(postedBody!.get("vin")).toBe("1HGCM82633A004352");
+    expect(postedBody!.get("customer_name")).toBe("Jane Customer");
+    expect(postedBody!.get("customer_phone")).toBe("(617) 555-0142");
+    // Prices come with the quote, never at intake.
+    expect(document.body.textContent ?? "").not.toMatch(/\$\d/);
+  });
+
+  it("blocks an empty submit with a friendly error and sends nothing", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<PublicIntakePage />);
+    fireEvent.click(screen.getByRole("button", { name: "Send my request" }));
+    expect(await screen.findByText("Tell us which glass needs service.")).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

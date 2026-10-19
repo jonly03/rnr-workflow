@@ -506,6 +506,24 @@ export function getPublicTracking(token: string) {
   return fetch(`${API_BASE}/public/track/${token}`).then(json<PublicTrackingView>);
 }
 
+export interface PublicIntakeConfirmation {
+  ok: boolean;
+  reference: string;
+  message: string;
+}
+
+/**
+ * Public client intake (QR front door): the customer submits the form
+ * (fields + optional photos) as multipart FormData. No auth — the API
+ * answers with a client-safe confirmation only (reference + next steps).
+ */
+export function submitPublicIntake(form: FormData) {
+  return fetch(`${API_BASE}/public/intake`, {
+    method: "POST",
+    body: form
+  }).then(json<PublicIntakeConfirmation>);
+}
+
 export function createCase(input: CreateCaseInput) {
   const idempotencyKey = crypto.randomUUID();
   return fetch(`${API_BASE}/cases`, {
