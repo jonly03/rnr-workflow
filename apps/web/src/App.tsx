@@ -1266,6 +1266,23 @@ export function scanProgressForElapsed(elapsedSec: number): number {
   return Math.min(90, Math.round(90 * (1 - Math.exp(-elapsedSec / 8))));
 }
 
+/**
+ * LOCKED (Nelly, 2026-10-19): the Quote card — the one carrying
+ * "Generate Quote", the customer sign link, and the signature/SLA status —
+ * always sits immediately after the Pricing card. Staff may reorder every
+ * other card freely; this adjacency is not a preference and cannot be
+ * dragged apart. Applied on load and on every reorder save, so saved
+ * orders from before the lock migrate automatically.
+ */
+export function pinQuoteAfterPricing(order: CaseCardId[]): CaseCardId[] {
+  if (!order.includes("quote") || !order.includes("pricing")) return [...order];
+  const withoutQuote: CaseCardId[] = order.filter(id => id !== "quote");
+  const pricingIndex = withoutQuote.indexOf("pricing");
+  const next = [...withoutQuote];
+  next.splice(pricingIndex + 1, 0, "quote");
+  return next;
+}
+
 export function loadCardOrder(staffEmail: string): CaseCardId[] {
   try {
     const raw = localStorage.getItem(cardOrderKey(staffEmail));
@@ -1276,7 +1293,7 @@ export function loadCardOrder(staffEmail: string): CaseCardId[] {
       const valid = saved.filter(isCard);
       // Append any new cards staff hasn't positioned yet, drop unknown ids.
       const missing = DEFAULT_CARD_ORDER.filter(id => !valid.includes(id));
-      if (valid.length > 0) return [...valid, ...missing];
+      if (valid.length > 0) return pinQuoteAfterPricing([...valid, ...missing]);
     }
   } catch {
     /* corrupted storage -> fall through to default */
@@ -1287,9 +1304,10 @@ export function loadCardOrder(staffEmail: string): CaseCardId[] {
 function useCardOrder(staffEmail: string) {
   const [order, setOrder] = useState<CaseCardId[]>(() => loadCardOrder(staffEmail));
   const save = useCallback((next: CaseCardId[]) => {
-    setOrder(next);
+    const pinned = pinQuoteAfterPricing(next);
+    setOrder(pinned);
     try {
-      localStorage.setItem(cardOrderKey(staffEmail), JSON.stringify(next));
+      localStorage.setItem(cardOrderKey(staffEmail), JSON.stringify(pinned));
     } catch {
       /* storage unavailable -> order still applies for this session */
     }

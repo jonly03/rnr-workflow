@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App, cardOrderKey, DEFAULT_CARD_ORDER, describeEvent, filterQueueCases, isStaffActionRequired, loadCardOrder, scanProgressForElapsed, shouldShowOverrideWarning, sortQueueCases } from "./App";
+import { App, cardOrderKey, DEFAULT_CARD_ORDER, describeEvent, filterQueueCases, isStaffActionRequired, loadCardOrder, pinQuoteAfterPricing, scanProgressForElapsed, shouldShowOverrideWarning, sortQueueCases } from "./App";
 import type { CaseRecord, CaseEvent } from "./types";
 
 vi.stubGlobal("fetch", vi.fn(async () => ({
@@ -29,6 +29,21 @@ describe("case card ordering", () => {
   it("returns the default order when nothing is stored", () => {
     localStorage.removeItem(key);
     expect(loadCardOrder(email)).toEqual([...DEFAULT_CARD_ORDER]);
+  });
+
+  it("locks the quote card immediately after pricing, whatever was saved", () => {
+    // Quote saved far from pricing (e.g. dragged to the bottom pre-lock).
+    localStorage.setItem(key, JSON.stringify(["vehicle", "pricing", "invoice", "activity", "quote"]));
+    const order = loadCardOrder(email);
+    expect(order.indexOf("quote")).toBe(order.indexOf("pricing") + 1);
+    localStorage.removeItem(key);
+    // The pin helper itself: quote follows pricing even when pricing moves.
+    expect(pinQuoteAfterPricing(["quote", "vehicle", "pricing", "activity"])).toEqual(
+      ["vehicle", "pricing", "quote", "activity"]
+    );
+    expect(pinQuoteAfterPricing(["pricing", "quote", "vehicle"])).toEqual(
+      ["pricing", "quote", "vehicle"]
+    );
   });
 
   it("returns the staff member's saved order", () => {
