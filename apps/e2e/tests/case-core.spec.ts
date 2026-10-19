@@ -84,22 +84,26 @@ test("Case Core create → detail → activity → queue survives refresh", asyn
   await expect(page.getByText("1C4HJXEG3JW224862")).toBeVisible();
   // Phase 2: identification runs via the awaited start_identification action.
   // Phase 3: sourcing + pricing auto-advance from GLASS_IDENTIFIED.
-  // Provider-aware: mock resolves to PRICE_APPROVED; live MyGrant YMM
-  // returns multiple candidates and routes to VIN_NEEDED (no paid lookup).
   // Provider-aware: mock resolves the 2018 Jeep Wrangler to a single
-  // candidate and auto-advances to PRICE_APPROVED; live MyGrant YMM returns
-  // multiple candidates and correctly routes to VIN_NEEDED (no paid lookup).
-  // Either is a valid terminal handoff from the progress screen.
-  const terminal = page.getByText(/PRICE_APPROVED|VIN_NEEDED/);
+  // candidate and auto-advances through pricing; the approved price then
+  // auto-generates the quote, so the case settles at QUOTE_SENT. Live
+  // MyGrant YMM returns multiple candidates and correctly routes to
+  // VIN_NEEDED (no paid lookup). Either is a valid terminal handoff from
+  // the progress screen.
+  const terminal = page.getByText(/QUOTE_SENT|PRICE_APPROVED|VIN_NEEDED/);
   await expect(terminal.first()).toBeVisible({ timeout: 60000 });
   const terminalText = await terminal.first().textContent();
-  if (terminalText && terminalText.includes("PRICE_APPROVED")) {
+  if (terminalText && (terminalText.includes("QUOTE_SENT") || terminalText.includes("PRICE_APPROVED"))) {
     // Detail cards: Vehicle / Service, Supplier Sourcing, Pricing, Activity.
     await expect(page.getByRole("heading", { name: "Vehicle / Service" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Supplier sourcing" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Pricing" })).toBeVisible();
     // No staff action is required on an auto-advanced case: no alert card.
     await expect(page.getByRole("alert")).not.toBeVisible();
+    // Auto-quote + auto-link: the Quote card already holds a quote and a
+    // minted customer sign link — staff clicked nothing to get them.
+    await expect(page.getByRole("heading", { name: "Quote" })).toBeVisible();
+    await expect(page.locator('input[value*="/quote/rnappr_"]')).toBeVisible();
   }
 
   await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible();
