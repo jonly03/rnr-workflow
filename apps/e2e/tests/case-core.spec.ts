@@ -133,3 +133,18 @@ test("Case Core browser path does not expose paid VIN lookup action", async ({ p
 
   await expect(page.getByRole("button", { name: /VIN lookup/i })).toHaveCount(0);
 });
+
+test("Customer deep links load the app by direct navigation (SPA fallback)", async ({ page }) => {
+  // Customer links are tapped from a text message: the browser asks the
+  // server for /quote/<token> directly. Without the vercel.json SPA
+  // fallback this returns Vercel's 404 page and the app never boots
+  // (regression: 2026-10-19, a real minted sign link 404'd on staging).
+  // An unknown token must land on the app's own "Link unavailable" page.
+  const quoteResponse = await page.goto("/quote/rnappr_smoke-invalid-token");
+  expect(quoteResponse?.status()).toBe(200);
+  await expect(page.getByRole("heading", { name: "Link unavailable" })).toBeVisible();
+
+  const trackResponse = await page.goto("/track/rnappr_smoke-invalid-token");
+  expect(trackResponse?.status()).toBe(200);
+  await expect(page.getByRole("heading", { name: "Link unavailable" })).toBeVisible();
+});
