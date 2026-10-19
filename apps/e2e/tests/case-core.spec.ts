@@ -159,4 +159,7 @@ test("Customer deep links load the app by direct navigation (SPA fallback)", asy
   await expect(
     page.getByRole("heading", { name: "How can we service your auto glass?" })
   ).toBeVisible();
+  // Card flow (Amendment 2): the headline sits on card 1 of 4, with the
+  // step indicator visible at the bottom.
+  await expect(page.getByText("Step 1 of 4")).toBeVisible();
 });

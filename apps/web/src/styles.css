@@ -364,3 +364,21 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .intake-ymm label { margin-top: 0; }
 .intake-submit { width: 100%; margin-top: 18px; padding: 12px; font-size: 1.05rem; }
 .intake-ref { font-size: 1.25rem; letter-spacing: .03em; }
+/* Card flow (Amendment 2): one card at a time, VIN hero, quiet Back,
+   step dots + "Step X of 4" pinned under the nav row. */
+.intake-vin { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1.15rem; letter-spacing: .06em; padding: 12px; text-transform: uppercase; }
+.intake-scan { cursor: pointer; }
+.intake-scan-btn { display: inline-block; border: 1.5px solid #94a3b8; border-radius: 10px; padding: 9px 16px; font-weight: 600; color: #334155; background: #f8fafc; }
+.intake-scan-name { margin-left: 10px; font-size: .85rem; color: #64748b; }
+.intake-toggle { display: inline-block; margin-top: 14px; background: none; border: none; padding: 0; color: #c1271b; text-decoration: underline; cursor: pointer; font-size: .95rem; }
+.intake-ymm { margin-top: 12px; }
+.intake-recap { background: #f1f5f9; border-radius: 8px; padding: 8px 12px; font-weight: 600; }
+.intake-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 20px; }
+.intake-back { background: none; border: none; color: #64748b; font-size: 1rem; cursor: pointer; padding: 8px 4px; }
+.intake-next { padding: 12px 26px; font-size: 1.05rem; margin-left: auto; }
+.intake-next:disabled { opacity: .45; cursor: not-allowed; }
+.intake-steps { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 16px; }
+.intake-dots { display: flex; gap: 6px; }
+.intake-dot { width: 8px; height: 8px; border-radius: 50%; background: #cbd5e1; }
+.intake-dot.active { background: #c1271b; }
+.intake-step-text { font-size: .85rem; color: #64748b; }
