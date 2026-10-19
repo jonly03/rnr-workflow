@@ -1,13 +1,14 @@
--- Invoice + in-app sign-off (Phase 4 slice): invoices are append-only
--- (re-invoicing creates a new version; history is never mutated).
+-- Invoices generated off client-signed quotes (Phase 4 slice).
+-- Invoices are append-only (re-invoicing creates a new version; history is
+-- never mutated). actuals records the quote id + version the invoice was
+-- built from. There is no invoice signature: the signed quote is the
+-- authorization.
 
 create table if not exists invoices (
   id uuid primary key,
   case_id uuid not null references cases(id),
   version integer not null,
   actuals jsonb not null,
-  status text not null,
-  signature jsonb,
   created_at timestamptz not null default now(),
   unique (case_id, version)
 );

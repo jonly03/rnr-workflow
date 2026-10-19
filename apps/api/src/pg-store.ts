@@ -10,6 +10,9 @@ import type {
   Invoice,
   InvoiceActuals,
   PriceCalculation,
+  Quote,
+  QuoteSnapshot,
+  QuoteStatus,
   StaffUser,
   StaffUserRecord,
   SupplierOffer,
@@ -27,9 +30,10 @@ import type {
   SaveGlassIdentificationInput,
   SaveInvoiceInput,
   SavePriceCalculationInput,
+  SaveQuoteInput,
   SaveSupplierOfferInput,
   SaveVinLookupInput,
-  SignInvoiceInput,
+  SignQuoteInput,
   VinLookupGlassResult
 } from "./store.js";
 import type { GlassType } from "./types.js";
@@ -194,6 +198,30 @@ function priceCalculationRow(row: any): PriceCalculation {
   };
 }
 
+function quoteRow(row: any): Quote {
+  return {
+    id: row.id,
+    case_id: row.case_id,
+    version: Number(row.version),
+    snapshot: parseJson<QuoteSnapshot>(row.snapshot, {
+      vehicle: { year: 0, make: "", model: "", vin: "" },
+      glass_type: "",
+      part_number: null,
+      supplier_name: null,
+      glass_cost_cents: 0,
+      labor_cents: 0,
+      profit_cents: 0,
+      tax_cents: 0,
+      sell_price_cents: 0,
+      price_calculation_id: ""
+    }),
+    expires_at: iso(row.expires_at),
+    status: row.status as QuoteStatus,
+    signature: row.signature == null ? null : parseJson(row.signature, null),
+    created_at: iso(row.created_at)
+  };
+}
+
 function invoiceRow(row: any): Invoice {
   return {
     id: row.id,
@@ -206,10 +234,10 @@ function invoiceRow(row: any): Invoice {
       tax_cents: 0,
       sell_price_cents: 0,
       price_calculation_id: "",
+      quote_id: "",
+      quote_version: 0,
       source: "unknown"
     }),
-    status: row.status,
-    signature: row.signature == null ? null : parseJson(row.signature, null),
     created_at: iso(row.created_at)
   };
 }
@@ -710,19 +738,91 @@ export class PgCaseStore implements CaseStore {
     return result.rowCount ? priceCalculationRow(result.rows[0]) : null;
   }
 
+  async saveQuote(input: SaveQuoteInput): Promise<Quote> {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    await this.pool.query(
+      `insert into quotes(id, case_id, version, snapshot, expires_at, status, signature, created_at)
+       values ($1,$2,$3,$4::jsonb,$5,$6,$7::jsonb,$8)`,
+      [
+        id,
+        input.caseId,
+        input.version,
+        JSON.stringify(input.snapshot),
+        input.expiresAt,
+        input.status,
+        null,
+        now
+      ]
+    );
+    const result = await this.pool.query("select * from quotes where id = $1", [id]);
+    return quoteRow(result.rows[0]);
+  }
+
+  async listQuotes(caseId: string): Promise<Quote[]> {
+    const result = await this.pool.query(
+      "select * from quotes where case_id = $1 order by version asc",
+      [caseId]
+    );
+    return result.rows.map(quoteRow);
+  }
+
+  async getLatestQuote(caseId: string): Promise<Quote | null> {
+    const result = await this.pool.query(
+      "select * from quotes where case_id = $1 order by version desc limit 1",
+      [caseId]
+    );
+    return result.rowCount ? quoteRow(result.rows[0]) : null;
+  }
+
+  async signQuote(input: SignQuoteInput): Promise<Quote> {
+    // Idempotent: only transition an unsigned quote; a second sign call
+    // returns the current record unchanged.
+    const result = await this.pool.query(
+      `update quotes
+       set status = 'APPROVED',
+           signature = $2::jsonb
+       where id = $1 and status <> 'APPROVED'
+       returning *`,
+      [
+        input.quoteId,
+        JSON.stringify({
+          name: input.name,
+          signed_at: input.signedAt,
+          attribution: input.attribution,
+          signature_hash: input.signatureHash,
+          signature_data_url: input.signatureDataUrl
+        })
+      ]
+    );
+    if (!result.rowCount) {
+      const current = await this.pool.query("select * from quotes where id = $1", [input.quoteId]);
+      if (!current.rowCount) throw new Error("Quote not found.");
+      return quoteRow(current.rows[0]);
+    }
+    return quoteRow(result.rows[0]);
+  }
+
+  async updateQuoteStatus(quoteId: string, status: QuoteStatus): Promise<Quote> {
+    const result = await this.pool.query(
+      "update quotes set status = $2 where id = $1 returning *",
+      [quoteId, status]
+    );
+    if (!result.rowCount) throw new Error("Quote not found.");
+    return quoteRow(result.rows[0]);
+  }
+
   async saveInvoice(input: SaveInvoiceInput): Promise<Invoice> {
     const id = randomUUID();
     const now = new Date().toISOString();
     await this.pool.query(
-      `insert into invoices(id, case_id, version, actuals, status, signature, created_at)
-       values ($1,$2,$3,$4::jsonb,$5,$6::jsonb,$7)`,
+      `insert into invoices(id, case_id, version, actuals, created_at)
+       values ($1,$2,$3,$4::jsonb,$5)`,
       [
         id,
         input.caseId,
         input.version,
         JSON.stringify(input.actuals),
-        input.status,
-        null,
         now
       ]
     );
@@ -744,33 +844,5 @@ export class PgCaseStore implements CaseStore {
       [caseId]
     );
     return result.rowCount ? invoiceRow(result.rows[0]) : null;
-  }
-
-  async signInvoice(input: SignInvoiceInput): Promise<Invoice> {
-    // Idempotent: only transition an unsigned invoice; a second sign call
-    // returns the current record unchanged.
-    const result = await this.pool.query(
-      `update invoices
-       set status = 'SIGNED',
-           signature = $2::jsonb
-       where id = $1 and status <> 'SIGNED'
-       returning *`,
-      [
-        input.invoiceId,
-        JSON.stringify({
-          name: input.name,
-          signed_at: input.signedAt,
-          attribution: input.attribution,
-          signature_hash: input.signatureHash,
-          signature_data_url: input.signatureDataUrl
-        })
-      ]
-    );
-    if (!result.rowCount) {
-      const current = await this.pool.query("select * from invoices where id = $1", [input.invoiceId]);
-      if (!current.rowCount) throw new Error("Invoice not found.");
-      return invoiceRow(current.rows[0]);
-    }
-    return invoiceRow(result.rows[0]);
   }
 }

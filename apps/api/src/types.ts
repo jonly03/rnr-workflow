@@ -67,7 +67,7 @@ export interface StaffUserRecord extends StaffUser {
   password_hash: string;
 }
 
-export type ApprovalTokenPurpose = "quote-approval";
+export type ApprovalTokenPurpose = "quote-approval" | "case-view";
 
 /**
  * Opaque single-use token granting an external party scoped access to one
@@ -212,30 +212,39 @@ export interface StoreShape {
   vin_lookup_spend: VinLookupSpendRecord[];
   supplier_offers: SupplierOffer[];
   price_calculations: PriceCalculation[];
+  quotes: Quote[];
   invoices: Invoice[];
 }
 
-/** Invoice lifecycle: generated (ready for signature) -> signed by the client. */
-export type InvoiceStatus = "DRAFT" | "SENT" | "SIGNED";
+/** Quote lifecycle: sent (awaiting signature) -> approved (signed) by the
+ *  client, or declined / expired (staff can requote: new version). */
+export type QuoteStatus = "SENT" | "APPROVED" | "DECLINED" | "EXPIRED";
 
-/** Line items copied from the price snapshot at generation time.
- *  All money is integer cents. `source` records which numbers the invoice
- *  was built from ("price_snapshot" today; the completed job's actuals once
- *  the install slice lands). */
-export interface InvoiceActuals {
+/** Immutable snapshot captured at quote generation: vehicle + glass +
+ *  economics. All money is integer cents. */
+export interface QuoteSnapshot {
+  vehicle: {
+    year: number;
+    make: string;
+    model: string;
+    vin: string;
+  };
+  glass_type: string;
+  part_number: string | null;
+  supplier_name: string | null;
   glass_cost_cents: number;
   labor_cents: number;
   profit_cents: number;
   tax_cents: number;
   sell_price_cents: number;
   price_calculation_id: string;
-  source: string;
 }
 
-/** The client's ESIGN-style signature record. The raw signature image
- *  (data URL) is stored alongside, staff-visible only; clients and API
- *  consumers see the hash, name, and timestamp. */
-export interface InvoiceSignature {
+/** The client's ESIGN-style signature record on a quote (signature =
+ *  approval). The raw signature image (data URL) is stored alongside,
+ *  staff-visible only; clients and API consumers see the hash, name,
+ *  and timestamp. */
+export interface QuoteSignature {
   name: string;
   signed_at: string;
   attribution: string;
@@ -243,14 +252,44 @@ export interface InvoiceSignature {
   signature_data_url: string;
 }
 
-/** A persisted invoice. Versions are append-only: re-invoicing creates a new
- *  version; history is never mutated. */
+/** A persisted quote. Versions are append-only: a requote supersedes by
+ *  creating a new version; history is never mutated. A signed quote never
+ *  expires; an unsigned quote past expires_at cannot be signed. */
+export interface Quote {
+  id: string;
+  case_id: string;
+  version: number;
+  snapshot: QuoteSnapshot;
+  /** ISO timestamp after which the quote can no longer be signed. */
+  expires_at: string;
+  status: QuoteStatus;
+  signature: QuoteSignature | null;
+  created_at: string;
+}
+
+/** Line items copied from the signed quote's snapshot at invoice time.
+ *  All money is integer cents. `quote_id`/`quote_version` record exactly
+ *  which quote authorized this invoice. */
+export interface InvoiceActuals {
+  glass_cost_cents: number;
+  labor_cents: number;
+  profit_cents: number;
+  tax_cents: number;
+  sell_price_cents: number;
+  price_calculation_id: string;
+  quote_id: string;
+  quote_version: number;
+  source: string;
+}
+
+/** A persisted invoice, generated off a client-signed quote. Versions are
+ *  append-only: re-invoicing creates a new version; history is never
+ *  mutated. There is no invoice signature — the signed quote is the
+ *  authorization. */
 export interface Invoice {
   id: string;
   case_id: string;
   version: number;
   actuals: InvoiceActuals;
-  status: InvoiceStatus;
-  signature: InvoiceSignature | null;
   created_at: string;
 }

@@ -34,10 +34,14 @@ import {
 } from "./pricing.js";
 import {
   closeCase,
+  declineQuote,
   generateInvoice,
-  InvoicingError,
-  signInvoice
-} from "./invoicing.js";
+  generateQuote,
+  loadQuotingConfig,
+  QuotingError,
+  signQuote,
+  type QuotingConfig
+} from "./quoting.js";
 import {
   ensureSeedAdmin,
   requireAuth,
@@ -45,6 +49,16 @@ import {
   verifyPassword,
   type AuthConfig
 } from "./auth.js";
+import {
+  consumeApprovalToken,
+  mintApprovalToken,
+  verifyApprovalToken
+} from "./approval-tokens.js";
+import {
+  advanceLifecycle,
+  LIFECYCLE_STEPS,
+  LifecycleError
+} from "./lifecycle.js";
 import { createRateLimiter } from "./rate-limit.js";
 
 const createCaseSchema = z.object({
@@ -106,6 +120,8 @@ export interface AppDeps {
   sourcingProvider?: SourcingProvider;
   /** Pricing configuration override (for tests). Defaults to env vars. */
   pricingConfig?: PricingConfig;
+  /** Quoting configuration override (for tests). Defaults to env vars. */
+  quotingConfig?: QuotingConfig;
 }
 
 export function createApp(
@@ -117,6 +133,7 @@ export function createApp(
   const glassCatalog = deps.glassCatalog ?? createGlassCatalogProvider();
   const sourcingProvider = deps.sourcingProvider ?? createSourcingProvider();
   const pricingConfig = deps.pricingConfig ?? loadPricingConfig();
+  const quotingConfig = deps.quotingConfig ?? loadQuotingConfig();
   const app = express();
 
   // Do not fingerprint the framework: Express sets X-Powered-By by default.
@@ -176,7 +193,8 @@ export function createApp(
       ? await store.getLatestPriceCalculation(glass_request.id)
       : null;
     const invoice = await store.getLatestInvoice(c.id);
-    return { ...c, vehicle, glass_request, glass_identification, supplier_offers, price_calculation, invoice };
+    const quote = await store.getLatestQuote(c.id);
+    return { ...c, vehicle, glass_request, glass_identification, supplier_offers, price_calculation, quote, invoice };
   };
 
   /**
@@ -337,6 +355,250 @@ export function createApp(
     }
   );
 
+  // ---------------------------------------------------------------------
+  // Customer-facing public routes (no staff session).
+  //
+  // Access is by opaque approval token only: a `quote-approval` token
+  // (single-use, dies with the quote) opens one case's quote so the
+  // customer can sign (= approve) or decline it; signing consumes it and
+  // mints a long-lived view-only `case-view` token for tracking.
+  // Responses are PROJECTIONS built field-by-field — internal state,
+  // supplier offers/names, glass cost and profit never leave the server.
+  // ---------------------------------------------------------------------
+
+  const publicLimiter = createRateLimiter({
+    windowMs: 10 * 60 * 1000,
+    max: Number(process.env.PUBLIC_RATE_LIMIT_MAX ?? 600)
+  });
+
+  const linkInvalid = (res: express.Response) =>
+    res.status(404).json({
+      error: {
+        code: "LINK_INVALID",
+        message: "This link is invalid or has already been used."
+      }
+    });
+
+  const quoteNounFor = (channel: Channel): string =>
+    channel === "AUCTION" ? "work request" : channel === "INSURANCE" ? "estimate" : "quote";
+
+  /** Customer projection of a quote: totals the client may see, nothing else. */
+  const publicQuoteView = async (c: CaseRecord) => {
+    const quote = await store.getLatestQuote(c.id);
+    if (!quote) return null;
+    const expired =
+      quote.status === "EXPIRED" ||
+      (quote.status === "SENT" && Date.parse(quote.expires_at) <= Date.now());
+    return {
+      reference: c.reference,
+      channel: c.channel,
+      noun: quoteNounFor(c.channel),
+      vehicle: {
+        year: quote.snapshot.vehicle.year,
+        make: quote.snapshot.vehicle.make,
+        model: quote.snapshot.vehicle.model
+      },
+      glass_type: quote.snapshot.glass_type,
+      labor_cents: quote.snapshot.labor_cents,
+      tax_cents: quote.snapshot.tax_cents,
+      total_cents: quote.snapshot.sell_price_cents,
+      quote_version: quote.version,
+      expires_at: quote.expires_at,
+      status: quote.signature
+        ? "APPROVED"
+        : quote.status === "DECLINED"
+          ? "DECLINED"
+          : expired
+            ? "EXPIRED"
+            : "AWAITING_SIGNATURE",
+      signed_by: quote.signature?.name ?? null,
+      signed_at: quote.signature?.signed_at ?? null
+    };
+  };
+
+  const TRACKING_EVENT_TYPES = [
+    "QUOTE_SIGNED",
+    "INVOICE_GENERATED",
+    "PARTS_ORDERED",
+    "INSTALLATION_SCHEDULED",
+    "TECH_DISPATCHED",
+    "SERVICE_STARTED",
+    "SERVICE_COMPLETED",
+    "CASE_CLOSED"
+  ] as const;
+
+  const FRIENDLY_STATUS: Record<string, string> = {
+    QUOTE_SENT: "Your quote is ready for your signature",
+    QUOTE_APPROVED: "Quote approved — your invoice is being prepared",
+    INVOICED: "Invoice ready — we're ordering your parts",
+    PARTS_ORDERED: "Parts ordered",
+    INSTALLATION_SCHEDULED: "Installation scheduled",
+    TECH_DISPATCHED: "Your technician is on the way",
+    INSTALLATION_IN_PROGRESS: "Service in progress",
+    SERVICE_COMPLETED: "Service completed",
+    CLOSED: "All done — thank you!",
+    QUOTE_DECLINED: "Quote declined",
+    QUOTE_EXPIRED: "Quote expired"
+  };
+
+  /** Customer tracking projection: milestones + totals, from safe fields only. */
+  const publicTrackingView = async (c: CaseRecord) => {
+    const [quote, invoice, events] = await Promise.all([
+      store.getLatestQuote(c.id),
+      store.getLatestInvoice(c.id),
+      store.getEvents(c.id)
+    ]);
+    const latestByType = new Map<string, (typeof events)[number]>();
+    for (const e of events) {
+      if ((TRACKING_EVENT_TYPES as readonly string[]).includes(e.event_type)) {
+        const prev = latestByType.get(e.event_type);
+        if (!prev || e.sequence > prev.sequence) latestByType.set(e.event_type, e);
+      }
+    }
+    const milestone = (eventType: string, key: string, label: string) => {
+      const e = latestByType.get(eventType);
+      if (!e) return { key, label, done: false, at: null as string | null, detail: null as string | null };
+      const detail =
+        eventType === "INSTALLATION_SCHEDULED" && typeof e.payload.scheduled_at === "string"
+          ? e.payload.scheduled_at
+          : eventType === "TECH_DISPATCHED" && typeof e.payload.technician_name === "string"
+            ? e.payload.technician_name
+            : null;
+      return { key, label, done: true, at: e.occurred_at, detail };
+    };
+    const totals = invoice?.actuals ?? quote?.snapshot ?? null;
+    return {
+      reference: c.reference,
+      channel: c.channel,
+      vehicle: quote
+        ? {
+            year: quote.snapshot.vehicle.year,
+            make: quote.snapshot.vehicle.make,
+            model: quote.snapshot.vehicle.model
+          }
+        : null,
+      glass_type: quote?.snapshot.glass_type ?? null,
+      status: FRIENDLY_STATUS[c.current_state] ?? "In progress",
+      current_state: c.current_state,
+      signed_by: quote?.signature?.name ?? null,
+      signed_at: quote?.signature?.signed_at ?? null,
+      invoice: invoice
+        ? { version: invoice.version, total_cents: invoice.actuals.sell_price_cents }
+        : null,
+      labor_cents: totals?.labor_cents ?? null,
+      tax_cents: totals?.tax_cents ?? null,
+      total_cents: totals?.sell_price_cents ?? null,
+      milestones: [
+        milestone("QUOTE_SIGNED", "quote_signed", "Quote approved"),
+        milestone("INVOICE_GENERATED", "invoice_created", "Invoice created from your approved quote"),
+        milestone("PARTS_ORDERED", "parts_ordered", "Parts ordered"),
+        milestone("INSTALLATION_SCHEDULED", "scheduled", "Installation scheduled"),
+        milestone("TECH_DISPATCHED", "tech_dispatched", "Technician dispatched"),
+        milestone("SERVICE_STARTED", "service_started", "Service started"),
+        milestone("SERVICE_COMPLETED", "service_completed", "Service completed"),
+        milestone("CASE_CLOSED", "closed", "Job closed")
+      ]
+    };
+  };
+
+  app.get("/api/v1/public/quote/:token", publicLimiter, async (req, res) => {
+    const grant = await verifyApprovalToken(store, String(req.params.token), "quote-approval");
+    if (!grant) return linkInvalid(res);
+    const c = await store.getCase(grant.caseId);
+    if (!c || c.channel !== grant.channel) return linkInvalid(res);
+    const view = await publicQuoteView(c);
+    if (!view) return linkInvalid(res);
+    return res.json(view);
+  });
+
+  app.post("/api/v1/public/quote/:token/sign", publicLimiter, async (req, res) => {
+    const grant = await verifyApprovalToken(store, String(req.params.token), "quote-approval");
+    if (!grant) return linkInvalid(res);
+    const c = await store.getCase(grant.caseId);
+    if (!c || c.channel !== grant.channel) return linkInvalid(res);
+    const name = req.body?.name;
+    const signatureDataUrl = req.body?.signature_data_url;
+    if (typeof name !== "string" || !name.trim()) {
+      return res.status(422).json({
+        error: { code: "VALIDATION_ERROR", message: "name is required." }
+      });
+    }
+    if (typeof signatureDataUrl !== "string" || !signatureDataUrl.trim()) {
+      return res.status(422).json({
+        error: { code: "VALIDATION_ERROR", message: "signature_data_url is required." }
+      });
+    }
+    const customerActor = { type: "CUSTOMER", id: null };
+    try {
+      await signQuote(
+        store,
+        c.id,
+        {
+          name: name.trim(),
+          signatureDataUrl: signatureDataUrl.trim(),
+          attribution: "customer signature via shared link"
+        },
+        customerActor
+      );
+    } catch (error) {
+      if (error instanceof QuotingError) {
+        return res.status(error.httpStatus).json({
+          error: { code: error.code, message: error.message }
+        });
+      }
+      throw error;
+    }
+    // The link did its job: consume it so it cannot be replayed.
+    await consumeApprovalToken(store, grant.jti);
+    // The signed quote becomes the invoice (staff may also generate it
+    // manually; this is idempotent because an existing invoice is kept).
+    let invoice = await store.getLatestInvoice(c.id);
+    if (!invoice) {
+      invoice = await generateInvoice(store, c.id, { type: "SYSTEM", id: null });
+    }
+    // Hand the customer a long-lived, view-only tracking link.
+    const tracking = await mintApprovalToken(store, {
+      caseId: c.id,
+      channel: c.channel,
+      purpose: "case-view",
+      ttlSeconds: 30 * 24 * 3600
+    });
+    return res.json({
+      ok: true,
+      status: "APPROVED",
+      invoice_version: invoice.version,
+      tracking_token: tracking.token,
+      tracking_expires_at: tracking.expiresAt
+    });
+  });
+
+  app.post("/api/v1/public/quote/:token/decline", publicLimiter, async (req, res) => {
+    const grant = await verifyApprovalToken(store, String(req.params.token), "quote-approval");
+    if (!grant) return linkInvalid(res);
+    const c = await store.getCase(grant.caseId);
+    if (!c || c.channel !== grant.channel) return linkInvalid(res);
+    try {
+      await declineQuote(store, c.id, { type: "CUSTOMER", id: null });
+    } catch (error) {
+      if (error instanceof QuotingError) {
+        return res.status(error.httpStatus).json({
+          error: { code: error.code, message: error.message }
+        });
+      }
+      throw error;
+    }
+    await consumeApprovalToken(store, grant.jti);
+    return res.json({ ok: true, status: "DECLINED" });
+  });
+
+  app.get("/api/v1/public/track/:token", publicLimiter, async (req, res) => {
+    const grant = await verifyApprovalToken(store, String(req.params.token), "case-view");
+    if (!grant) return linkInvalid(res);
+    const c = await store.getCase(grant.caseId);
+    if (!c || c.channel !== grant.channel) return linkInvalid(res);
+    return res.json(await publicTrackingView(c));
+  });
+
   // All case routes require staff authentication.
   app.use("/api/v1/cases", auth);
 
@@ -426,6 +688,82 @@ export function createApp(
     res.json(await store.getEvents(c.id));
   });
 
+  /**
+   * Mints the customer's sign link for the case's current SENT quote.
+   * The raw token is returned exactly once (only its hash is stored);
+   * staff copy the link and send it by text/WhatsApp. The token dies at
+   * the quote's own expiry — a link can never outlive its quote.
+   */
+  app.post("/api/v1/cases/:caseId/quote-link", async (req, res) => {
+    const c = await store.getCase(req.params.caseId);
+    if (!c || !canAccessChannel(req.staff, c.channel)) {
+      return channelNotFound(res);
+    }
+    const quote = await store.getLatestQuote(c.id);
+    if (!quote || quote.status !== "SENT" || c.current_state !== "QUOTE_SENT") {
+      return res.status(409).json({
+        error: {
+          code: "NO_SIGNABLE_QUOTE",
+          message: "Generate a quote before creating a customer sign link."
+        }
+      });
+    }
+    const ttlSeconds = Math.floor((Date.parse(quote.expires_at) - Date.now()) / 1000);
+    if (ttlSeconds <= 0) {
+      return res.status(410).json({
+        error: {
+          code: "QUOTE_EXPIRED",
+          message: "This quote has expired. Re-quote before sending a new link."
+        }
+      });
+    }
+    const minted = await mintApprovalToken(store, {
+      caseId: c.id,
+      channel: c.channel,
+      purpose: "quote-approval",
+      ttlSeconds
+    });
+    return res.json({
+      token: minted.token,
+      purpose: "quote-approval",
+      expires_at: quote.expires_at,
+      path: `/quote/${minted.token}`
+    });
+  });
+
+  /**
+   * Mints a fresh view-only tracking link for the customer (30 days).
+   * Available once the quote is signed; staff can re-issue it any time
+   * (e.g. the customer lost the original link from the sign response).
+   */
+  app.post("/api/v1/cases/:caseId/tracking-link", async (req, res) => {
+    const c = await store.getCase(req.params.caseId);
+    if (!c || !canAccessChannel(req.staff, c.channel)) {
+      return channelNotFound(res);
+    }
+    const quote = await store.getLatestQuote(c.id);
+    if (!quote?.signature) {
+      return res.status(409).json({
+        error: {
+          code: "QUOTE_NOT_SIGNED",
+          message: "Tracking links are available once the customer signs the quote."
+        }
+      });
+    }
+    const minted = await mintApprovalToken(store, {
+      caseId: c.id,
+      channel: c.channel,
+      purpose: "case-view",
+      ttlSeconds: 30 * 24 * 3600
+    });
+    return res.json({
+      token: minted.token,
+      purpose: "case-view",
+      expires_at: minted.expiresAt,
+      path: `/track/${minted.token}`
+    });
+  });
+
   app.post("/api/v1/cases/:caseId/actions", async (req, res) => {
     const c = await store.getCase(req.params.caseId);
     if (!c || !canAccessChannel(req.staff, c.channel)) {
@@ -436,6 +774,13 @@ export function createApp(
     const action = String(req.body?.action ?? "");
 
     try {
+      if (action in LIFECYCLE_STEPS) {
+        // Fulfillment steps (order → schedule → dispatch → start →
+        // complete) live in lifecycle.ts; they share one handler.
+        await advanceLifecycle(store, c.id, action, staffActor, req.body ?? {});
+        const updated = await store.getCase(c.id);
+        return res.json(await detail(updated!));
+      }
       switch (action) {
         case "start_identification": {
           // Guard against double-starts (e.g. a retried request): the
@@ -542,10 +887,15 @@ export function createApp(
         case "reject_price":
           await rejectPrice(store, c.id, staffActor);
           break;
-        case "generate_invoice":
-          await generateInvoice(store, c.id, staffActor);
+        case "generate_quote":
+          await generateQuote(store, quotingConfig, c.id, staffActor);
           break;
-        case "sign_invoice": {
+        case "requote":
+          // Requote = generate a new quote version (from QUOTE_EXPIRED or
+          // QUOTE_DECLINED); history is never mutated.
+          await generateQuote(store, quotingConfig, c.id, staffActor);
+          break;
+        case "sign_quote": {
           const name = req.body?.name;
           const signatureDataUrl = req.body?.signature_data_url;
           const attribution = req.body?.attribution;
@@ -559,7 +909,7 @@ export function createApp(
               error: { code: "VALIDATION_ERROR", message: "signature_data_url is required." }
             });
           }
-          await signInvoice(
+          await signQuote(
             store,
             c.id,
             {
@@ -571,6 +921,12 @@ export function createApp(
           );
           break;
         }
+        case "decline_quote":
+          await declineQuote(store, c.id, staffActor);
+          break;
+        case "generate_invoice":
+          await generateInvoice(store, c.id, staffActor);
+          break;
         case "close_case":
           await closeCase(store, c.id, staffActor);
           break;
@@ -598,7 +954,12 @@ export function createApp(
           error: { code: error.code, message: error.message }
         });
       }
-      if (error instanceof InvoicingError) {
+      if (error instanceof QuotingError) {
+        return res.status(error.httpStatus).json({
+          error: { code: error.code, message: error.message }
+        });
+      }
+      if (error instanceof LifecycleError) {
         return res.status(error.httpStatus).json({
           error: { code: error.code, message: error.message }
         });
