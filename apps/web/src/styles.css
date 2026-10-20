@@ -372,7 +372,7 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .intake-scan-name { margin-left: 10px; font-size: .85rem; color: #64748b; }
 .intake-toggle { display: inline-block; margin-top: 14px; background: none; border: none; padding: 0; color: #c1271b; text-decoration: underline; cursor: pointer; font-size: .95rem; }
 .intake-ymm { margin-top: 12px; }
-.intake-recap { background: #f1f5f9; border-radius: 8px; padding: 8px 12px; font-weight: 600; }
+.intake-recap { background: #172033; color: #f8fafc; border: 1px solid #334155; border-left: 3px solid #c1271b; border-radius: 8px; padding: 8px 12px; font-weight: 600; }
 .intake-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 20px; }
 .intake-back { background: none; border: none; color: #64748b; font-size: 1rem; cursor: pointer; padding: 8px 4px; }
 .intake-next { padding: 12px 26px; font-size: 1.05rem; margin-left: auto; }
