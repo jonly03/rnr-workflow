@@ -138,6 +138,77 @@ test("Case Core browser path does not expose paid VIN lookup action", async ({ p
   await expect(page.getByRole("button", { name: /VIN lookup/i })).toHaveCount(0);
 });
 
+test("Client intake → live progress → sign → staff lands on Order parts", async ({ page }) => {
+  // The customer arrives from the QR code: no login, the 4-card form.
+  await page.goto("/intake");
+  await expect(
+    page.getByRole("heading", { name: "How can we service your auto glass?" })
+  ).toBeVisible();
+
+  // Card 1: no VIN — year/make/model instead (keeps the test off the live
+  // NHTSA decode; the mock catalog resolves the Wrangler directly).
+  await page.getByRole("button", { name: /I don't have the VIN/i }).click();
+  await page.getByLabel(/^Year/).fill("2018");
+  await page.getByLabel(/^Make/).fill("Jeep");
+  await page.getByLabel(/^Model/).fill("Wrangler");
+  await page.getByRole("button", { name: "Continue" }).click();
+
+  // Card 2: the glass.
+  await page.getByRole("radio", { name: "Windshield" }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+
+  // Card 3: optional — skip it.
+  await page.getByRole("button", { name: "Skip" }).click();
+
+  // Card 4: contact, then send. This single submission drives the case
+  // through identification → sourcing → pricing → quote on its own.
+  await page.getByLabel(/Your name/).fill("Jane Customer");
+  await page.getByLabel(/Mobile phone/).fill("(617) 555-0142");
+  await page.getByRole("button", { name: "Send request" }).click();
+
+  // Confirmation: live progress completes and hands over the sign link —
+  // no staff click, no waiting for a text.
+  await expect(page.getByRole("heading", { name: /Request received/ })).toBeVisible();
+  const reference = (await page.locator(".intake-ref").textContent())?.trim();
+  expect(reference).toMatch(/^RRA-\d{6}$/);
+  await expect(page.getByText(/happening with your request/)).toBeVisible();
+  const signLink = page.getByRole("link", { name: /Review & sign your quote/ });
+  await expect(signLink).toBeVisible({ timeout: 15000 });
+  await signLink.click();
+
+  // The quote page: sign it.
+  await expect(page.getByRole("button", { name: /Sign & approve quote/ })).toBeVisible();
+  await page.getByLabel(/Printed name/).fill("Jane Customer");
+  const pad = page.getByTestId("signature-pad");
+  const box = await pad.boundingBox();
+  if (!box) throw new Error("signature pad not visible");
+  await page.mouse.move(box.x + 20, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 3, box.y + box.height / 3, { steps: 8 });
+  await page.mouse.move(box.x + (2 * box.width) / 3, box.y + (2 * box.height) / 3, { steps: 8 });
+  await page.mouse.move(box.x + box.width - 20, box.y + box.height / 2, { steps: 8 });
+  await page.mouse.up();
+  await page.getByRole("button", { name: /Sign & approve quote/ }).click();
+  await expect(
+    page.getByText(/your quote is approved and your invoice has been created/)
+  ).toBeVisible();
+
+  // Staff side: the same case is invoiced and the fulfillment chain is
+  // waiting at its first step — Order parts.
+  await page.goto("/");
+  await signInIfRequired(page);
+  await expect(page.getByRole("heading", { name: "Case Queue" })).toBeVisible();
+  await page.getByPlaceholder(/Search reference/).fill(reference!);
+  const caseCard = page.locator(".case-card", { hasText: reference! });
+  await expect(caseCard).toBeVisible();
+  await caseCard.getByRole("button", { name: `Expand ${reference}` }).click();
+  await caseCard.getByRole("button", { name: "Open" }).click();
+  await expect(page.locator("h1")).toHaveText(reference!);
+  await expect(page.getByText("INVOICED").first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Fulfillment" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Order parts/ })).toBeVisible();
+});
+
 test("Customer deep links load the app by direct navigation (SPA fallback)", async ({ page }) => {
   // Customer links are tapped from a text message: the browser asks the
   // server for /quote/<token> directly. Without the vercel.json SPA

@@ -391,9 +391,36 @@ describe("public intake page (QR front door)", () => {
     };
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (url: string | URL | Request, init?: { body?: unknown }) => {
+      vi.fn(async (url: string | URL | Request, init?: { body?: unknown; method?: string }) => {
+        const u = String(url);
+        // Live-progress endpoints behind the confirmation's status token.
+        if (u.includes("/public/intake-status/") && init?.method === "POST") {
+          return {
+            ok: true,
+            json: async () => ({ path: "/quote/rnappr_testtoken", expires_at: "2026-10-23T00:00:00Z" })
+          };
+        }
+        if (u.includes("/public/intake-status/")) {
+          return {
+            ok: true,
+            json: async () => ({
+              reference: "RRA-000042",
+              vehicle: { year: 2020, make: "Honda", model: "Accord" },
+              glass_type: "WINDSHIELD",
+              phase: "quote_ready",
+              headline: "Your quote is ready. Review it and sign to book your job in.",
+              steps: [
+                { key: "received", label: "Request received", done: true },
+                { key: "glass", label: "Identifying your glass", done: true },
+                { key: "pricing", label: "Pricing your job", done: true },
+                { key: "quote", label: "Quote ready to sign", done: true }
+              ],
+              quote_ready: true
+            })
+          };
+        }
         state.calls += 1;
-        state.url = String(url);
+        state.url = u;
         state.body = (init?.body as FormData) ?? null;
         return {
           ok: true,
@@ -401,7 +428,8 @@ describe("public intake page (QR front door)", () => {
             ok: true,
             reference: "RRA-000042",
             message:
-              "Thanks — your request is in. We'll review it and text a quote link to the mobile number you gave us."
+              "Thanks — your request is in. We'll review it and text a quote link to the mobile number you gave us.",
+            status_token: "rnappr_statustoken"
           })
         };
       })
@@ -490,6 +518,14 @@ describe("public intake page (QR front door)", () => {
     expect(posted.body!.get("vin_photo")).toBe(vinPhoto);
     expect(posted.body!.get("customer_name")).toBe("Jane Customer");
     expect(posted.body!.get("customer_phone")).toBe("(617) 555-0142");
+    // The confirmation page completes itself: live progress polls behind
+    // the status token, sees the quote ready, and hands over the sign
+    // link — no staff click, no waiting for a text.
+    expect(await screen.findByText(/happening with your request/)).toBeInTheDocument();
+    const signLink = await screen.findByRole("link", { name: /Review & sign your quote/ });
+    expect(signLink).toBeInTheDocument();
+    expect(signLink.getAttribute("href")).toContain("/quote/rnappr_testtoken");
+    expect(screen.getByText("Quote ready to sign")).toBeInTheDocument();
     // Prices come with the quote, never at intake.
     expect(document.body.textContent ?? "").not.toMatch(/\$\d/);
   });
