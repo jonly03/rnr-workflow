@@ -76,8 +76,10 @@ describe("Public client intake (QR front door)", () => {
     const f = await fixture();
     const res = await intake(f, { ...VALID, note: "Cracked on the highway" }).expect(201);
 
-    // Client-safe confirmation ONLY: reference + what happens next.
-    expect(Object.keys(res.body).sort()).toEqual(["message", "ok", "reference"]);
+    // Client-safe confirmation ONLY: reference + what happens next +
+    // the view-only status token the confirmation page polls behind.
+    expect(Object.keys(res.body).sort()).toEqual(["message", "ok", "reference", "status_token"]);
+    expect(res.body.status_token).toMatch(/^rnappr_/);
     expect(res.body.ok).toBe(true);
     expect(res.body.reference).toMatch(/^RRA-\d{6}$/);
     expect(res.body.message).toContain("text a quote link");
@@ -87,7 +89,11 @@ describe("Public client intake (QR front door)", () => {
     const c = list.body[0];
     expect(c.reference).toBe(res.body.reference);
     expect(c.channel).toBe("DIRECT");
-    expect(c.current_state).toBe("REQUEST_RECEIVED");
+    // The submission drives itself through identification → pricing →
+    // auto-quote: no staff click happens anywhere in this test.
+    expect(c.current_state).toBe("QUOTE_SENT");
+    expect(c.quote).not.toBeNull();
+    expect(c.quote.status).toBe("SENT");
     expect(c.vehicle).toMatchObject({ year: 2020, make: "Honda", model: "Accord", vin: VIN_17 });
     expect(c.glass_request.glass_type).toBe("WINDSHIELD");
     // Staff see who sent it and how to reach them (quote link goes by text).
@@ -182,7 +188,9 @@ describe("Public client intake (QR front door)", () => {
     const list = await staffGet(f, "/api/v1/cases").expect(200);
     const c = list.body.find((x: { reference: string }) => x.reference === res.body.reference);
     expect(c.channel).toBe("DIRECT");
-    expect(c.current_state).toBe("REQUEST_RECEIVED");
+    // The smuggled PRICE_APPROVED was not honored: the case reached
+    // QUOTE_SENT by driving the real flow itself, not by fiat.
+    expect(c.current_state).toBe("QUOTE_SENT");
     expect(c.customer_id).toBeNull();
   });
 

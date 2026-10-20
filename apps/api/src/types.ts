@@ -67,7 +67,7 @@ export interface StaffUserRecord extends StaffUser {
   password_hash: string;
 }
 
-export type ApprovalTokenPurpose = "quote-approval" | "case-view";
+export type ApprovalTokenPurpose = "quote-approval" | "case-view" | "intake-status";
 
 /**
  * Opaque single-use token granting an external party scoped access to one

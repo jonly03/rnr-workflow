@@ -364,6 +364,14 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .intake-ymm label { margin-top: 0; }
 .intake-submit { width: 100%; margin-top: 18px; padding: 12px; font-size: 1.05rem; }
 .intake-ref { font-size: 1.25rem; letter-spacing: .03em; }
+/* Live progress on the confirmation page: steps + the sign-link button. */
+.intake-live { margin-top: 22px; border-top: 1px solid #334155; padding-top: 16px; }
+.intake-live h2 { margin: 0 0 8px; font-size: 1.1rem; }
+.intake-steps { list-style: none; margin: 12px 0; padding: 0; display: grid; gap: 8px; }
+.intake-steps li { display: flex; gap: 8px; align-items: baseline; }
+.intake-steps li.done { font-weight: 600; }
+.intake-steps li.pending { color: #94a3b8; }
+.intake-sign-btn { display: inline-block; text-decoration: none; border-radius: 10px; padding: 12px 18px; font-size: 1.05rem; font-weight: 700; color: #fff; }
 /* Card flow (Amendment 2): one card at a time, VIN hero, quiet Back,
    step dots + "Step X of 4" pinned under the nav row. */
 .intake-vin { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1.15rem; letter-spacing: .06em; padding: 12px; text-transform: uppercase; }

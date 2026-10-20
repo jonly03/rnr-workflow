@@ -698,11 +698,15 @@ export function createApp(
   //
   // A customer who scanned R&R's QR code creates the case THEMSELVES:
   // no staff session, no account. The case lands as a normal DIRECT case
-  // in REQUEST_RECEIVED, flagged CLIENT_QR via a CLIENT_INTAKE_SUBMITTED
-  // event that also carries the customer's name + mobile (staff need the
-  // mobile to text the quote link later) and the note/photos metadata.
-  // From there the existing staff flow takes over unchanged (identify →
-  // source → price → Generate Quote → sign link).
+  // flagged CLIENT_QR via a CLIENT_INTAKE_SUBMITTED event that also
+  // carries the customer's name + mobile (staff need the mobile to text
+  // the quote link later) and the note/photos metadata. The submission
+  // then drives the case to its quote automatically (identification →
+  // sourcing → pricing → auto-quote, the same chain staff start by hand)
+  // and returns a view-only intake-status token: the confirmation page
+  // polls a client-safe progress projection behind it and, once the
+  // quote exists, mints the sign link from it — the customer watches
+  // their request become a signable quote without staff lifting a finger.
   //
   // Defenses: a strict zod schema (channel/state/pricing fields a client
   // might smuggle in are stripped and never honored), VIN checksum via
@@ -865,14 +869,186 @@ export function createApp(
         }
       });
 
+      // The customer's window into this case: a view-only status token
+      // (7 days). Minted BEFORE the chain runs so the confirmation page
+      // can follow progress even when the chain pauses for staff.
+      const statusGrant = await mintApprovalToken(store, {
+        caseId: created.id,
+        channel: "DIRECT",
+        purpose: "intake-status",
+        ttlSeconds: 7 * 24 * 3600
+      });
+
+      // Drive the case to its quote NOW (Nelly, 2026-10-20): an intake
+      // case must not sit in REQUEST_RECEIVED waiting for a staff click.
+      // This is the same awaited chain the staff start_identification
+      // action runs — identification → sourcing → pricing → auto-quote —
+      // inside this request's lifecycle. Identification here only ever
+      // runs the free YMM search; the paid VIN lookup remains a
+      // staff-confirmed action, so a public submission can never spend
+      // money. Where the chain needs a human (multiple glass candidates,
+      // a profit review), it simply stops there and staff pick it up;
+      // the customer watches either way. A failure never loses the
+      // request: the case stays queued and lands in
+      // SYSTEM_ATTENTION_REQUIRED, exactly as if staff had started it.
+      try {
+        await runIdentification(
+          store,
+          glassCatalog,
+          created.id,
+          "START_IDENTIFICATION",
+          customerActor
+        );
+        await advanceWorkflow(created.id);
+        await autoQuoteIfPriced(created.id, { type: "SYSTEM", id: null });
+      } catch (err) {
+        console.error(`intake auto-start failed for case ${created.id}:`, err);
+        try {
+          await store.appendEvent({
+            caseId: created.id,
+            eventType: "IDENTIFICATION_ERROR",
+            actor: { type: "SYSTEM", id: null },
+            nextState: "SYSTEM_ATTENTION_REQUIRED",
+            payload: { error: err instanceof Error ? err.message : "Unknown error" }
+          });
+        } catch (eventErr) {
+          console.error(
+            `Failed to record IDENTIFICATION_ERROR for case ${created.id}:`,
+            eventErr
+          );
+        }
+      }
+
       return res.status(201).json({
         ok: true,
         reference: created.reference,
+        status_token: statusGrant.token,
         message:
           "Thanks — your request is in. We'll review it and text a quote link to the mobile number you gave us."
       });
     }
   );
+
+  /**
+   * Client-safe progress projection for an intake case: plain-language
+   * phases and steps only. Never the internal state name, never any
+   * economics (the quote page is where prices live), never supplier data.
+   */
+  const POST_GLASS_STATES = new Set([
+    "GLASS_IDENTIFIED",
+    "GLASS_SELECTED",
+    "PRICE_APPROVED",
+    "PROFIT_REVIEW_REQUIRED",
+    "QUOTE_SENT",
+    "QUOTE_DECLINED",
+    "QUOTE_EXPIRED",
+    "QUOTE_APPROVED",
+    "INVOICED",
+    "PARTS_ORDERED",
+    "INSTALLATION_SCHEDULED",
+    "TECH_DISPATCHED",
+    "INSTALLATION_IN_PROGRESS",
+    "SERVICE_COMPLETED",
+    "CLOSED"
+  ]);
+
+  const publicIntakeView = async (c: CaseRecord) => {
+    const [vehicle, glassRequest, quote] = await Promise.all([
+      store.getVehicle(c.vehicle_id),
+      store.getGlassRequest(c.glass_request_id),
+      store.getLatestQuote(c.id)
+    ]);
+    const latestPrice = glassRequest
+      ? await store.getLatestPriceCalculation(glassRequest.id)
+      : null;
+    const priced = latestPrice?.status === "APPROVED";
+    const glassDone = POST_GLASS_STATES.has(c.current_state);
+    const quoteExpired =
+      quote?.status === "EXPIRED" ||
+      (quote?.status === "SENT" && Date.parse(quote.expires_at) <= Date.now());
+
+    let phase: string;
+    if (quote?.signature) phase = "approved";
+    else if (c.current_state === "QUOTE_DECLINED" || quote?.status === "DECLINED") phase = "declined";
+    else if (c.current_state === "QUOTE_EXPIRED" || quoteExpired) phase = "expired";
+    else if (c.current_state === "SYSTEM_ATTENTION_REQUIRED" || c.current_state === "GLASS_NOT_IDENTIFIED") phase = "needs_attention";
+    else if (c.current_state === "QUOTE_SENT" && quote?.status === "SENT") phase = "quote_ready";
+    else if (glassDone) phase = "pricing";
+    else phase = "identifying";
+
+    const headlines: Record<string, string> = {
+      identifying: "We're identifying the exact glass for your vehicle.",
+      pricing: "Your glass is identified — we're checking parts and pricing your job.",
+      quote_ready: "Your quote is ready. Review it and sign to book your job in.",
+      approved: "Thanks — your quote is approved and your job is booked in. We'll text you to schedule your service.",
+      declined: "You declined this quote. If that was a mistake, call us and we'll sort it out.",
+      expired: "Your quote expired before it was signed. Call us and we'll re-issue it right away.",
+      needs_attention: "We need a hand confirming a detail on your vehicle — we'll text you shortly."
+    };
+
+    return {
+      reference: c.reference,
+      vehicle: vehicle
+        ? { year: vehicle.year, make: vehicle.make, model: vehicle.model }
+        : null,
+      glass_type: glassRequest?.glass_type ?? null,
+      phase,
+      headline: headlines[phase],
+      steps: [
+        { key: "received", label: "Request received", done: true },
+        { key: "glass", label: "Identifying your glass", done: glassDone },
+        { key: "pricing", label: "Pricing your job", done: priced },
+        { key: "quote", label: "Quote ready to sign", done: quote !== null }
+      ],
+      quote_ready: phase === "quote_ready"
+    };
+  };
+
+  app.get("/api/v1/public/intake-status/:token", publicLimiter, async (req, res) => {
+    const grant = await verifyApprovalToken(store, String(req.params.token), "intake-status");
+    if (!grant) return linkInvalid(res);
+    const c = await store.getCase(grant.caseId);
+    if (!c || c.channel !== grant.channel) return linkInvalid(res);
+    return res.json(await publicIntakeView(c));
+  });
+
+  /**
+   * Mints the customer's sign link from their intake-status token, once
+   * their quote exists. Same semantics as the staff quote-link endpoint:
+   * the token's TTL is bound to the quote's own expiry, minting never
+   * revokes earlier links, and the quote page shows the newest version.
+   */
+  app.post("/api/v1/public/intake-status/:token/quote-link", publicLimiter, async (req, res) => {
+    const grant = await verifyApprovalToken(store, String(req.params.token), "intake-status");
+    if (!grant) return linkInvalid(res);
+    const c = await store.getCase(grant.caseId);
+    if (!c || c.channel !== grant.channel) return linkInvalid(res);
+    const quote = await store.getLatestQuote(c.id);
+    if (!quote || quote.status !== "SENT" || c.current_state !== "QUOTE_SENT") {
+      return res.status(409).json({
+        error: {
+          code: "NO_SIGNABLE_QUOTE",
+          message: "Your quote isn't ready yet — this page will update when it is."
+        }
+      });
+    }
+    const ttlSeconds = Math.floor((Date.parse(quote.expires_at) - Date.now()) / 1000);
+    if (ttlSeconds <= 0) {
+      return res.status(410).json({
+        error: {
+          code: "QUOTE_EXPIRED",
+          message: "This quote has expired. Call us and we'll re-issue it."
+        }
+      });
+    }
+    const minted = await mintApprovalToken(store, {
+      caseId: c.id,
+      channel: c.channel,
+      purpose: "quote-approval",
+      ttlSeconds
+    });
+    return res.json({ path: `/quote/${minted.token}`, expires_at: quote.expires_at });
+  });
 
   // All case routes require staff authentication.
   app.use("/api/v1/cases", auth);

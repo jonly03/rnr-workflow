@@ -510,6 +510,7 @@ export interface PublicIntakeConfirmation {
   ok: boolean;
   reference: string;
   message: string;
+  status_token: string;
 }
 
 /**
@@ -522,6 +523,40 @@ export function submitPublicIntake(form: FormData) {
     method: "POST",
     body: form
   }).then(json<PublicIntakeConfirmation>);
+}
+
+export interface IntakeStatusStep {
+  key: string;
+  label: string;
+  done: boolean;
+}
+
+/**
+ * Client-safe live progress for an intake case, behind the view-only
+ * status token from the intake confirmation. Phases and step labels
+ * only — prices live on the quote page, never here.
+ */
+export interface PublicIntakeStatus {
+  reference: string;
+  vehicle: { year: number; make: string; model: string } | null;
+  glass_type: string | null;
+  phase: string;
+  headline: string;
+  steps: IntakeStatusStep[];
+  quote_ready: boolean;
+}
+
+export function getPublicIntakeStatus(statusToken: string) {
+  return fetch(`${API_BASE}/public/intake-status/${statusToken}`).then(
+    json<PublicIntakeStatus>
+  );
+}
+
+/** Mints the customer's sign link from their intake status token. */
+export function createIntakeQuoteLink(statusToken: string) {
+  return fetch(`${API_BASE}/public/intake-status/${statusToken}/quote-link`, {
+    method: "POST"
+  }).then(json<{ path: string; expires_at: string }>);
 }
 
 export function createCase(input: CreateCaseInput) {
