@@ -3,6 +3,7 @@ import type pg from "pg";
 import type {
   ApprovalTokenRecord,
   CaseEvent,
+  CaseEventNotification,
   CaseRecord,
   GlassCandidate,
   GlassIdentification,
@@ -243,6 +244,12 @@ function invoiceRow(row: any): Invoice {
 }
 
 export class PgCaseStore implements CaseStore {
+  private caseEventListeners = new Set<
+    (notification: CaseEventNotification) => void
+  >();
+  private listenClient: PoolClient | null = null;
+  private listenSetup: Promise<void> | null = null;
+
   constructor(private readonly pool: Pool) {}
 
   async health() {
@@ -471,6 +478,22 @@ export class PgCaseStore implements CaseStore {
         );
       }
       await client.query("commit");
+      // Broadcast AFTER the commit lands: subscribers (staff dashboards)
+      // refetch on this signal, so it must never fire for a rolled-back
+      // event. A failed notify must not fail the append either — the
+      // event is durable; realtime is best-effort on top of it.
+      try {
+        await client.query("select pg_notify('case_events', $1)", [
+          JSON.stringify({
+            case_id: input.caseId,
+            event_type: input.eventType,
+            occurred_at: now,
+            sequence
+          } satisfies CaseEventNotification)
+        ]);
+      } catch (notifyError) {
+        console.error("case_events pg_notify failed:", notifyError);
+      }
       const result = await this.pool.query("select * from case_events where id = $1", [eventId]);
       return eventRow(result.rows[0]);
     } catch (error) {
@@ -479,6 +502,57 @@ export class PgCaseStore implements CaseStore {
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * One dedicated LISTEN client per store instance, shared by every
+   * subscriber. appendEvent's pg_notify (issued by ANY API instance
+   * against this database) fans out to all listeners here — that is the
+   * cross-instance bus for staff realtime updates.
+   */
+  async subscribeCaseEvents(
+    listener: (notification: CaseEventNotification) => void
+  ): Promise<() => void> {
+    this.caseEventListeners.add(listener);
+    if (!this.listenSetup) {
+      this.listenSetup = (async () => {
+        const client = await this.pool.connect();
+        client.on("notification", (message) => {
+          if (message.channel !== "case_events" || !message.payload) return;
+          let notification: CaseEventNotification;
+          try {
+            notification = JSON.parse(message.payload) as CaseEventNotification;
+          } catch {
+            return;
+          }
+          for (const current of this.caseEventListeners) {
+            try {
+              current(notification);
+            } catch {
+              // A broken subscriber must never break the fan-out.
+            }
+          }
+        });
+        client.on("error", (error) => {
+          console.error("case_events LISTEN client error:", error);
+          // Drop the dead client so the next subscribe re-listens.
+          if (this.listenClient === client) {
+            this.listenClient = null;
+            this.listenSetup = null;
+          }
+        });
+        await client.query("listen case_events");
+        this.listenClient = client;
+      })();
+      // A failed setup clears itself so a later subscribe can retry.
+      this.listenSetup.catch(() => {
+        this.listenSetup = null;
+      });
+    }
+    await this.listenSetup;
+    return () => {
+      this.caseEventListeners.delete(listener);
+    };
   }
 
   async saveGlassIdentification(

@@ -59,6 +59,136 @@ function authHeaders(extra: Record<string, string> = {}): Record<string, string>
   return token ? { ...extra, Authorization: `Bearer ${token}` } : { ...extra };
 }
 
+export interface StaffCaseEventMessage {
+  type: "case_event" | "sync";
+  case_id?: string;
+  event_type?: string;
+  occurred_at?: string;
+  sequence?: number;
+}
+
+export type StaffEventsStatus = "live" | "reconnecting";
+
+/**
+ * Where the staff realtime socket lives:
+ * - API_BASE absolute (local dev): the API server itself serves
+ *   /api/v1/staff/events on that origin.
+ * - API_BASE relative (deployed): the web project's own function
+ *   serves /api/staff-events on this origin (same origin as the page,
+ *   fed by the shared Postgres LISTEN/NOTIFY bus).
+ * The staff JWT rides as a query param — browsers cannot set headers
+ * on a WebSocket handshake.
+ */
+export function staffEventsSocketUrl(): string | null {
+  const token = getToken();
+  if (!token) return null;
+  const query = `token=${encodeURIComponent(token)}`;
+  if (/^https?:\/\//.test(API_BASE)) {
+    const wsOrigin = new URL(API_BASE).origin.replace(/^http/, "ws");
+    return `${wsOrigin}/api/v1/staff/events?${query}`;
+  }
+  const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${wsProtocol}//${window.location.host}/api/staff-events?${query}`;
+}
+
+/**
+ * Subscribe to live case events for the staff dashboard. Reconnects
+ * with backoff (sockets die at the function max duration on Vercel),
+ * refetches via a "sync" event on every (re)connect so nothing is
+ * missed, and falls back to a 10s sync poll while the socket is down
+ * — still better than the old manual refresh. Returns an unsubscribe.
+ */
+export function subscribeStaffEvents(handlers: {
+  onEvent: (message: StaffCaseEventMessage) => void;
+  onStatus: (status: StaffEventsStatus) => void;
+}): () => void {
+  let socket: WebSocket | null = null;
+  let stopped = false;
+  let retryMs = 1000;
+  let retryTimer: number | undefined;
+  let pollTimer: number | undefined;
+
+  const startPolling = () => {
+    if (pollTimer !== undefined) return;
+    pollTimer = window.setInterval(
+      () => handlers.onEvent({ type: "sync" }),
+      10_000
+    );
+  };
+  const stopPolling = () => {
+    if (pollTimer !== undefined) {
+      window.clearInterval(pollTimer);
+      pollTimer = undefined;
+    }
+  };
+  const scheduleRetry = () => {
+    if (stopped) return;
+    retryTimer = window.setTimeout(connect, retryMs);
+    retryMs = Math.min(retryMs * 2, 15_000);
+  };
+  const connect = () => {
+    if (stopped) return;
+    const url = staffEventsSocketUrl();
+    if (!url) {
+      handlers.onStatus("reconnecting");
+      startPolling();
+      scheduleRetry();
+      return;
+    }
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(url);
+    } catch {
+      handlers.onStatus("reconnecting");
+      startPolling();
+      scheduleRetry();
+      return;
+    }
+    socket = ws;
+    ws.onopen = () => {
+      retryMs = 1000;
+      stopPolling();
+      handlers.onStatus("live");
+      handlers.onEvent({ type: "sync" });
+    };
+    ws.onmessage = (event) => {
+      try {
+        const parsed = JSON.parse(String(event.data)) as StaffCaseEventMessage;
+        if (parsed?.type === "case_event") handlers.onEvent(parsed);
+      } catch {
+        // Ignore malformed frames.
+      }
+    };
+    ws.onclose = () => {
+      if (socket === ws) socket = null;
+      if (!stopped) {
+        handlers.onStatus("reconnecting");
+        startPolling();
+        scheduleRetry();
+      }
+    };
+    ws.onerror = () => {
+      try {
+        ws.close();
+      } catch {
+        // onclose handles the rest.
+      }
+    };
+  };
+
+  connect();
+  return () => {
+    stopped = true;
+    stopPolling();
+    if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    if (socket) {
+      socket.onclose = null;
+      socket.close();
+      socket = null;
+    }
+  };
+}
+
 export interface HealthStatus {
   ok: boolean;
   storage: string;

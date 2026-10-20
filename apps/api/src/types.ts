@@ -49,6 +49,19 @@ export interface CaseEvent {
   corrects_event_id: string | null;
 }
 
+/**
+ * Lightweight projection of a CaseEvent broadcast to staff realtime
+ * subscribers the moment the event is appended. Deliberately carries no
+ * payload: subscribers refetch through the normal authenticated API, so
+ * nothing beyond "this case changed" ever travels over the socket.
+ */
+export interface CaseEventNotification {
+  case_id: string;
+  event_type: string;
+  occurred_at: string;
+  sequence: number;
+}
+
 export interface StaffUser {
   id: string;
   email: string;

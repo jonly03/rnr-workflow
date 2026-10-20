@@ -332,6 +332,39 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
   margin-left: 6px;
   white-space: nowrap;
 }
+
+/* Live-arrival flag on a case card (socket pushed it in). */
+.new-badge {
+  color: #052e16;
+  background: #4ade80;
+  border: 1px solid #22c55e;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: .72rem;
+  font-weight: 700;
+  margin-left: 6px;
+  white-space: nowrap;
+}
+
+.case-card.fresh {
+  border-color: #22c55e;
+  box-shadow: 0 0 0 1px #22c55e, 0 0 18px rgba(34, 197, 94, .25);
+}
+
+/* Queue live-connection indicator. */
+.live-pill {
+  font-size: .8rem;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+.live-pill.live {
+  color: #4ade80;
+}
+
+.live-pill.reconnecting {
+  color: #fbbf24;
+}
 .client-contact { color: #e2e8f0; margin: 6px 0; }
 
 /* Public intake page (QR front door): R&R black/red brand band over the

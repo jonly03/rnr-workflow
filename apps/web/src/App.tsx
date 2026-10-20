@@ -22,11 +22,13 @@ import {
   signPublicQuote,
   startIdentification,
   submitPublicIntake,
+  subscribeStaffEvents,
   UnauthorizedError,
   type DecodedVehicle,
   type PublicIntakeStatus,
   type PublicQuoteView,
   type PublicTrackingView,
+  type StaffEventsStatus,
   type StaffUser
 } from "./api";
 import type { CaseEvent, CaseRecord, Channel, GlassCandidate, GlassType } from "./types";
@@ -198,7 +200,16 @@ export function App() {
       return next;
     });
     // Pull fresh detail + events so the editable part card always acts on current data.
-    if (willExpand) void refreshExpandedCase(id);
+    if (willExpand) {
+      // Expanding a live-arrived case acknowledges it: clear the "New" flag.
+      setFreshCaseIds(prev => {
+        if (!prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      void refreshExpandedCase(id);
+    }
   };
 
   const statusOptions = useMemo(
@@ -294,6 +305,58 @@ export function App() {
 
   useEffect(() => {
     if (staff) void refreshQueue();
+  }, [staff]);
+
+  const [liveStatus, setLiveStatus] = useState<StaffEventsStatus | "off">("off");
+  const [freshCaseIds, setFreshCaseIds] = useState<Set<string>>(new Set());
+  const reloadTimer = useRef<number | undefined>(undefined);
+
+  const reloadCasesQuiet = async () => {
+    try {
+      setCases(await listCases());
+    } catch {
+      // Keep the last good list; the next event or a manual refresh retries.
+    }
+  };
+
+  // Live queue (Nelly, 2026-10-20): when a client submits an intake —
+  // or anything else appends a case event — the socket pushes a
+  // notification and the queue refetches itself. No manual refresh.
+  // Brand-new intakes are flagged "New" until staff expand them.
+  useEffect(() => {
+    if (!staff) {
+      setLiveStatus("off");
+      return;
+    }
+    const scheduleReload = () => {
+      if (reloadTimer.current !== undefined) return;
+      reloadTimer.current = window.setTimeout(() => {
+        reloadTimer.current = undefined;
+        void reloadCasesQuiet();
+      }, 250);
+    };
+    const unsubscribe = subscribeStaffEvents({
+      onEvent: (message) => {
+        if (
+          message.type === "case_event" &&
+          message.event_type === "CLIENT_INTAKE_SUBMITTED" &&
+          message.case_id
+        ) {
+          const caseId = message.case_id;
+          setFreshCaseIds(prev => new Set(prev).add(caseId));
+        }
+        scheduleReload();
+      },
+      onStatus: setLiveStatus
+    });
+    return () => {
+      unsubscribe();
+      if (reloadTimer.current !== undefined) {
+        window.clearTimeout(reloadTimer.current);
+        reloadTimer.current = undefined;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [staff]);
 
   const openCase = async (id: string) => {
@@ -456,6 +519,13 @@ export function App() {
           <CatalogBadge />
           <h1>Case Queue</h1>
           <p className="muted">One operational truth across Direct, Auction, and Insurance.</p>
+          {liveStatus !== "off" && (
+            <p className={`live-pill ${liveStatus}`} data-testid="queue-live-status">
+              {liveStatus === "live"
+                ? "● Live — new cases appear automatically"
+                : "○ Reconnecting…"}
+            </p>
+          )}
         </div>
       </section>
 
@@ -587,8 +657,9 @@ export function App() {
               <div className="case-list">
                 {visibleCases.map(c => {
                   const expanded = expandedIds.has(c.id);
+                  const fresh = freshCaseIds.has(c.id);
                   return (
-                    <article className={"case-card" + (expanded ? " expanded" : "")} key={c.id}>
+                    <article className={"case-card" + (expanded ? " expanded" : "") + (fresh ? " fresh" : "")} key={c.id}>
                       <div className="case-card-head">
                         <div>
                           <strong>{c.reference}</strong>
@@ -596,6 +667,11 @@ export function App() {
                           {c.client_intake && (
                             <span className="client-badge" data-testid="client-intake-badge">
                               Client QR
+                            </span>
+                          )}
+                          {fresh && (
+                            <span className="new-badge" data-testid="new-case-badge">
+                              New
                             </span>
                           )}
                         </div>
