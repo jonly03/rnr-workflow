@@ -225,6 +225,18 @@ jobs:
           npx playwright install --with-deps chromium
           npm test
 
+      # On failure the report + traces are the only way to see what the
+      # live pages actually showed — upload them unconditionally.
+      - name: Upload smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-smoke-report
+          path: |
+            apps/e2e/playwright-report
+            apps/e2e/test-results
+          if-no-files-found: ignore
+
       - name: Record staging evidence
         env:
           API_URL: ${{ steps.api.outputs.url }}
