@@ -247,9 +247,10 @@ jobs:
         env:
           API_URL: ${{ steps.api.outputs.url }}
           VERCEL_TOKEN: ${{ env.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ env.API_PROJECT_ID }}
         shell: bash
         run: |
-          timeout 90 vercel logs "$API_URL" --token "$VERCEL_TOKEN" 2>&1 | tail -300 || true
+          timeout 90 vercel logs --deployment "$API_URL" --token "$VERCEL_TOKEN" 2>&1 | tail -300 || true
 
       - name: Record staging evidence
         env:

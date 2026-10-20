@@ -167,8 +167,12 @@ test("Client intake → live progress → sign → staff lands on Order parts", 
   await page.getByRole("button", { name: "Send request" }).click();
 
   // Confirmation: live progress completes and hands over the sign link —
-  // no staff click, no waiting for a text.
-  await expect(page.getByRole("heading", { name: /Request received/ })).toBeVisible();
+  // no staff click, no waiting for a text. The submit drives the whole
+  // auto-quote chain against the database, which can take well over the
+  // default 5s expect window on a cold staging instance — wait for real.
+  await expect(page.getByRole("heading", { name: /Request received/ })).toBeVisible({
+    timeout: 30_000
+  });
   const reference = (await page.locator(".intake-ref").textContent())?.trim();
   expect(reference).toMatch(/^RRA-\d{6}$/);
   await expect(page.getByText(/happening with your request/)).toBeVisible();
@@ -209,7 +213,7 @@ test("Client intake → live progress → sign → staff lands on Order parts", 
   await expect(page.getByRole("button", { name: /Order parts/ })).toBeVisible();
 });
 
-test("Staff queue updates live when a client intake lands (no refresh)", async ({ page, context }) => {
+test("Staff queue updates live when a client intake lands (no refresh)", async ({ page, browser }) => {
   test.setTimeout(90_000);
 
   // Staff dashboard sits open on the queue.
@@ -221,8 +225,23 @@ test("Staff queue updates live when a client intake lands (no refresh)", async (
     timeout: 15_000
   });
 
-  // Meanwhile, a client submits the QR intake in a second tab.
-  const clientPage = await context.newPage();
+  // Meanwhile, a client submits the QR intake — in a SEPARATE browser
+  // context with no staff session. A real customer has no staff token:
+  // their page must not open a staff socket or pull the staff queue
+  // (sharing the staff context did both, and the extra load starved the
+  // intake POST past its wait window on staging).
+  const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+  const clientContext = await browser.newContext({
+    baseURL: process.env.WEB_BASE_URL ?? "http://127.0.0.1:5173",
+    ...(bypassSecret
+      ? {
+          extraHTTPHeaders: {
+            "x-vercel-protection-bypass": bypassSecret
+          }
+        }
+      : {})
+  });
+  const clientPage = await clientContext.newPage();
   await clientPage.goto("/intake");
   await expect(
     clientPage.getByRole("heading", { name: "How can we service your auto glass?" })
@@ -238,12 +257,14 @@ test("Staff queue updates live when a client intake lands (no refresh)", async (
   await clientPage.getByLabel(/Your name/).fill("Live Arrival");
   await clientPage.getByLabel(/Mobile phone/).fill("(617) 555-0142");
   await clientPage.getByRole("button", { name: "Send request" }).click();
+  // The submit drives the auto-quote chain server-side; on a cold
+  // staging instance that takes longer than the default 5s window.
   await expect(
     clientPage.getByRole("heading", { name: /Request received/ })
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 30_000 });
   const reference = (await clientPage.locator(".intake-ref").textContent())?.trim();
   expect(reference).toMatch(/^RRA-\d{6}$/);
-  await clientPage.close();
+  await clientContext.close();
 
   // The staff page was never reloaded: the socket pushed the intake
   // event, the queue refetched itself, and the new case is here,
