@@ -32,8 +32,9 @@ export async function serveStaffSocket(
   ws: WebSocket,
   store: CaseStore
 ): Promise<void> {
-  ws.send(JSON.stringify({ type: "ready" }));
-
+  // Subscribe BEFORE sending "ready": the client treats "ready" as the
+  // live signal, and an event appended while the subscription was
+  // still arming would otherwise never reach this socket.
   let unsubscribe: (() => void) | undefined;
   if (store.subscribeCaseEvents) {
     try {
@@ -45,6 +46,9 @@ export async function serveStaffSocket(
     } catch (error) {
       console.error("staff events subscribe failed:", error);
     }
+  }
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "ready" }));
   }
 
   // Heartbeat: protocol-level pings (browsers answer automatically).
