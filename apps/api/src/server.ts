@@ -1,5 +1,6 @@
 import { createApp } from "./app.js";
 import { ensureSeedAdmin } from "./auth.js";
+import { createRealtimeServer } from "./realtime.js";
 import { createStore } from "./store-factory.js";
 
 const port = Number(process.env.PORT || 3001);
@@ -18,6 +19,7 @@ if (!authSecret) {
 
 const store = createStore();
 const app = createApp(store, { authSecret });
+const server = createRealtimeServer(app, store, authSecret);
 
 async function boot() {
   try {
@@ -25,7 +27,7 @@ async function boot() {
   } catch (error) {
     console.error("Staff admin seed failed (will retry on next boot):", error);
   }
-  app.listen(port, () => {
+  server.listen(port, () => {
     console.log(`R&R Case Core API listening on http://localhost:${port}`);
   });
 }

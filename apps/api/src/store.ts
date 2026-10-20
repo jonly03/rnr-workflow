@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import type {
   ApprovalTokenRecord,
   CaseEvent,
+  CaseEventNotification,
   CaseRecord,
   Channel,
   GlassCandidate,
@@ -194,6 +195,15 @@ export interface CaseStore {
   consumeApprovalToken(jti: string): Promise<void>;
   /** Appends an event, optionally transitioning the case state atomically. */
   appendEvent(input: AppendEventInput): Promise<CaseEvent>;
+  /**
+   * Optional realtime feed: invoke `listener` for every case event
+   * appended anywhere in this deployment (Postgres LISTEN/NOTIFY for the
+   * PG store, an in-process fan-out for the JSON store). Resolves to an
+   * unsubscribe function. Powers the staff dashboard's live updates.
+   */
+  subscribeCaseEvents?(
+    listener: (notification: CaseEventNotification) => void
+  ): Promise<() => void>;
   saveGlassIdentification(input: SaveGlassIdentificationInput): Promise<GlassIdentification>;
   getLatestGlassIdentification(glassRequestId: string): Promise<GlassIdentification | null>;
   findVinLookup(vin: string, glassType: GlassType): Promise<VinLookupGlassResult | null>;
@@ -265,6 +275,9 @@ const emptyStore = (): StoreShape => ({
 
 export class JsonCaseStore implements CaseStore {
   private data: StoreShape;
+  private caseEventListeners = new Set<
+    (notification: CaseEventNotification) => void
+  >();
   /** Transient (VIN, glass type) lookup claims. Never persisted. */
   private readonly vinLookupClaims = new Map<string, number>();
 
@@ -472,7 +485,29 @@ export class JsonCaseStore implements CaseStore {
       caseRecord.version += 1;
     }
     this.persist(next);
+    const notification: CaseEventNotification = {
+      case_id: event.case_id,
+      event_type: event.event_type,
+      occurred_at: event.occurred_at,
+      sequence: event.sequence
+    };
+    for (const listener of this.caseEventListeners) {
+      try {
+        listener(notification);
+      } catch {
+        // A broken subscriber must never fail the append itself.
+      }
+    }
     return event;
+  }
+
+  async subscribeCaseEvents(
+    listener: (notification: CaseEventNotification) => void
+  ): Promise<() => void> {
+    this.caseEventListeners.add(listener);
+    return () => {
+      this.caseEventListeners.delete(listener);
+    };
   }
 
   async saveGlassIdentification(

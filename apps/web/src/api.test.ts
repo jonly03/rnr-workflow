@@ -1,5 +1,12 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { ocrVinPhoto } from "./api";
+import {
+  ocrVinPhoto,
+  setToken,
+  staffEventsSocketUrl,
+  subscribeStaffEvents,
+  type StaffCaseEventMessage,
+  type StaffEventsStatus
+} from "./api";
 
 describe("ocrVinPhoto", () => {
   const realFetch = globalThis.fetch;
@@ -46,5 +53,111 @@ describe("ocrVinPhoto", () => {
 
     const file = new File(["fake-image"], "vin.jpg", { type: "image/jpeg" });
     await expect(ocrVinPhoto(file)).rejects.toThrow("No VIN found in the photo.");
+  });
+});
+
+class FakeWebSocket {
+  static instances: FakeWebSocket[] = [];
+  url: string;
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { data: unknown }) => void) | null = null;
+  onclose: (() => void) | null = null;
+  onerror: ((event: unknown) => void) | null = null;
+  closed = false;
+
+  constructor(url: string) {
+    this.url = url;
+    FakeWebSocket.instances.push(this);
+  }
+
+  close() {
+    this.closed = true;
+    this.onclose?.();
+  }
+
+  open() {
+    this.onopen?.();
+  }
+
+  message(data: unknown) {
+    this.onmessage?.({ data: JSON.stringify(data) });
+  }
+}
+
+describe("staff realtime subscription", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("builds the socket URL from the API origin with the staff token", () => {
+    expect(staffEventsSocketUrl()).toBeNull();
+    setToken("staff-jwt");
+    expect(staffEventsSocketUrl()).toBe(
+      "ws://localhost:3001/api/v1/staff/events?" + "token" + "=staff-jwt"
+    );
+  });
+
+  it("goes live on open, syncs, and forwards case events", () => {
+    setToken("staff-jwt");
+    const events: StaffCaseEventMessage[] = [];
+    const statuses: StaffEventsStatus[] = [];
+    const unsubscribe = subscribeStaffEvents({
+      onEvent: (m) => events.push(m),
+      onStatus: (s) => statuses.push(s)
+    });
+
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    expect(statuses).toEqual(["live"]);
+    expect(events).toEqual([{ type: "sync" }]);
+
+    socket.message({
+      type: "case_event",
+      case_id: "case-1",
+      event_type: "CLIENT_INTAKE_SUBMITTED",
+      occurred_at: "2026-10-20T22:00:00.000Z",
+      sequence: 1
+    });
+    expect(events[1]).toMatchObject({
+      type: "case_event",
+      event_type: "CLIENT_INTAKE_SUBMITTED"
+    });
+    unsubscribe();
+  });
+
+  it("falls back to polling while disconnected and reconnects", () => {
+    setToken("staff-jwt");
+    const events: StaffCaseEventMessage[] = [];
+    const statuses: StaffEventsStatus[] = [];
+    const unsubscribe = subscribeStaffEvents({
+      onEvent: (m) => events.push(m),
+      onStatus: (s) => statuses.push(s)
+    });
+
+    const first = FakeWebSocket.instances[0];
+    first.open();
+    first.close();
+    expect(statuses).toEqual(["live", "reconnecting"]);
+
+    // Poll fallback ticks a sync every 10s while the socket is down.
+    vi.advanceTimersByTime(10_000);
+    expect(events.filter((e) => e.type === "sync").length).toBe(2);
+
+    // The reconnect attempt (1s backoff) created a fresh socket.
+    expect(FakeWebSocket.instances.length).toBe(2);
+    FakeWebSocket.instances[1].open();
+    expect(statuses[statuses.length - 1]).toBe("live");
+
+    unsubscribe();
+    vi.advanceTimersByTime(60_000);
+    expect(FakeWebSocket.instances.length).toBe(2);
   });
 });

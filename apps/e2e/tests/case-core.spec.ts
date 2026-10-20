@@ -209,6 +209,50 @@ test("Client intake → live progress → sign → staff lands on Order parts", 
   await expect(page.getByRole("button", { name: /Order parts/ })).toBeVisible();
 });
 
+test("Staff queue updates live when a client intake lands (no refresh)", async ({ page, context }) => {
+  test.setTimeout(90_000);
+
+  // Staff dashboard sits open on the queue.
+  await page.goto("/");
+  await signInIfRequired(page);
+  await expect(page.getByRole("heading", { name: "Case Queue" })).toBeVisible();
+  // The realtime socket connects and the queue shows itself live.
+  await expect(page.getByTestId("queue-live-status")).toContainText(/Live/, {
+    timeout: 15_000
+  });
+
+  // Meanwhile, a client submits the QR intake in a second tab.
+  const clientPage = await context.newPage();
+  await clientPage.goto("/intake");
+  await expect(
+    clientPage.getByRole("heading", { name: "How can we service your auto glass?" })
+  ).toBeVisible();
+  await clientPage.getByRole("button", { name: /I don't have the VIN/i }).click();
+  await clientPage.getByLabel(/^Year/).fill("2018");
+  await clientPage.getByLabel(/^Make/).fill("Jeep");
+  await clientPage.getByLabel(/^Model/).fill("Wrangler");
+  await clientPage.getByRole("button", { name: "Continue" }).click();
+  await clientPage.getByRole("radio", { name: "Windshield" }).click();
+  await clientPage.getByRole("button", { name: "Continue" }).click();
+  await clientPage.getByRole("button", { name: "Skip" }).click();
+  await clientPage.getByLabel(/Your name/).fill("Live Arrival");
+  await clientPage.getByLabel(/Mobile phone/).fill("(617) 555-0142");
+  await clientPage.getByRole("button", { name: "Send request" }).click();
+  await expect(
+    clientPage.getByRole("heading", { name: /Request received/ })
+  ).toBeVisible();
+  const reference = (await clientPage.locator(".intake-ref").textContent())?.trim();
+  expect(reference).toMatch(/^RRA-\d{6}$/);
+  await clientPage.close();
+
+  // The staff page was never reloaded: the socket pushed the intake
+  // event, the queue refetched itself, and the new case is here,
+  // flagged New.
+  const caseCard = page.locator(".case-card", { hasText: reference! });
+  await expect(caseCard).toBeVisible({ timeout: 20_000 });
+  await expect(caseCard.getByTestId("new-case-badge")).toBeVisible();
+});
+
 test("Customer deep links load the app by direct navigation (SPA fallback)", async ({ page }) => {
   // Customer links are tapped from a text message: the browser asks the
   // server for /quote/<token> directly. Without the vercel.json SPA
