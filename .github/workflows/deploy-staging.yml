@@ -237,6 +237,17 @@ jobs:
             apps/e2e/test-results
           if-no-files-found: ignore
 
+      # API runtime logs: the API's 500 handler hides error detail from
+      # clients but console.errors it — surface the tail in the job log
+      # so a failing smoke is diagnosable from the run alone.
+      - name: Dump API runtime logs
+        if: always()
+        env:
+          API_URL: ${{ steps.api.outputs.url }}
+        shell: bash
+        run: |
+          timeout 90 vercel logs "$API_URL" --token=<redacted> 2>&1 | tail -300 || true
+
       - name: Record staging evidence
         env:
           API_URL: ${{ steps.api.outputs.url }}
