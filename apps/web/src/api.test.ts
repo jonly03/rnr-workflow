@@ -105,7 +105,7 @@ describe("staff realtime subscription", () => {
     );
   });
 
-  it("goes live on open, syncs, and forwards case events", () => {
+  it("goes live on the server's ready signal, syncs, and forwards case events", () => {
     setToken("staff-jwt");
     const events: StaffCaseEventMessage[] = [];
     const statuses: StaffEventsStatus[] = [];
@@ -115,8 +115,13 @@ describe("staff realtime subscription", () => {
     });
 
     const socket = FakeWebSocket.instances[0];
+    // The bare handshake is not live yet — the server arms its event
+    // subscription first, then says ready.
     socket.open();
-    expect(statuses).toEqual(["live"]);
+    expect(statuses).toEqual(["reconnecting"]);
+    expect(events).toEqual([]);
+    socket.message({ type: "ready" });
+    expect(statuses).toEqual(["reconnecting", "live"]);
     expect(events).toEqual([{ type: "sync" }]);
 
     socket.message({
@@ -144,8 +149,9 @@ describe("staff realtime subscription", () => {
 
     const first = FakeWebSocket.instances[0];
     first.open();
+    first.message({ type: "ready" });
     first.close();
-    expect(statuses).toEqual(["live", "reconnecting"]);
+    expect(statuses).toEqual(["reconnecting", "live", "reconnecting"]);
 
     // Poll fallback ticks a sync every 10s while the socket is down.
     vi.advanceTimersByTime(10_000);
@@ -154,6 +160,7 @@ describe("staff realtime subscription", () => {
     // The reconnect attempt (1s backoff) created a fresh socket.
     expect(FakeWebSocket.instances.length).toBe(2);
     FakeWebSocket.instances[1].open();
+    FakeWebSocket.instances[1].message({ type: "ready" });
     expect(statuses[statuses.length - 1]).toBe("live");
 
     unsubscribe();

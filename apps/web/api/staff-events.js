@@ -162,8 +162,11 @@ export function createStaffEventsServer(env = process.env, busOverride) {
 }
 
 async function serveSocket(ws, bus) {
-  ws.send(JSON.stringify({ type: "ready" }));
-
+  // Subscribe BEFORE sending "ready": arming the Postgres LISTEN takes
+  // a moment on a cold instance, and the client treats "ready" as the
+  // live signal. An event that fired while the LISTEN was still
+  // arming would otherwise be lost to this socket — for a brand-new
+  // intake, that first event is exactly the one that matters.
   let unsubscribe;
   if (bus) {
     try {
@@ -177,6 +180,9 @@ async function serveSocket(ws, bus) {
     }
   } else {
     console.error("staff-events: no DATABASE_URL — socket will idle");
+  }
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "ready" }));
   }
 
   let alive = true;

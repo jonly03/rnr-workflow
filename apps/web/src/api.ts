@@ -60,7 +60,7 @@ function authHeaders(extra: Record<string, string> = {}): Record<string, string>
 }
 
 export interface StaffCaseEventMessage {
-  type: "case_event" | "sync";
+  type: "case_event" | "sync" | "ready";
   case_id?: string;
   event_type?: string;
   occurred_at?: string;
@@ -128,9 +128,9 @@ export function subscribeStaffEvents(handlers: {
   };
   const connect = () => {
     if (stopped) return;
+    handlers.onStatus("reconnecting");
     const url = staffEventsSocketUrl();
     if (!url) {
-      handlers.onStatus("reconnecting");
       startPolling();
       scheduleRetry();
       return;
@@ -139,22 +139,25 @@ export function subscribeStaffEvents(handlers: {
     try {
       ws = new WebSocket(url);
     } catch {
-      handlers.onStatus("reconnecting");
       startPolling();
       scheduleRetry();
       return;
     }
     socket = ws;
-    ws.onopen = () => {
-      retryMs = 1000;
-      stopPolling();
-      handlers.onStatus("live");
-      handlers.onEvent({ type: "sync" });
-    };
     ws.onmessage = (event) => {
       try {
         const parsed = JSON.parse(String(event.data)) as StaffCaseEventMessage;
-        if (parsed?.type === "case_event") handlers.onEvent(parsed);
+        if (parsed?.type === "ready") {
+          // The server sends "ready" only AFTER its event subscription
+          // is armed — that, not the bare handshake, is the moment the
+          // feed is truly live. Catch up on anything missed meanwhile.
+          retryMs = 1000;
+          stopPolling();
+          handlers.onStatus("live");
+          handlers.onEvent({ type: "sync" });
+        } else if (parsed?.type === "case_event") {
+          handlers.onEvent(parsed);
+        }
       } catch {
         // Ignore malformed frames.
       }

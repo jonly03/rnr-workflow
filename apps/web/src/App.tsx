@@ -295,7 +295,7 @@ export function App() {
     setLoading(true);
     setMessage("");
     try {
-      setCases(await listCases());
+      applyLoadedCases(await listCases(), false);
     } catch (error) {
       loadError(error);
     } finally {
@@ -310,10 +310,26 @@ export function App() {
   const [liveStatus, setLiveStatus] = useState<StaffEventsStatus | "off">("off");
   const [freshCaseIds, setFreshCaseIds] = useState<Set<string>>(new Set());
   const reloadTimer = useRef<number | undefined>(undefined);
+  // Ids from the most recent queue load. A case that shows up in a
+  // socket-triggered reload but was not in the previous load arrived
+  // live — flag it New even if its first event raced the subscription.
+  const knownCaseIds = useRef<Set<string> | null>(null);
+
+  const applyLoadedCases = (loaded: CaseRecord[], flagNew: boolean) => {
+    if (flagNew && knownCaseIds.current) {
+      const known = knownCaseIds.current;
+      const arrived = loaded.filter(c => !known.has(c.id)).map(c => c.id);
+      if (arrived.length) {
+        setFreshCaseIds(prev => new Set([...prev, ...arrived]));
+      }
+    }
+    knownCaseIds.current = new Set(loaded.map(c => c.id));
+    setCases(loaded);
+  };
 
   const reloadCasesQuiet = async () => {
     try {
-      setCases(await listCases());
+      applyLoadedCases(await listCases(), true);
     } catch {
       // Keep the last good list; the next event or a manual refresh retries.
     }
