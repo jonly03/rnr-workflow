@@ -1,14 +1,18 @@
 import type {
   AvailabilityWindow,
+  CaseAsset,
   CaseEvent,
+  CaseJobView,
   CaseRecord,
   Channel,
   GlassType,
   JobAssignment,
+  JobStep,
   Operator,
   OperatorInviteView,
   ScheduleBoardEntry,
   SchedulerProposal,
+  TechJob,
   TechProfile
 } from "./types";
 
@@ -866,6 +870,105 @@ export function getSchedule(date: string) {
   return fetch(`${API_BASE}/schedule?date=${encodeURIComponent(date)}`, {
     headers: authHeaders()
   }).then(json<{ date: string; entries: ScheduleBoardEntry[] }>);
+}
+
+// ---------------------------------------------------------------------
+// Tech job execution + case assets (Slice B). The tech functions run
+// on the tech's own token; the API scopes everything to their assigned
+// jobs. Asset bytes move only through API-issued URLs: an upload
+// target (presigned PUT for S3, capability path for the local driver)
+// or a short-lived download URL — the client never builds storage
+// URLs itself.
+// ---------------------------------------------------------------------
+
+export function listMyJobs() {
+  return fetch(`${API_BASE}/tech/jobs`, { headers: authHeaders() }).then(
+    json<{ jobs: TechJob[] }>
+  );
+}
+
+export function getMyJob(jobId: string) {
+  return fetch(`${API_BASE}/tech/jobs/${jobId}`, {
+    headers: authHeaders()
+  }).then(json<{ job: TechJob }>);
+}
+
+export function advanceJobStep(
+  jobId: string,
+  step: JobStep,
+  payload: { client_name?: string; note?: string } = {}
+) {
+  return fetch(`${API_BASE}/tech/jobs/${jobId}/steps`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ step, ...payload })
+  }).then(json<{ job: TechJob }>);
+}
+
+export interface AssetUploadGrant {
+  asset: CaseAsset;
+  upload: { url: string; method: "PUT"; headers: Record<string, string> };
+}
+
+export function requestJobPhotoUpload(
+  jobId: string,
+  input: {
+    kind: "BEFORE_PHOTO" | "AFTER_PHOTO";
+    filename: string;
+    content_type: string;
+    size_bytes: number;
+  }
+) {
+  return fetch(`${API_BASE}/tech/jobs/${jobId}/assets/upload-url`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(input)
+  }).then(json<AssetUploadGrant>);
+}
+
+/** PUTs a file's bytes to an API-issued upload target. Targets are
+ *  either absolute (S3 presigned) or API paths (local driver). */
+export async function uploadAssetBytes(
+  upload: AssetUploadGrant["upload"],
+  file: File
+): Promise<void> {
+  const url = upload.url.startsWith("/")
+    ? `${new URL(API_BASE).origin}${upload.url}`
+    : upload.url;
+  const response = await fetch(url, {
+    method: upload.method,
+    headers: upload.headers,
+    body: file
+  });
+  if (!response.ok) {
+    throw new Error(`Photo upload failed (${response.status}). Try again.`);
+  }
+}
+
+export function confirmAsset(assetId: string) {
+  return fetch(`${API_BASE}/assets/${assetId}/confirm`, {
+    method: "POST",
+    headers: authHeaders()
+  }).then(json<{ asset: CaseAsset }>);
+}
+
+export function getAssetDownloadUrl(assetId: string) {
+  return fetch(`${API_BASE}/assets/${assetId}/download-url`, {
+    headers: authHeaders()
+  }).then(json<{ asset: CaseAsset; url: string }>);
+}
+
+/** Resolves a download URL for display: API paths get the API origin,
+ *  absolute URLs (S3) pass through untouched. */
+export function resolveAssetUrl(url: string): string {
+  return url.startsWith("/") ? `${new URL(API_BASE).origin}${url}` : url;
+}
+
+/** Staff: a case's job execution + asset registry (Slice B). */
+export function getCaseJob(caseId: string) {
+  return fetch(`${API_BASE}/cases/${caseId}/job`, {
+    headers: authHeaders()
+  }).then(json<CaseJobView>);
 }
 
 export function createCase(input: CreateCaseInput) {

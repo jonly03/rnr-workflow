@@ -1,6 +1,8 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  advanceJobStep,
   assignTech,
+  confirmAsset,
   createCase,
   createIntakeQuoteLink,
   createQuoteLink,
@@ -8,12 +10,15 @@ import {
   deactivateOperator,
   declinePublicQuote,
   decodeVin,
+  getAssetDownloadUrl,
   getAssignment,
   getCase,
   getCaseEvents,
+  getCaseJob,
   getGoogleConfig,
   getHealth,
   getMe,
+  getMyJob,
   getMyOperator,
   getPublicIntakeStatus,
   getPublicQuote,
@@ -23,6 +28,7 @@ import {
   googleStartUrl,
   inviteOperator,
   listCases,
+  listMyJobs,
   listOperators,
   login,
   logout,
@@ -30,6 +36,8 @@ import {
   performAction,
   proposeAssignment,
   reactivateOperator,
+  requestJobPhotoUpload,
+  resolveAssetUrl,
   revokeInvite,
   setToken,
   signPublicQuote,
@@ -39,6 +47,7 @@ import {
   UnauthorizedError,
   updateMyProfile,
   updateOperatorProfile,
+  uploadAssetBytes,
   verifyOperator,
   type DecodedVehicle,
   type MyOperator,
@@ -48,17 +57,22 @@ import {
   type StaffEventsStatus,
   type StaffUser
 } from "./api";
-import type {
-  AvailabilityWindow,
-  CaseEvent,
-  CaseRecord,
-  Channel,
-  GlassCandidate,
-  GlassType,
-  Operator,
-  OperatorInviteView,
-  ScheduleBoardEntry,
-  SchedulerProposal
+import {
+  JOB_STEPS,
+  type AvailabilityWindow,
+  type CaseAsset,
+  type CaseEvent,
+  type CaseJobView,
+  type CaseRecord,
+  type Channel,
+  type GlassCandidate,
+  type GlassType,
+  type JobStep,
+  type Operator,
+  type OperatorInviteView,
+  type ScheduleBoardEntry,
+  type SchedulerProposal,
+  type TechJob
 } from "./types";
 
 type Screen = "queue" | "new" | "detail" | "quote" | "operators" | "schedule";
@@ -1605,17 +1619,96 @@ export function TechGate({ staff }: { staff: StaffUser }) {
   return <TechHome staff={staff} mine={mine} />;
 }
 
+/**
+ * Tech home (Slice B): the tech's own jobs — today + upcoming, assigned
+ * to them only (the API scopes the list; there is nothing else a tech
+ * can see). Selecting a job opens its checklist.
+ */
 export function TechHome({ staff, mine }: { staff: StaffUser; mine: MyOperator }) {
   const firstName = staff.name.trim().split(/\s+/)[0] ?? staff.name;
+  const [jobs, setJobs] = useState<TechJob[] | null>(null);
+  const [error, setError] = useState("");
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const data = await listMyJobs();
+      setJobs(Array.isArray(data.jobs) ? data.jobs : []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load your jobs.");
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (selectedJobId) {
+    return (
+      <TechJobDetail
+        jobId={selectedJobId}
+        onBack={() => {
+          setSelectedJobId(null);
+          void load();
+        }}
+      />
+    );
+  }
+
   return (
     <section className="card" data-testid="tech-home">
       <p className="eyebrow">Technician</p>
       <h1>Welcome, {firstName}</h1>
-      <p className="muted">
-        No jobs yet — your job view arrives with your first assignment. When R&R
-        assigns you a job, it shows up here (and on your Google Calendar) with
-        everything you need for the day.
-      </p>
+      {error && (
+        <p className="error" role="alert">{error}</p>
+      )}
+      {jobs === null && !error && <p className="muted">Loading your jobs…</p>}
+      {jobs !== null && jobs.length === 0 && (
+        <p className="muted">
+          No jobs yet — when R&amp;R assigns you a job, it shows up here (and on
+          your Google Calendar) with everything you need for the day.
+        </p>
+      )}
+      {jobs !== null && jobs.length > 0 && (
+        <div data-testid="tech-job-list">
+          {jobs.map(entry => (
+            <article key={entry.job.id} className="job-row" data-testid="tech-job-row">
+              <div>
+                <strong>{entry.case.reference}</strong>{" "}
+                <span className="muted">
+                  {entry.case.vehicle
+                    ? `${entry.case.vehicle.year} ${entry.case.vehicle.make} ${entry.case.vehicle.model}`
+                    : ""}
+                  {entry.case.glass_type ? ` · ${humanize(entry.case.glass_type)}` : ""}
+                </span>
+                <br />
+                <span className="muted">
+                  {entry.job.scheduled_start
+                    ? `${new Date(entry.job.scheduled_start).toLocaleString()}`
+                    : "Not scheduled yet"}
+                  {entry.client?.service_address
+                    ? ` · ${entry.client.service_address}`
+                    : ""}
+                </span>
+                <br />
+                <span>
+                  {entry.job.status === "COMPLETED"
+                    ? "Finished"
+                    : entry.current_step
+                      ? `Next: ${JOB_STEPS.find(s => s.step === entry.current_step)?.label ?? entry.current_step}`
+                      : humanize(entry.job.status)}
+                </span>
+              </div>
+              <button
+                className="primary"
+                onClick={() => setSelectedJobId(entry.job.id)}
+              >
+                {entry.job.status === "COMPLETED" ? "View job" : "Open job"}
+              </button>
+            </article>
+          ))}
+        </div>
+      )}
       {mine.profile && mine.profile.qualifications.length > 0 && (
         <p>
           Your verified work:{" "}
@@ -1624,6 +1717,276 @@ export function TechHome({ staff, mine }: { staff: StaffUser; mine: MyOperator }
           ))}
         </p>
       )}
+    </section>
+  );
+}
+
+/**
+ * One job's checklist (Slice B). Steps complete strictly in order — the
+ * API enforces it; this UI simply renders the state: done steps with
+ * their timestamps, the current step with its controls, and what's
+ * coming. Photo steps upload first (bytes go straight to storage via
+ * the API-issued URL), then record the step once a photo is confirmed.
+ */
+export function TechJobDetail({
+  jobId,
+  onBack
+}: {
+  jobId: string;
+  onBack: () => void;
+}) {
+  const [entry, setEntry] = useState<TechJob | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [clientName, setClientName] = useState("");
+  const [checkinNote, setCheckinNote] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const data = await getMyJob(jobId);
+      setEntry(data.job);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load this job.");
+    }
+  }, [jobId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (!entry) {
+    return (
+      <section className="card" data-testid="tech-job-detail">
+        <button className="secondary" onClick={onBack}>← My jobs</button>
+        {error ? (
+          <p className="error" role="alert">{error}</p>
+        ) : (
+          <p className="muted">Loading job…</p>
+        )}
+      </section>
+    );
+  }
+
+  const doneSteps = new Map(entry.steps.map(s => [s.step, s]));
+  const current = entry.current_step;
+  const finished = entry.job.status === "COMPLETED";
+
+  const photosFor = (kind: CaseAsset["kind"]) =>
+    entry.assets.filter(a => a.kind === kind && a.status === "READY");
+
+  async function recordStep(step: JobStep, payload: { client_name?: string; note?: string } = {}) {
+    setBusy(true);
+    setError("");
+    try {
+      const data = await advanceJobStep(jobId, step, payload);
+      setEntry(data.job);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not record that step.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handlePhotoFiles(kind: "BEFORE_PHOTO" | "AFTER_PHOTO", files: FileList | null) {
+    if (!files || files.length === 0) return;
+    setBusy(true);
+    setError("");
+    try {
+      for (const file of Array.from(files)) {
+        const grant = await requestJobPhotoUpload(jobId, {
+          kind,
+          filename: file.name,
+          content_type: file.type || "image/jpeg",
+          size_bytes: file.size
+        });
+        await uploadAssetBytes(grant.upload, file);
+        await confirmAsset(grant.asset.id);
+      }
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Photo upload failed. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openAsset(asset: CaseAsset) {
+    try {
+      const { url } = await getAssetDownloadUrl(asset.id);
+      window.open(resolveAssetUrl(url), "_blank", "noopener");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not open that file.");
+    }
+  }
+
+  return (
+    <section className="card" data-testid="tech-job-detail">
+      <button className="secondary" onClick={onBack}>← My jobs</button>
+      <p className="eyebrow">Job {entry.case.reference}</p>
+      <h1>
+        {entry.case.vehicle
+          ? `${entry.case.vehicle.year} ${entry.case.vehicle.make} ${entry.case.vehicle.model}`
+          : entry.case.reference}
+      </h1>
+      <dl>
+        <dt>Glass</dt>
+        <dd>{entry.case.glass_type ? humanize(entry.case.glass_type) : "—"}</dd>
+        <dt>When</dt>
+        <dd>
+          {entry.job.scheduled_start
+            ? `${new Date(entry.job.scheduled_start).toLocaleString()} – ${
+                entry.job.scheduled_end
+                  ? new Date(entry.job.scheduled_end).toLocaleTimeString()
+                  : ""
+              }`
+            : "Not scheduled yet"}
+        </dd>
+        {entry.client?.name && (
+          <>
+            <dt>Client</dt>
+            <dd>
+              {entry.client.name}
+              {entry.client.phone ? (
+                <>
+                  {" · "}
+                  <a href={`tel:${entry.client.phone}`}>{entry.client.phone}</a>
+                </>
+              ) : null}
+            </dd>
+          </>
+        )}
+        {entry.client?.service_address && (
+          <>
+            <dt>Service address</dt>
+            <dd>{entry.client.service_address}</dd>
+          </>
+        )}
+      </dl>
+
+      {error && (
+        <p className="error" role="alert">{error}</p>
+      )}
+      {finished && (
+        <div className="alert" role="status">
+          Job finished — nice work. R&amp;R can see the completed checklist and photos.
+        </div>
+      )}
+
+      <ol className="checklist" data-testid="job-checklist">
+        {JOB_STEPS.map(({ step, label, action }) => {
+          const doneEvent = doneSteps.get(step);
+          const isCurrent = !finished && current === step;
+          const photoKind =
+            step === "BEFORE_PHOTOS"
+              ? ("BEFORE_PHOTO" as const)
+              : step === "AFTER_PHOTOS"
+                ? ("AFTER_PHOTO" as const)
+                : null;
+          const photos = photoKind ? photosFor(photoKind) : [];
+          return (
+            <li
+              key={step}
+              data-testid={`checklist-step-${step}`}
+              className={doneEvent ? "done" : isCurrent ? "current" : "upcoming"}
+              style={{ opacity: doneEvent || isCurrent ? 1 : 0.55 }}
+            >
+              <span>
+                {doneEvent ? "✓ " : isCurrent ? "→ " : "• "}
+                {label}
+                {doneEvent && (
+                  <span className="muted">
+                    {" "}· {new Date(doneEvent.occurred_at).toLocaleTimeString()}
+                    {step === "CLIENT_CHECKIN" &&
+                    typeof doneEvent.payload.client_name === "string"
+                      ? ` · confirmed by ${doneEvent.payload.client_name}`
+                      : ""}
+                  </span>
+                )}
+              </span>
+              {isCurrent && photoKind && (
+                <div>
+                  {photos.length > 0 && (
+                    <ul>
+                      {photos.map(photo => (
+                        <li key={photo.id}>
+                          <button className="linklike" onClick={() => void openAsset(photo)}>
+                            {photo.filename}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <label>
+                    Add photo
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      disabled={busy}
+                      onChange={e => {
+                        void handlePhotoFiles(photoKind, e.target.files);
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
+                  <button
+                    className="primary"
+                    disabled={busy || photos.length === 0}
+                    onClick={() => void recordStep(step)}
+                  >
+                    {busy ? "Working…" : action}
+                  </button>
+                  {photos.length === 0 && (
+                    <p className="muted">Upload at least one photo to complete this step.</p>
+                  )}
+                </div>
+              )}
+              {isCurrent && step === "CLIENT_CHECKIN" && (
+                <div>
+                  <label>
+                    Client who confirmed the work
+                    <input
+                      type="text"
+                      value={clientName}
+                      onChange={e => setClientName(e.target.value)}
+                      placeholder="Client's name"
+                    />
+                  </label>
+                  <label>
+                    Note (optional)
+                    <input
+                      type="text"
+                      value={checkinNote}
+                      onChange={e => setCheckinNote(e.target.value)}
+                    />
+                  </label>
+                  <button
+                    className="primary"
+                    disabled={busy || clientName.trim() === ""}
+                    onClick={() =>
+                      void recordStep(step, {
+                        client_name: clientName.trim(),
+                        ...(checkinNote.trim() ? { note: checkinNote.trim() } : {})
+                      })
+                    }
+                  >
+                    {busy ? "Working…" : action}
+                  </button>
+                </div>
+              )}
+              {isCurrent && !photoKind && step !== "CLIENT_CHECKIN" && (
+                <button
+                  className="primary"
+                  disabled={busy}
+                  onClick={() => void recordStep(step)}
+                >
+                  {busy ? "Working…" : action}
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ol>
     </section>
   );
 }
@@ -3732,6 +4095,98 @@ export function AssignmentPanel({
 /** Staff fulfillment card: walks the job from invoiced to service-complete,
  *  one action at a time. Every step lands on the customer's tracking page.
  *  Also owns the final Close case and the customer tracking link. */
+/**
+ * Staff watch the tech's execution here (Slice B): checklist progress +
+ * the case's files (before/after photos, intake photos). Read-only —
+ * the steps are the assigned tech's taps; staff act through the
+ * fulfillment actions above, never by tapping for the tech.
+ */
+export function JobProgressPanel({ caseId }: { caseId: string }) {
+  const [view, setView] = useState<CaseJobView | null>(null);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      setView(await getCaseJob(caseId));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load job progress.");
+    }
+  }, [caseId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (error) {
+    return (
+      <p className="error" role="alert">{error}</p>
+    );
+  }
+  if (!view || !view.job) return null;
+  if (view.steps.length === 0 && view.assets.length === 0) return null;
+
+  const doneCount = view.steps.length;
+  const currentLabel = view.current_step
+    ? (JOB_STEPS.find(s => s.step === view.current_step)?.label ?? view.current_step)
+    : null;
+
+  async function openAsset(asset: CaseAsset) {
+    try {
+      const { url } = await getAssetDownloadUrl(asset.id);
+      window.open(resolveAssetUrl(url), "_blank", "noopener");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not open that file.");
+    }
+  }
+
+  return (
+    <div data-testid="job-progress">
+      <h3>Technician progress</h3>
+      <p className="muted">
+        {view.job.status === "COMPLETED"
+          ? "Job finished by the technician."
+          : `${doneCount} of ${JOB_STEPS.length} steps done${currentLabel ? ` · next: ${currentLabel}` : ""}`}
+      </p>
+      {view.steps.length > 0 && (
+        <ol style={{ margin: "8px 0", paddingLeft: 20 }}>
+          {view.steps.map(s => (
+            <li key={s.id}>
+              ✓ {JOB_STEPS.find(j => j.step === s.step)?.label ?? s.step}{" "}
+              <span className="muted">
+                {new Date(s.occurred_at).toLocaleString()}
+                {s.step === "CLIENT_CHECKIN" &&
+                typeof s.payload.client_name === "string"
+                  ? ` · confirmed by ${s.payload.client_name}`
+                  : ""}
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
+      {view.assets.length > 0 && (
+        <>
+          <h4>Files</h4>
+          <ul>
+            {view.assets.map(asset => (
+              <li key={asset.id}>
+                {humanize(asset.kind)} · {asset.filename}{" "}
+                <span className="muted">({asset.visibility.replaceAll("_", " ").toLowerCase()})</span>{" "}
+                {asset.has_bytes && asset.status === "READY" ? (
+                  <button className="linklike" onClick={() => void openAsset(asset)}>
+                    Download
+                  </button>
+                ) : (
+                  <span className="muted">metadata only</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
 function FulfillmentCard({
   item,
   onRefresh
@@ -3861,6 +4316,7 @@ function FulfillmentCard({
         ["PARTS_ORDERED", "INSTALLATION_SCHEDULED", "TECH_DISPATCHED"].includes(
           item.current_state
         ) && <AssignmentPanel item={item} onRefresh={onRefresh} />}
+      {item.job && <JobProgressPanel caseId={item.id} />}
       <small>Each step updates the customer's tracking page immediately.</small>
     </section>
   );

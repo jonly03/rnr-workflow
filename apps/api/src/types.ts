@@ -298,7 +298,7 @@ export interface OperatorInvite {
  *  OFFERED is the later bid/pickup marketplace — designed-for, not built. */
 export type AssignmentMode = "DIRECT" | "OFFERED";
 
-export type JobStatus = "UNASSIGNED" | "ASSIGNED";
+export type JobStatus = "UNASSIGNED" | "ASSIGNED" | "IN_PROGRESS" | "COMPLETED";
 
 /**
  * The assignment record for a case's fulfillment work (1 job per case in
@@ -320,6 +320,68 @@ export interface Job {
   updated_at: string;
 }
 
+/**
+ * One recorded step of a job's checklist (Slice B, brief §3.3). Step
+ * events are append-only and live on the JOB, never on the case: the
+ * case state stays coarse (start/finish map onto the lifecycle), while
+ * the granular sequence is the tech's working record. `step` is one of
+ * JOB_STEP_SEQUENCE (job-execution.ts).
+ */
+export interface JobStepEvent {
+  id: string;
+  job_id: string;
+  case_id: string;
+  step: string;
+  actor_type: string;
+  actor_id: string | null;
+  payload: Record<string, unknown>;
+  occurred_at: string;
+}
+
+/** What a case asset holds (brief §7.3 registry). */
+export type AssetKind =
+  | "INTAKE_PHOTO"
+  | "BEFORE_PHOTO"
+  | "AFTER_PHOTO"
+  | "INVOICE_PDF"
+  | "SIGNED_QUOTE"
+  | "OTHER";
+
+/**
+ * Who may read an asset (brief §7.3). CLIENT_VISIBLE = the client (own
+ * case) + staff; TECH_VISIBLE = staff + the assigned tech only;
+ * INTERNAL = staff only, never leaves the shop's staff surface.
+ */
+export type AssetVisibility = "CLIENT_VISIBLE" | "TECH_VISIBLE" | "INTERNAL";
+
+/** PENDING = upload authorized, bytes not yet confirmed; READY = stored. */
+export type AssetStatus = "PENDING" | "READY";
+
+/**
+ * One file on a case (brief §7.3). Bytes live in object storage (or the
+ * local dev driver); this row is the metadata + access record. The
+ * storage key is server-side only and never serialized to clients.
+ * Assets registered from intake photo metadata carry
+ * storage_driver "metadata" and hold no bytes (their upload predates
+ * the storage layer).
+ */
+export interface CaseAsset {
+  id: string;
+  case_id: string;
+  job_id: string | null;
+  kind: AssetKind;
+  visibility: AssetVisibility;
+  storage_driver: string;
+  storage_key: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  status: AssetStatus;
+  uploaded_by_type: string;
+  uploaded_by_id: string | null;
+  created_at: string;
+}
+
 export interface StoreShape {
   cases: CaseRecord[];
   vehicles: Vehicle[];
@@ -330,6 +392,8 @@ export interface StoreShape {
   tech_profiles: TechProfile[];
   operator_invites: OperatorInvite[];
   jobs: Job[];
+  job_step_events: JobStepEvent[];
+  case_assets: CaseAsset[];
   approval_tokens: ApprovalTokenRecord[];
   glass_identifications: GlassIdentification[];
   vin_lookups: VinLookupRecord[];

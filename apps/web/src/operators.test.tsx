@@ -215,7 +215,8 @@ describe("Schedule board", () => {
 });
 
 describe("Tech surfaces", () => {
-  it("TechHome says the job view arrives with the first assignment", () => {
+  it("TechHome shows the empty state when the tech has no jobs", async () => {
+    mockFetch(url => (url.includes("/tech/jobs") ? { jobs: [] } : {}));
     render(
       <TechHome
         staff={{ id: "tech-1", email: "tech.a@gmail.com", name: "Tech A", role: "tech" }}
@@ -226,7 +227,7 @@ describe("Tech surfaces", () => {
         }}
       />
     );
-    expect(screen.getByTestId("tech-home")).toHaveTextContent(/No jobs yet/);
+    expect(await screen.findByText(/No jobs yet/)).toBeInTheDocument();
     expect(screen.getByText(/verified work/i)).toBeInTheDocument();
   });
 
