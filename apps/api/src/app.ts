@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import multer from "multer";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { signatureMethodOf, type CaseRecord, type Channel, type StaffUser } from "./types.js";
 import type { CaseStore, TechProfilePatch } from "./store.js";
@@ -115,6 +116,28 @@ import {
   resolveInvoiceDispute
 } from "./payments.js";
 import { renderInvoicePdf } from "./invoice-pdf.js";
+import {
+  createAssetStorage,
+  isByteServing,
+  type AssetStorage
+} from "./asset-storage.js";
+import {
+  AssetError,
+  ASSET_MAX_BYTES,
+  assetView,
+  confirmAssetUpload,
+  issueDownloadUrl,
+  listReadableAssets,
+  loadReadableAsset,
+  registerAssetUpload
+} from "./assets.js";
+import {
+  advanceJobStep,
+  JobExecutionError,
+  listTechJobs,
+  nextStep as nextJobStep,
+  techJobView
+} from "./job-execution.js";
 import { createRateLimiter } from "./rate-limit.js";
 import {
   createAddressProvider,
@@ -336,6 +359,12 @@ export interface AppDeps {
    * Injectable so tests never call the live geocoder.
    */
   addressProvider?: AddressProvider;
+  /**
+   * Asset byte storage override (tests inject the in-memory driver).
+   * Defaults to env config: ASSETS_STORAGE=s3 with bucket + IAM keys
+   * uses S3; anything else uses the local dev driver (Slice B §7.2).
+   */
+  assetStorage?: AssetStorage;
 }
 
 export function createApp(
@@ -362,6 +391,13 @@ export function createApp(
   const calendarProvider =
     deps.calendarProvider ??
     (googleConfig ? new GoogleCalendarProvider(googleConfig) : new NoopCalendarProvider());
+  // Asset storage (Slice B §7.2): complete but inert-ish when S3 is not
+  // configured — the local driver serves dev/test; production sets
+  // ASSETS_STORAGE=s3 + bucket/IAM env. The auth secret signs the local
+  // driver's capability URLs and is never stored or serialized.
+  const assetStorage =
+    deps.assetStorage ??
+    createAssetStorage(process.env, { signingSecret: authConfig.authSecret });
   const app = express();
 
   // Do not fingerprint the framework: Express sets X-Powered-By by default.
@@ -533,7 +569,10 @@ export function createApp(
       mygrant_configured: Boolean(process.env.MYGRANT_USERNAME && process.env.MYGRANT_PASSWORD),
       // Boolean only: Google Sign-In is configured (Slice A). The web app
       // shows the Google button only when this is true.
-      google_signin: googleProvider !== null
+      google_signin: googleProvider !== null,
+      // Which asset byte driver is active (Slice B): "s3" in production,
+      // "local" in dev, "mock" in tests. A name, never a credential.
+      assets_storage: assetStorage.name
     });
   };
   app.get("/health", healthHandler);
@@ -1009,6 +1048,261 @@ export function createApp(
     );
     return res.json({ date: board.date, entries });
   });
+
+  // ---------------------------------------------------------------------
+  // Tech job execution + case assets (Slice B, brief §3.3/§7.2/§7.3).
+  //
+  // Access law, enforced server-side:
+  //  - the tech surface (/tech/*) is tech-role only, and every handler
+  //    scopes to jobs assigned to the caller — another tech's job is a
+  //    404, never a 403, so assignments cannot be probed;
+  //  - checklist steps advance only through advanceJobStep (order,
+  //    photo gates, assigned-tech-only);
+  //  - asset bytes move only behind the visibility law in assets.ts:
+  //    upload targets and download URLs are issued AFTER the access
+  //    check, and the local driver's content route is capability-signed.
+  // ---------------------------------------------------------------------
+
+  const jobError = (res: express.Response, error: unknown): boolean => {
+    if (
+      error instanceof JobExecutionError ||
+      error instanceof AssetError ||
+      error instanceof LifecycleError
+    ) {
+      res.status(error.httpStatus).json({
+        error: { code: error.code, message: error.message }
+      });
+      return true;
+    }
+    return false;
+  };
+
+  const techJobDetail = async (job: Job, staff: StaffUser) => {
+    const view = await techJobView(store, job);
+    const assets = (await listReadableAssets(store, staff, job.case_id)).filter(
+      a => a.job_id === job.id || a.job_id === null
+    );
+    return { ...view, assets: assets.map(assetView) };
+  };
+
+  /** A job the caller tech owns, or null (→ 404: existence is not leaked). */
+  const myJob = async (req: express.Request) => {
+    const job = await store.getJob(String(req.params.jobId));
+    if (!job || job.assigned_tech_id !== req.staff?.id) return null;
+    return job;
+  };
+
+  const jobNotFound = (res: express.Response) =>
+    res.status(404).json({
+      error: { code: "JOB_NOT_FOUND", message: "Job not found." }
+    });
+
+  app.get("/api/v1/tech/jobs", auth, requireRole("tech"), async (req, res) => {
+    const jobs = await listTechJobs(store, req.staff!.id);
+    const views = await Promise.all(jobs.map(j => techJobDetail(j, req.staff!)));
+    return res.json({ jobs: views });
+  });
+
+  app.get("/api/v1/tech/jobs/:jobId", auth, requireRole("tech"), async (req, res) => {
+    const job = await myJob(req);
+    if (!job) return jobNotFound(res);
+    return res.json({ job: await techJobDetail(job, req.staff!) });
+  });
+
+  const jobStepSchema = z.object({
+    step: z.string().min(1),
+    client_name: z.string().trim().max(120).optional(),
+    note: z.string().trim().max(500).optional()
+  });
+
+  app.post("/api/v1/tech/jobs/:jobId/steps", auth, requireRole("tech"), async (req, res) => {
+    const job = await myJob(req);
+    if (!job) return jobNotFound(res);
+    const parsed = jobStepSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(422).json({
+        error: { code: "VALIDATION_ERROR", message: "A checklist step is required." }
+      });
+    }
+    try {
+      await advanceJobStep(store, {
+        jobId: job.id,
+        step: parsed.data.step,
+        actor: { type: "TECH", id: req.staff!.id },
+        payload: {
+          client_name: parsed.data.client_name,
+          note: parsed.data.note
+        }
+      });
+      const fresh = (await store.getJob(job.id)) ?? job;
+      return res.json({ job: await techJobDetail(fresh, req.staff!) });
+    } catch (error) {
+      if (jobError(res, error)) return;
+      throw error;
+    }
+  });
+
+  const jobAssetUploadSchema = z.object({
+    kind: z.enum(["BEFORE_PHOTO", "AFTER_PHOTO"]),
+    filename: z.string().trim().min(1).max(200),
+    content_type: z.string().trim().min(1).max(120),
+    size_bytes: z.number().int().positive()
+  });
+
+  app.post(
+    "/api/v1/tech/jobs/:jobId/assets/upload-url",
+    auth,
+    requireRole("tech"),
+    async (req, res) => {
+      const job = await myJob(req);
+      if (!job) return jobNotFound(res);
+      if (job.status !== "ASSIGNED" && job.status !== "IN_PROGRESS") {
+        return res.status(409).json({
+          error: {
+            code: "INVALID_STATE",
+            message: "Photos can only be added while the job is active."
+          }
+        });
+      }
+      const parsed = jobAssetUploadSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(422).json({
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "kind (BEFORE_PHOTO or AFTER_PHOTO), filename, content_type and size_bytes are required."
+          }
+        });
+      }
+      try {
+        const { asset, upload } = await registerAssetUpload(store, assetStorage, {
+          caseId: job.case_id,
+          jobId: job.id,
+          kind: parsed.data.kind,
+          filename: parsed.data.filename,
+          contentType: parsed.data.content_type,
+          sizeBytes: parsed.data.size_bytes,
+          uploadedBy: { type: "TECH", id: req.staff!.id }
+        });
+        return res.status(201).json({ asset: assetView(asset), upload });
+      } catch (error) {
+        if (jobError(res, error)) return;
+        throw error;
+      }
+    }
+  );
+
+  /**
+   * Confirms an upload's bytes landed in storage; the asset flips to
+   * READY and starts counting for the checklist photo gates. Allowed
+   * for the uploader themselves or staff who may read the asset.
+   */
+  app.post("/api/v1/assets/:assetId/confirm", auth, async (req, res) => {
+    const asset = await store.getCaseAsset(String(req.params.assetId));
+    if (!asset) {
+      return res.status(404).json({
+        error: { code: "ASSET_NOT_FOUND", message: "Asset not found." }
+      });
+    }
+    const isUploader =
+      asset.uploaded_by_id !== null && asset.uploaded_by_id === req.staff?.id;
+    if (!isUploader) {
+      try {
+        await loadReadableAsset(store, req.staff!, asset.id);
+      } catch (error) {
+        if (jobError(res, error)) return;
+        throw error;
+      }
+    }
+    try {
+      const confirmed = await confirmAssetUpload(store, assetStorage, asset);
+      return res.json({ asset: assetView(confirmed) });
+    } catch (error) {
+      if (jobError(res, error)) return;
+      throw error;
+    }
+  });
+
+  /**
+   * Mints a short-lived download URL — only after the visibility law
+   * has cleared this requester for this asset (assets.ts).
+   */
+  app.get("/api/v1/assets/:assetId/download-url", auth, async (req, res) => {
+    try {
+      const { asset, url } = await issueDownloadUrl(
+        store,
+        assetStorage,
+        req.staff!,
+        String(req.params.assetId)
+      );
+      return res.json({ asset, url });
+    } catch (error) {
+      if (jobError(res, error)) return;
+      throw error;
+    }
+  });
+
+  /**
+   * Byte endpoint for the local/mock storage drivers. The capability
+   * signature in the query string IS the credential (issued only after
+   * an access check, minutes-lived) — the same trust shape as an S3
+   * presigned URL, which is what production uses instead. S3-driver
+   * assets never touch this route.
+   */
+  const assetContent = (method: "PUT" | "GET") =>
+    async (req: express.Request, res: express.Response) => {
+      if (!isByteServing(assetStorage)) {
+        return res.status(404).json({
+          error: { code: "ASSET_NOT_FOUND", message: "Asset not found." }
+        });
+      }
+      const asset = await store.getCaseAsset(String(req.params.assetId));
+      if (!asset) {
+        return res.status(404).json({
+          error: { code: "ASSET_NOT_FOUND", message: "Asset not found." }
+        });
+      }
+      const ok = assetStorage.verifyCapability({
+        method,
+        assetId: asset.id,
+        exp: String(req.query.exp ?? ""),
+        sig: String(req.query.sig ?? "")
+      });
+      if (!ok) {
+        return res.status(403).json({
+          error: {
+            code: "ASSET_FORBIDDEN",
+            message: "This link is invalid or has expired. Ask for a fresh one."
+          }
+        });
+      }
+      if (method === "PUT") {
+        const bytes = req.body as Buffer;
+        if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
+          return res.status(422).json({
+            error: { code: "VALIDATION_ERROR", message: "No file bytes were received." }
+          });
+        }
+        await assetStorage.putBytes(asset.storage_key, bytes);
+        return res.json({ ok: true, size_bytes: bytes.length });
+      }
+      const bytes = await assetStorage.getBytes(asset.storage_key);
+      if (!bytes) {
+        return res.status(404).json({
+          error: { code: "ASSET_NOT_FOUND", message: "Asset not found." }
+        });
+      }
+      res.setHeader("Content-Type", asset.content_type);
+      res.setHeader("Content-Length", String(bytes.length));
+      res.setHeader("Content-Disposition", `inline; filename="${asset.filename.replace(/"/g, "")}"`);
+      return res.send(bytes);
+    };
+
+  app.put(
+    "/api/v1/assets/:assetId/content",
+    express.raw({ limit: ASSET_MAX_BYTES, type: "*/*" }),
+    assetContent("PUT")
+  );
+  app.get("/api/v1/assets/:assetId/content", assetContent("GET"));
 
   /**
    * VIN decode via NHTSA vPIC (free, no key). Staff-only.
@@ -1660,6 +1954,38 @@ export function createApp(
         }
       });
 
+      // Slice B (§7.3): the intake photos join the case's asset registry
+      // as metadata records. Their bytes were never persisted (the
+      // intake flow above keeps metadata only), so these rows carry the
+      // "metadata" driver and no bytes — the registry shows staff what
+      // the client sent; job photos uploaded later hold real bytes.
+      // Registry bookkeeping must never lose a customer's request: a
+      // failure here is logged, not thrown.
+      try {
+        const submittedFiles = [
+          ...(files.photos ?? []),
+          ...(files.vin_photo ?? [])
+        ];
+        for (const [index, file] of submittedFiles.entries()) {
+          await store.createCaseAsset({
+            id: randomUUID(),
+            caseId: created.id,
+            jobId: null,
+            kind: "INTAKE_PHOTO",
+            visibility: "CLIENT_VISIBLE",
+            storageDriver: "metadata",
+            storageKey: "",
+            filename: file.originalname || `intake-photo-${index + 1}`,
+            contentType: file.mimetype,
+            sizeBytes: file.size,
+            status: "READY",
+            uploadedBy: customerActor
+          });
+        }
+      } catch (err) {
+        console.error(`intake asset registration failed for case ${created.id}:`, err);
+      }
+
       // The customer's window into this case: a view-only status token
       // (7 days). Minted BEFORE the chain runs so the confirmation page
       // can follow progress even when the chain pauses for staff.
@@ -2017,6 +2343,37 @@ export function createApp(
   app.post("/api/v1/cases/:caseId/assignment/reassign", (req, res) =>
     runAssignment(req, res, "reassign")
   );
+
+  /**
+   * Staff view of a case's job execution (Slice B): the assignment, the
+   * tech's checklist progress, and the case's asset registry. Read-only
+   * for staff in v1 — steps are the assigned tech's taps. (The /cases
+   * mount above already refuses tech tokens, so this stays staff-side.)
+   */
+  app.get("/api/v1/cases/:caseId/job", async (req, res) => {
+    const c = await store.getCase(req.params.caseId);
+    if (!c || !canAccessChannel(req.staff, c.channel)) {
+      return channelNotFound(res);
+    }
+    const job = await store.getJobByCase(c.id);
+    const steps = job ? await store.listJobStepEvents(job.id) : [];
+    const assets = await store.listCaseAssets(c.id);
+    return res.json({
+      job: await jobView(job),
+      steps,
+      current_step: job && job.status !== "COMPLETED" ? nextJobStep(steps) : null,
+      assets: assets.map(assetView)
+    });
+  });
+
+  app.get("/api/v1/cases/:caseId/assets", async (req, res) => {
+    const c = await store.getCase(req.params.caseId);
+    if (!c || !canAccessChannel(req.staff, c.channel)) {
+      return channelNotFound(res);
+    }
+    const assets = await listReadableAssets(store, req.staff!, c.id);
+    return res.json({ assets: assets.map(assetView) });
+  });
 
   app.post("/api/v1/cases", async (req, res) => {
     const parsed = createCaseSchema.safeParse(req.body);

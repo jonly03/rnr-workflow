@@ -3,7 +3,11 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
   ApprovalTokenRecord,
+  AssetKind,
+  AssetStatus,
+  AssetVisibility,
   AvailabilityWindow,
+  CaseAsset,
   CaseEvent,
   CaseEventNotification,
   CaseRecord,
@@ -21,6 +25,7 @@ import type {
   InvoiceEventKind,
   InvoicePaymentStatus,
   Job,
+  JobStepEvent,
   OperatorInvite,
   PriceCalculation,
   PriceStatus,
@@ -212,6 +217,33 @@ export interface CreateJobInput {
   caseId: string;
 }
 
+export interface AppendJobStepEventInput {
+  jobId: string;
+  caseId: string;
+  step: string;
+  actor: { type: string; id: string | null };
+  payload?: Record<string, unknown>;
+}
+
+export interface CreateCaseAssetInput {
+  /** Minted by the caller: the storage key embeds the asset id, and the
+   *  key must be final before any bytes land. */
+  id: string;
+  caseId: string;
+  jobId: string | null;
+  kind: AssetKind;
+  visibility: AssetVisibility;
+  storageDriver: string;
+  storageKey: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  status: AssetStatus;
+  uploadedBy: { type: string; id: string | null };
+}
+
+export type CaseAssetPatch = Partial<Pick<CaseAsset, "status" | "size_bytes">>;
+
 export type JobPatch = Partial<
   Pick<
     Job,
@@ -373,6 +405,16 @@ export interface CaseStore {
   appendInvoiceEvent(input: AppendInvoiceEventInput): Promise<InvoiceEvent>;
   /** An invoice's payment thread, oldest first. */
   listInvoiceEvents(invoiceId: string): Promise<InvoiceEvent[]>;
+  /** Appends one checklist step event to a job (Slice B, append-only). */
+  appendJobStepEvent(input: AppendJobStepEventInput): Promise<JobStepEvent>;
+  /** All step events for a job, oldest first. */
+  listJobStepEvents(jobId: string): Promise<JobStepEvent[]>;
+  /** Registers one file in the case's asset registry (Slice B, §7.3). */
+  createCaseAsset(input: CreateCaseAssetInput): Promise<CaseAsset>;
+  getCaseAsset(id: string): Promise<CaseAsset | null>;
+  /** All assets on a case, oldest first. */
+  listCaseAssets(caseId: string): Promise<CaseAsset[]>;
+  updateCaseAsset(id: string, patch: CaseAssetPatch): Promise<CaseAsset>;
 }
 
 const emptyStore = (): StoreShape => ({
@@ -385,6 +427,8 @@ const emptyStore = (): StoreShape => ({
   tech_profiles: [],
   operator_invites: [],
   jobs: [],
+  job_step_events: [],
+  case_assets: [],
   approval_tokens: [],
   glass_identifications: [],
   vin_lookups: [],
@@ -1105,6 +1149,70 @@ export class JsonCaseStore implements CaseStore {
     return record;
   }
 
+  async appendJobStepEvent(input: AppendJobStepEventInput): Promise<JobStepEvent> {
+    const record: JobStepEvent = {
+      id: randomUUID(),
+      job_id: input.jobId,
+      case_id: input.caseId,
+      step: input.step,
+      actor_type: input.actor.type,
+      actor_id: input.actor.id,
+      payload: input.payload ?? {},
+      occurred_at: new Date().toISOString()
+    };
+    const next = structuredClone(this.data);
+    next.job_step_events.push(record);
+    this.persist(next);
+    return record;
+  }
+
+  async listJobStepEvents(jobId: string): Promise<JobStepEvent[]> {
+    return this.data.job_step_events
+      .filter(e => e.job_id === jobId)
+      .sort((a, b) => a.occurred_at.localeCompare(b.occurred_at));
+  }
+
+  async createCaseAsset(input: CreateCaseAssetInput): Promise<CaseAsset> {
+    const record: CaseAsset = {
+      id: input.id,
+      case_id: input.caseId,
+      job_id: input.jobId,
+      kind: input.kind,
+      visibility: input.visibility,
+      storage_driver: input.storageDriver,
+      storage_key: input.storageKey,
+      filename: input.filename,
+      content_type: input.contentType,
+      size_bytes: input.sizeBytes,
+      status: input.status,
+      uploaded_by_type: input.uploadedBy.type,
+      uploaded_by_id: input.uploadedBy.id,
+      created_at: new Date().toISOString()
+    };
+    const next = structuredClone(this.data);
+    next.case_assets.push(record);
+    this.persist(next);
+    return record;
+  }
+
+  async getCaseAsset(id: string): Promise<CaseAsset | null> {
+    return this.data.case_assets.find(a => a.id === id) ?? null;
+  }
+
+  async listCaseAssets(caseId: string): Promise<CaseAsset[]> {
+    return this.data.case_assets
+      .filter(a => a.case_id === caseId)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+
+  async updateCaseAsset(id: string, patch: CaseAssetPatch): Promise<CaseAsset> {
+    const next = structuredClone(this.data);
+    const record = next.case_assets.find(a => a.id === id);
+    if (!record) throw new Error("Asset not found.");
+    Object.assign(record, patch);
+    this.persist(next);
+    return record;
+  }
   async listInvoiceEvents(invoiceId: string): Promise<InvoiceEvent[]> {
     return this.data.invoice_events
       .filter(e => e.invoice_id === invoiceId)

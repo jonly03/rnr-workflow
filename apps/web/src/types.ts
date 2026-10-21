@@ -130,7 +130,7 @@ export interface CaseRecord {
 export interface JobAssignment {
   id: string;
   case_id: string;
-  status: "UNASSIGNED" | "ASSIGNED";
+  status: "UNASSIGNED" | "ASSIGNED" | "IN_PROGRESS" | "COMPLETED";
   assignment_mode: "DIRECT" | "OFFERED";
   assigned_tech_id: string | null;
   scheduled_start: string | null;
@@ -139,6 +139,96 @@ export interface JobAssignment {
   tech_name: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** Checklist steps a tech works through on a job (Slice B). The API
+ *  enforces this exact order server-side. */
+export const JOB_STEPS = [
+  { step: "PICKUP", label: "Go pick up the order", action: "Start pickup" },
+  { step: "PICKED_UP", label: "Order picked up", action: "Mark picked up" },
+  { step: "EN_ROUTE", label: "Head to the client", action: "Start driving" },
+  { step: "ARRIVED", label: "Arrived at the client", action: "Mark arrived" },
+  { step: "CHECKED_IN", label: "Check in with the client", action: "Check in" },
+  { step: "BEFORE_PHOTOS", label: "Before photos", action: "Photos uploaded" },
+  { step: "PREP_STARTED", label: "Prep", action: "Start prep" },
+  { step: "PREP_DONE", label: "Prep done", action: "Prep done" },
+  { step: "INSTALL_STARTED", label: "Install (remove, clean, install)", action: "Start install" },
+  { step: "INSTALL_DONE", label: "Install done", action: "Install done" },
+  { step: "AFTER_PHOTOS", label: "After photos", action: "Photos uploaded" },
+  { step: "CLIENT_CHECKIN", label: "Client check-in", action: "Record check-in" },
+  { step: "FINISHED", label: "Finished", action: "Finish job" }
+] as const;
+
+export type JobStep = (typeof JOB_STEPS)[number]["step"];
+
+export interface JobStepEvent {
+  id: string;
+  job_id: string;
+  case_id: string;
+  step: string;
+  actor_type: string;
+  actor_id: string | null;
+  payload: Record<string, unknown>;
+  occurred_at: string;
+}
+
+export type AssetKind =
+  | "INTAKE_PHOTO"
+  | "BEFORE_PHOTO"
+  | "AFTER_PHOTO"
+  | "INVOICE_PDF"
+  | "SIGNED_QUOTE"
+  | "OTHER";
+
+export type AssetVisibility = "CLIENT_VISIBLE" | "TECH_VISIBLE" | "INTERNAL";
+
+/** A file on a case (Slice B asset registry) as the API projects it —
+ *  the storage key never leaves the server. */
+export interface CaseAsset {
+  id: string;
+  case_id: string;
+  job_id: string | null;
+  kind: AssetKind;
+  visibility: AssetVisibility;
+  storage_driver: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  status: "PENDING" | "READY";
+  uploaded_by_type: string;
+  uploaded_by_id: string | null;
+  created_at: string;
+  has_bytes: boolean;
+}
+
+/** The tech's view of one assigned job (Slice B): job + checklist +
+ *  the operational facts of the case. No economics, ever. */
+export interface TechJob {
+  job: Omit<JobAssignment, "tech_name">;
+  current_step: JobStep | null;
+  steps: JobStepEvent[];
+  case: {
+    id: string;
+    reference: string;
+    channel: string;
+    current_state: string;
+    glass_type: string | null;
+    vehicle: { year: number; make: string; model: string } | null;
+  };
+  client: {
+    name: string | null;
+    phone: string | null;
+    service_address: string | null;
+  } | null;
+  assets: CaseAsset[];
+}
+
+/** Staff view of a case's job execution (Slice B). */
+export interface CaseJobView {
+  job: (JobAssignment & { tech_name: string | null }) | null;
+  steps: JobStepEvent[];
+  current_step: JobStep | null;
+  assets: CaseAsset[];
 }
 
 export type OperatorStatus = "INVITED" | "PROFILE_PENDING" | "ACTIVE" | "DEACTIVATED";

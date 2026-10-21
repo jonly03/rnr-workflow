@@ -3,6 +3,7 @@ import type pg from "pg";
 import type {
   ApprovalTokenRecord,
   AvailabilityWindow,
+  CaseAsset,
   CaseEvent,
   CaseEventNotification,
   CaseRecord,
@@ -13,6 +14,7 @@ import type {
   InvoiceActuals,
   InvoiceEvent,
   Job,
+  JobStepEvent,
   OperatorInvite,
   PriceCalculation,
   Quote,
@@ -27,8 +29,11 @@ import type {
 } from "./types.js";
 import type {
   AppendEventInput,
+  AppendJobStepEventInput,
+  CaseAssetPatch,
   CaseStore,
   CreateApprovalTokenInput,
+  CreateCaseAssetInput,
   CreateCaseStoreInput,
   CreateJobInput,
   CreateOperatorInviteInput,
@@ -278,6 +283,38 @@ function jobRow(row: any): Job {
     calendar_event_id: row.calendar_event_id ?? null,
     created_at: iso(row.created_at),
     updated_at: iso(row.updated_at)
+  };
+}
+
+function jobStepEventRow(row: any): JobStepEvent {
+  return {
+    id: row.id,
+    job_id: row.job_id,
+    case_id: row.case_id,
+    step: row.step,
+    actor_type: row.actor_type,
+    actor_id: row.actor_id ?? null,
+    payload: parseJson<Record<string, unknown>>(row.payload, {}),
+    occurred_at: iso(row.occurred_at)
+  };
+}
+
+function caseAssetRow(row: any): CaseAsset {
+  return {
+    id: row.id,
+    case_id: row.case_id,
+    job_id: row.job_id ?? null,
+    kind: row.kind,
+    visibility: row.visibility,
+    storage_driver: row.storage_driver,
+    storage_key: row.storage_key,
+    filename: row.filename,
+    content_type: row.content_type,
+    size_bytes: Number(row.size_bytes),
+    status: row.status === "READY" ? "READY" : "PENDING",
+    uploaded_by_type: row.uploaded_by_type,
+    uploaded_by_id: row.uploaded_by_id ?? null,
+    created_at: iso(row.created_at)
   };
 }
 
@@ -1248,5 +1285,97 @@ export class PgCaseStore implements CaseStore {
       [invoiceId]
     );
     return result.rows.map(invoiceEventRow);
+  }
+
+  async appendJobStepEvent(input: AppendJobStepEventInput): Promise<JobStepEvent> {
+    const id = randomUUID();
+    const result = await this.pool.query(
+      `insert into job_step_events(id, job_id, case_id, step, actor_type, actor_id, payload)
+       values ($1,$2,$3,$4,$5,$6,$7::jsonb) returning *`,
+      [
+        id,
+        input.jobId,
+        input.caseId,
+        input.step,
+        input.actor.type,
+        input.actor.id,
+        JSON.stringify(input.payload ?? {})
+      ]
+    );
+    return jobStepEventRow(result.rows[0]);
+  }
+
+  async listJobStepEvents(jobId: string): Promise<JobStepEvent[]> {
+    const result = await this.pool.query(
+      "select * from job_step_events where job_id = $1 order by occurred_at asc, id asc",
+      [jobId]
+    );
+    return result.rows.map(jobStepEventRow);
+  }
+
+  async createCaseAsset(input: CreateCaseAssetInput): Promise<CaseAsset> {
+    const id = input.id;
+    const result = await this.pool.query(
+      `insert into case_assets(id, case_id, job_id, kind, visibility,
+        storage_driver, storage_key, filename, content_type, size_bytes,
+        status, uploaded_by_type, uploaded_by_id)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) returning *`,
+      [
+        id,
+        input.caseId,
+        input.jobId,
+        input.kind,
+        input.visibility,
+        input.storageDriver,
+        input.storageKey,
+        input.filename,
+        input.contentType,
+        input.sizeBytes,
+        input.status,
+        input.uploadedBy.type,
+        input.uploadedBy.id
+      ]
+    );
+    return caseAssetRow(result.rows[0]);
+  }
+
+  async getCaseAsset(id: string): Promise<CaseAsset | null> {
+    const result = await this.pool.query("select * from case_assets where id = $1", [id]);
+    return result.rowCount ? caseAssetRow(result.rows[0]) : null;
+  }
+
+  async listCaseAssets(caseId: string): Promise<CaseAsset[]> {
+    const result = await this.pool.query(
+      "select * from case_assets where case_id = $1 order by created_at asc, id asc",
+      [caseId]
+    );
+    return result.rows.map(caseAssetRow);
+  }
+
+  async updateCaseAsset(id: string, patch: CaseAssetPatch): Promise<CaseAsset> {
+    const columns: Record<string, string> = {
+      status: "status",
+      size_bytes: "size_bytes"
+    };
+    const sets: string[] = [];
+    const values: unknown[] = [];
+    for (const [key, value] of Object.entries(patch)) {
+      const column = columns[key];
+      if (!column || value === undefined) continue;
+      values.push(value);
+      sets.push(`${column} = $${values.length}`);
+    }
+    if (!sets.length) {
+      const existing = await this.getCaseAsset(id);
+      if (!existing) throw new Error("Asset not found.");
+      return existing;
+    }
+    values.push(id);
+    const result = await this.pool.query(
+      `update case_assets set ${sets.join(", ")} where id = $${values.length} returning *`,
+      values
+    );
+    if (!result.rowCount) throw new Error("Asset not found.");
+    return caseAssetRow(result.rows[0]);
   }
 }
