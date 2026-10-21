@@ -8,6 +8,7 @@ import {
   deactivateOperator,
   declinePublicQuote,
   decodeVin,
+  downloadInvoicePdf,
   getAssignment,
   getCase,
   getCaseEvents,
@@ -23,12 +24,14 @@ import {
   googleStartUrl,
   inviteOperator,
   listCases,
+  listInvoices,
   listOperators,
   login,
   logout,
   ocrVinPhoto,
   performAction,
   proposeAssignment,
+  publicInvoicePdfUrl,
   reactivateOperator,
   revokeInvite,
   setToken,
@@ -36,11 +39,15 @@ import {
   startIdentification,
   submitPublicIntake,
   subscribeStaffEvents,
+  suggestAddresses,
+  ApiError,
   UnauthorizedError,
   updateMyProfile,
   updateOperatorProfile,
   verifyOperator,
+  type AddressSuggestion,
   type DecodedVehicle,
+  type InvoiceBoardItem,
   type MyOperator,
   type PublicIntakeStatus,
   type PublicQuoteView,
@@ -55,13 +62,15 @@ import type {
   Channel,
   GlassCandidate,
   GlassType,
+  Invoice,
+  InvoicePaymentStatus,
   Operator,
   OperatorInviteView,
   ScheduleBoardEntry,
   SchedulerProposal
 } from "./types";
 
-type Screen = "queue" | "new" | "detail" | "quote" | "operators" | "schedule";
+type Screen = "queue" | "new" | "detail" | "quote" | "operators" | "schedule" | "invoices";
 
 const humanize = (value: string) =>
   value.toLowerCase().replaceAll("_", " ").replace(/(^|\s)\S/g, c => c.toUpperCase());
@@ -604,6 +613,25 @@ export function App() {
     );
   }
 
+  if (screen === "invoices") {
+    return (
+      <Shell
+        staff={staff}
+        onSignOut={signOut}
+        crumbs={[
+          { label: "Case queue", onClick: () => setScreen("queue") },
+          { label: "Invoices" }
+        ]}
+      >
+        <InvoiceBoard
+          onOpenCase={id => {
+            void openCase(id);
+          }}
+        />
+      </Shell>
+    );
+  }
+
   if (screen === "quote" && selected) {
     return (
       <Shell
@@ -649,6 +677,7 @@ export function App() {
         <div className="queue-layout">
           <aside className="queue-sidebar" aria-label="Case filters">
             <button type="button" className="primary sidebar-new" onClick={() => { setNewCaseOrigin({ screen: "queue" }); setScreen("new"); }}>+ New Case</button>
+            <button type="button" className="secondary sidebar-new" onClick={() => setScreen("invoices")}>Invoice board</button>
             <div className="sidebar-nav">
               <button type="button" className="secondary" onClick={() => setScreen("schedule")}>Schedule board</button>
               <button type="button" className="secondary" onClick={() => setScreen("operators")}>Operators</button>
@@ -829,6 +858,9 @@ export function App() {
                                 ? ` · ${c.client_intake.customer_phone}`
                                 : ""}
                               {c.client_intake.note ? ` — “${c.client_intake.note}”` : ""}
+                              {c.client_intake.service_address
+                                ? ` · Service at: ${c.client_intake.service_address.formatted}`
+                                : ""}
                             </p>
                           )}
                           <PricingSummary item={c} />
@@ -2342,6 +2374,9 @@ function CaseDetail({
               {item.client_intake.vin_ocr_suggestion
                 ? ` · VIN photo reads: ${item.client_intake.vin_ocr_suggestion} (suggestion only)`
                 : ""}
+              {item.client_intake.service_address
+                ? ` · Service at: ${item.client_intake.service_address.formatted}`
+                : ""}
             </p>
           )}
         </div>
@@ -2779,6 +2814,29 @@ export function describeEvent(e: CaseEvent): string {
       const total = eventText(p, "sell_price_cents");
       return `Invoice${v ? ` v${v}` : ""} generated${qv ? ` from signed quote v${qv}` : ""}${total ? ` — total $${(Number(total) / 100).toFixed(2)}` : ""}.`;
     }
+    case "INVOICE_SENT": {
+      const via = eventText(p, "sent_via");
+      return via ? `Invoice sent to the client (${via}).` : "Invoice sent to the client.";
+    }
+    case "INVOICE_PAID": {
+      const by = eventText(p, "paid_by");
+      const method = eventText(p, "method");
+      return `Invoice paid${by ? ` by ${by}` : ""}${method ? ` (${method})` : ""}.`;
+    }
+    case "INVOICE_DISPUTED": {
+      const code = eventText(p, "reason_code");
+      return `Client disputed the invoice${code ? ` (${code})` : ""}.`;
+    }
+    case "INVOICE_DISPUTE_UPDATED":
+      return "Dispute updated.";
+    case "INVOICE_DISPUTE_RESOLVED": {
+      const outcome = eventText(p, "outcome");
+      return outcome === "RESOLVED_ADJUSTED"
+        ? "Dispute resolved — invoice adjusted and re-issued."
+        : "Dispute resolved.";
+    }
+    case "INVOICE_WRITTEN_OFF":
+      return "Invoice written off by an admin — the case may close, flagged.";
     case "PARTS_ORDERED":
       return "Parts ordered for this job.";
     case "INSTALLATION_SCHEDULED": {
@@ -2810,6 +2868,8 @@ export function describeEvent(e: CaseEvent): string {
     case "SERVICE_COMPLETED":
       return "Service completed.";
     case "CASE_CLOSED":
+      if (p.invoice_written_off === true) return "Case closed — invoice written off.";
+      if (p.auto === true) return "Case closed automatically — the invoice was paid.";
       return "Case closed.";
     default:
       return `${humanize(e.event_type)}.`;
@@ -3366,6 +3426,7 @@ function QuoteCard({
             <dt>Validity</dt>
             <dd>{signed ? "Signed — no expiry" : quoteSlaLabel(quote.expires_at)}</dd>
           </dl>
+          {signed && <SignatureRender signature={quote.signature!} />}
           {error && <p className="error">{error}</p>}
           {!closed && (
             <div className="row">
@@ -3402,6 +3463,34 @@ function QuoteCard({
   );
 }
 
+/** Staff-facing label for an invoice's payment state (Slice D). */
+export function invoicePaymentLabel(
+  inv: Pick<Invoice, "payment_status" | "dispute_resolution" | "aging_days">
+): string {
+  switch (inv.payment_status) {
+    case "UNSENT":
+      return "Unsent";
+    case "SENT":
+      return inv.aging_days != null
+        ? `Sent — awaiting payment (${inv.aging_days}d)`
+        : "Sent — awaiting payment";
+    case "DISPUTED":
+      if (inv.dispute_resolution === "RESOLVED_WRITTEN_OFF") return "Disputed — written off";
+      if (inv.dispute_resolution === "RESOLVED_ADJUSTED") return "Disputed — adjusted";
+      return "Disputed";
+    case "PAID":
+      return "Paid";
+  }
+}
+
+const INVOICE_EVENT_LABELS: Record<string, string> = {
+  SENT: "Sent to client",
+  DISPUTE_OPENED: "Dispute opened",
+  DISPUTE_UPDATE: "Dispute update",
+  DISPUTE_RESOLVED: "Dispute resolved",
+  PAID: "Payment recorded"
+};
+
 /** Staff invoice card: generate from the signed quote, then close the case.
  *  The invoice records which quote version authorized it. */
 function InvoiceCard({
@@ -3417,6 +3506,21 @@ function InvoiceCard({
   const [error, setError] = useState<string | null>(null);
   const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
+  // Payment lifecycle forms (Slice D). One open at a time.
+  const [form, setForm] = useState<
+    null | "sent" | "paid" | "dispute" | "update" | "resolve"
+  >(null);
+  const [sentVia, setSentVia] = useState("text");
+  const [sentTo, setSentTo] = useState("");
+  const [payMethod, setPayMethod] = useState("card");
+  const [payRef, setPayRef] = useState("");
+  const [paidBy, setPaidBy] = useState("");
+  const [disputeCode, setDisputeCode] = useState("AMOUNT");
+  const [disputeReason, setDisputeReason] = useState("");
+  const [updateNote, setUpdateNote] = useState("");
+  const [resolveOutcome, setResolveOutcome] = useState("PAID");
+  const [resolveNote, setResolveNote] = useState("");
+
   const signedQuote = quote?.status === "APPROVED" && quote.signature != null;
   const relevantStates = [
     "QUOTE_APPROVED", "INVOICED", "PARTS_ORDERED", "INSTALLATION_SCHEDULED",
@@ -3424,14 +3528,27 @@ function InvoiceCard({
   ];
   if (!invoice && !relevantStates.includes(item.current_state)) return null;
 
-  async function run(action: string) {
+  async function run(action: string, extra: Record<string, unknown> = {}) {
     setBusy(true);
     setError(null);
     try {
-      await performAction(item.id, action);
+      await performAction(item.id, action, extra);
+      setForm(null);
       await onRefresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Action failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function downloadPdf() {
+    setBusy(true);
+    setError(null);
+    try {
+      await downloadInvoicePdf(item.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Download failed.");
     } finally {
       setBusy(false);
     }
@@ -3471,20 +3588,458 @@ function InvoiceCard({
             <dd><strong>{fmt(invoice.actuals.sell_price_cents)}</strong></dd>
             <dt>Status</dt>
             <dd>{closed ? "Case closed" : "Issued"}</dd>
+            <dt>Payment</dt>
+            <dd><strong>{invoicePaymentLabel(invoice)}</strong></dd>
+            {invoice.sent_at && (
+              <>
+                <dt>Sent</dt>
+                <dd>
+                  {new Date(invoice.sent_at).toLocaleString()}
+                  {invoice.sent_via ? ` via ${invoice.sent_via}` : ""}
+                  {invoice.sent_to ? ` to ${invoice.sent_to}` : ""}
+                </dd>
+              </>
+            )}
+            {invoice.paid_at && (
+              <>
+                <dt>Paid</dt>
+                <dd>
+                  {new Date(invoice.paid_at).toLocaleString()}
+                  {invoice.paid_method ? ` (${invoice.paid_method}` : ""}
+                  {invoice.paid_ref ? ` ${invoice.paid_ref}` : ""}
+                  {invoice.paid_method ? ")" : ""}
+                  {invoice.paid_by ? ` by ${invoice.paid_by}` : ""}
+                </dd>
+              </>
+            )}
+            {invoice.payment_status === "DISPUTED" && invoice.dispute_reason && (
+              <>
+                <dt>Dispute</dt>
+                <dd>{invoice.dispute_reason}</dd>
+              </>
+            )}
           </dl>
+
+          {item.awaiting_payment && (
+            <p className="alert">
+              Service is complete — this case is <strong>awaiting payment</strong> and
+              closes automatically when the invoice is paid.
+            </p>
+          )}
+          {invoice.dispute_resolution === "RESOLVED_WRITTEN_OFF" && !closed && (
+            <p className="muted">
+              This invoice was written off by an admin — the case can be closed from
+              the Fulfillment card (it will be flagged as written off).
+            </p>
+          )}
+          {invoice.dispute_resolution === "RESOLVED_ADJUSTED" &&
+            invoice.payment_status === "DISPUTED" && (
+              <p className="muted">
+                This dispute was resolved by adjusting the amount — re-invoice to issue
+                the corrected version; the new version governs payment and closing.
+              </p>
+            )}
+
+          {(item.invoice_events ?? []).length > 0 && (
+            <ul style={{ margin: "8px 0", paddingLeft: 18 }}>
+              {(item.invoice_events ?? []).map(e => (
+                <li key={e.id}>
+                  <strong>{INVOICE_EVENT_LABELS[e.kind] ?? e.kind}</strong>
+                  {e.note ? ` — ${e.note}` : ""}{" "}
+                  <span className="muted">{new Date(e.created_at).toLocaleString()}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+
           {error && <p className="error">{error}</p>}
-          {!closed && item.current_state === "INVOICED" && (
-            <div className="row">
+
+          <div className="row">
+            <button className="secondary" disabled={busy} onClick={() => void downloadPdf()}>
+              Download invoice (PDF)
+            </button>
+            {!closed && invoice.payment_status === "UNSENT" && (
+              <>
+                <button className="secondary" disabled={busy} onClick={() => setForm(form === "sent" ? null : "sent")}>
+                  Mark sent
+                </button>
+                <button className="secondary" disabled={busy} onClick={() => setForm(form === "paid" ? null : "paid")}>
+                  Mark paid
+                </button>
+                <button className="secondary" disabled={busy} onClick={() => setForm(form === "dispute" ? null : "dispute")}>
+                  Dispute
+                </button>
+              </>
+            )}
+            {!closed && invoice.payment_status === "SENT" && (
+              <>
+                <button className="secondary" disabled={busy} onClick={() => setForm(form === "paid" ? null : "paid")}>
+                  Mark paid
+                </button>
+                <button className="secondary" disabled={busy} onClick={() => setForm(form === "dispute" ? null : "dispute")}>
+                  Dispute
+                </button>
+              </>
+            )}
+            {!closed && invoice.payment_status === "DISPUTED" && !invoice.dispute_resolution && (
+              <>
+                <button className="secondary" disabled={busy} onClick={() => setForm(form === "update" ? null : "update")}>
+                  Add dispute update
+                </button>
+                <button className="secondary" disabled={busy} onClick={() => setForm(form === "resolve" ? null : "resolve")}>
+                  Resolve dispute
+                </button>
+                <button className="secondary" disabled={busy} onClick={() => setForm(form === "sent" ? null : "sent")}>
+                  Re-send invoice
+                </button>
+              </>
+            )}
+            {!closed && item.current_state === "INVOICED" && (
               <button className="secondary" disabled={busy} onClick={() => run("generate_invoice")}>
                 {busy ? "Working…" : "Re-invoice"}
               </button>
+            )}
+          </div>
+
+          {form === "sent" && (
+            <div style={{ marginTop: 10 }}>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Sent via
+                <select value={sentVia} onChange={e => setSentVia(e.target.value)} style={{ display: "block", marginTop: 4 }}>
+                  <option value="text">Text</option>
+                  <option value="email">Email</option>
+                  <option value="in_person">In person</option>
+                  <option value="mail">Mail</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Sent to
+                <input
+                  type="text"
+                  value={sentTo}
+                  onChange={e => setSentTo(e.target.value)}
+                  placeholder="Phone, email, or name"
+                  style={{ display: "block", marginTop: 4 }}
+                />
+              </label>
+              <button
+                className="primary"
+                disabled={busy}
+                onClick={() => run("mark_invoice_sent", { sent_via: sentVia, sent_to: sentTo })}
+              >
+                {busy ? "Working…" : "Record sent"}
+              </button>
             </div>
           )}
-          {!closed && (
-            <small>Closing happens in the Fulfillment card once the service is completed.</small>
+
+          {form === "paid" && (
+            <div style={{ marginTop: 10 }}>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Method
+                <select value={payMethod} onChange={e => setPayMethod(e.target.value)} style={{ display: "block", marginTop: 4 }}>
+                  <option value="card">Card</option>
+                  <option value="cash">Cash</option>
+                  <option value="check">Check</option>
+                  <option value="ach">ACH / transfer</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Reference (optional)
+                <input
+                  type="text"
+                  value={payRef}
+                  onChange={e => setPayRef(e.target.value)}
+                  placeholder="Check #, transaction id, claim #…"
+                  style={{ display: "block", marginTop: 4 }}
+                />
+              </label>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Paid by (optional)
+                <input
+                  type="text"
+                  value={paidBy}
+                  onChange={e => setPaidBy(e.target.value)}
+                  placeholder="Client name, insurer, auction house…"
+                  style={{ display: "block", marginTop: 4 }}
+                />
+              </label>
+              <button
+                className="primary"
+                disabled={busy}
+                onClick={() =>
+                  run("mark_invoice_paid", { method: payMethod, ref: payRef, paid_by: paidBy })
+                }
+              >
+                {busy ? "Working…" : "Record payment"}
+              </button>
+            </div>
           )}
-          <small>Supplier costs and margins are staff-only; never shown to customers.</small>
+
+          {form === "dispute" && (
+            <div style={{ marginTop: 10 }}>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Reason category
+                <select value={disputeCode} onChange={e => setDisputeCode(e.target.value)} style={{ display: "block", marginTop: 4 }}>
+                  <option value="AMOUNT">Amount</option>
+                  <option value="QUALITY">Quality of work</option>
+                  <option value="SCHEDULING">Scheduling</option>
+                  <option value="OTHER">Other</option>
+                </select>
+              </label>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Reason (required)
+                <input
+                  type="text"
+                  value={disputeReason}
+                  onChange={e => setDisputeReason(e.target.value)}
+                  placeholder="What is the client disputing?"
+                  style={{ display: "block", marginTop: 4 }}
+                />
+              </label>
+              <button
+                className="primary"
+                disabled={busy || !disputeReason.trim()}
+                onClick={() =>
+                  run("dispute_invoice", { reason_code: disputeCode, reason: disputeReason })
+                }
+              >
+                {busy ? "Working…" : "Open dispute"}
+              </button>
+            </div>
+          )}
+
+          {form === "update" && (
+            <div style={{ marginTop: 10 }}>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Update (appended to the dispute thread)
+                <input
+                  type="text"
+                  value={updateNote}
+                  onChange={e => setUpdateNote(e.target.value)}
+                  placeholder="e.g. Called the client; reviewing photos"
+                  style={{ display: "block", marginTop: 4 }}
+                />
+              </label>
+              <button
+                className="primary"
+                disabled={busy || !updateNote.trim()}
+                onClick={() => run("invoice_dispute_update", { note: updateNote })}
+              >
+                {busy ? "Working…" : "Add update"}
+              </button>
+            </div>
+          )}
+
+          {form === "resolve" && (
+            <div style={{ marginTop: 10 }}>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Outcome
+                <select value={resolveOutcome} onChange={e => setResolveOutcome(e.target.value)} style={{ display: "block", marginTop: 4 }}>
+                  <option value="PAID">Paid — client paid</option>
+                  <option value="ADJUSTED">Adjusted — re-issue a corrected invoice</option>
+                  <option value="WRITTEN_OFF">Written off — admin only</option>
+                </select>
+              </label>
+              {resolveOutcome === "PAID" && (
+                <>
+                  <label style={{ display: "block", marginBottom: 8 }}>
+                    Method
+                    <select value={payMethod} onChange={e => setPayMethod(e.target.value)} style={{ display: "block", marginTop: 4 }}>
+                      <option value="card">Card</option>
+                      <option value="cash">Cash</option>
+                      <option value="check">Check</option>
+                      <option value="ach">ACH / transfer</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </label>
+                  <label style={{ display: "block", marginBottom: 8 }}>
+                    Reference (optional)
+                    <input
+                      type="text"
+                      value={payRef}
+                      onChange={e => setPayRef(e.target.value)}
+                      placeholder="Check #, transaction id, claim #…"
+                      style={{ display: "block", marginTop: 4 }}
+                    />
+                  </label>
+                </>
+              )}
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Note (optional)
+                <input
+                  type="text"
+                  value={resolveNote}
+                  onChange={e => setResolveNote(e.target.value)}
+                  placeholder="How was this resolved?"
+                  style={{ display: "block", marginTop: 4 }}
+                />
+              </label>
+              <button
+                className="primary"
+                disabled={busy}
+                onClick={() =>
+                  run("resolve_invoice_dispute", {
+                    outcome: resolveOutcome,
+                    method: payMethod,
+                    ref: payRef,
+                    paid_by: paidBy,
+                    note: resolveNote
+                  })
+                }
+              >
+                {busy ? "Working…" : "Resolve dispute"}
+              </button>
+            </div>
+          )}
+
+          {!closed && (
+            <small>Closing happens in the Fulfillment card once the service is completed — and, since Slice D, once the invoice is paid.</small>
+          )}
+          <small>Supplier costs and margins are staff-only; never shown to customers. The customer PDF shows client totals only.</small>
         </>
+      )}
+    </section>
+  );
+}
+
+export const INVOICE_BOARD_GROUPS: {
+  status: InvoicePaymentStatus;
+  label: string;
+}[] = [
+  { status: "UNSENT", label: "Unsent — ready to send" },
+  { status: "SENT", label: "Awaiting payment" },
+  { status: "DISPUTED", label: "Disputed" },
+  { status: "PAID", label: "Paid" }
+];
+
+/** Groups board rows by payment state, in collections order. The API
+ *  already sorts within each group (oldest outstanding first). */
+export function groupInvoiceBoard(items: InvoiceBoardItem[]) {
+  return INVOICE_BOARD_GROUPS.map(g => ({
+    ...g,
+    items: items.filter(i => i.payment_status === g.status)
+  })).filter(g => g.items.length > 0);
+}
+
+/**
+ * Staff collections board (Slice D): every case's latest invoice,
+ * grouped by payment state with aging on what is outstanding. Click a
+ * row to open the case. Techs never see this — it is a staff surface
+ * behind the staff session, like the queue.
+ */
+export function InvoiceBoard({
+  onOpenCase
+}: {
+  onOpenCase: (caseId: string) => void;
+}) {
+  const [items, setItems] = useState<InvoiceBoardItem[]>([]);
+  const [loadingBoard, setLoadingBoard] = useState(true);
+  const [boardError, setBoardError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<"ALL" | InvoicePaymentStatus>("ALL");
+
+  const load = useCallback(async () => {
+    setLoadingBoard(true);
+    try {
+      setItems(await listInvoices());
+      setBoardError(null);
+    } catch (e) {
+      setBoardError(e instanceof Error ? e.message : "Could not load invoices.");
+    } finally {
+      setLoadingBoard(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const visible = filter === "ALL" ? items : items.filter(i => i.payment_status === filter);
+  const groups = groupInvoiceBoard(visible);
+  const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+
+  return (
+    <section data-testid="invoice-board">
+      <section className="page-head">
+        <div>
+          <p className="eyebrow">R&R Operations</p>
+          <h1>Invoices</h1>
+          <p className="muted">
+            Collections board — who owes what, for how long. A case closes when its
+            invoice is paid.
+          </p>
+        </div>
+      </section>
+
+      <div className="pills" style={{ marginBottom: 14 }}>
+        {(["ALL", "UNSENT", "SENT", "DISPUTED", "PAID"] as const).map(s => (
+          <button
+            key={s}
+            type="button"
+            className={`pill${filter === s ? " active" : ""}`}
+            onClick={() => setFilter(s)}
+          >
+            {s === "ALL"
+              ? "All"
+              : s === "SENT"
+                ? "Awaiting payment"
+                : s.charAt(0) + s.slice(1).toLowerCase()}
+          </button>
+        ))}
+        <button type="button" className="pill" onClick={() => void load()}>
+          Refresh
+        </button>
+      </div>
+
+      {boardError && <div className="alert">{boardError}</div>}
+      {loadingBoard ? (
+        <div className="card">Loading invoices…</div>
+      ) : groups.length === 0 ? (
+        <div className="card">No invoices in this state yet.</div>
+      ) : (
+        groups.map(group => (
+          <section className="card" key={group.status} style={{ marginBottom: 18 }}>
+            <h2>
+              {group.label} ({group.items.length})
+            </h2>
+            <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+              {group.items.map(item => (
+                <li key={item.id} style={{ borderTop: "1px solid #e2e8f0", padding: "8px 0" }}>
+                  <button
+                    type="button"
+                    data-testid={`board-row-${item.case_reference}`}
+                    onClick={() => onOpenCase(item.case_id)}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      padding: 0,
+                      cursor: "pointer",
+                      textAlign: "left",
+                      font: "inherit"
+                    }}
+                  >
+                    <strong>{item.case_reference}</strong>{" "}
+                    <span className="muted">
+                      {item.vehicle
+                        ? `${item.vehicle.year} ${item.vehicle.make} ${item.vehicle.model}`
+                        : ""}
+                      {item.bill_to ? ` · ${item.bill_to}` : ""}
+                    </span>
+                  </button>
+                  <div className="muted">
+                    {fmt(item.actuals.sell_price_cents)} · {invoicePaymentLabel(item)}
+                    {item.payment_status === "DISPUTED" && item.dispute_reason
+                      ? ` — ${item.dispute_reason}`
+                      : ""}
+                    {item.awaiting_payment ? " · service complete, awaiting payment" : ""}
+                    {` · case ${humanize(item.case_state)}`}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))
       )}
     </section>
   );
@@ -3856,6 +4411,12 @@ function FulfillmentCard({
           </button>
         </div>
       )}
+      {item.awaiting_payment && (
+        <p className="muted">
+          Service is complete — this case is <strong>awaiting payment</strong>. It closes
+          automatically when the invoice is paid (see the Invoice card).
+        </p>
+      )}
       {trackingUrl && <CustomerLinkBox url={trackingUrl} />}
       {!closed &&
         ["PARTS_ORDERED", "INSTALLATION_SCHEDULED", "TECH_DISPATCHED"].includes(
@@ -3866,108 +4427,104 @@ function FulfillmentCard({
   );
 }
 
-/** Finger/stylus signature pad. Pointer Events cover touch, mouse, and pen;
- *  `touch-action: none` keeps the page from scrolling mid-stroke on phones. */
-function SignaturePad({ onChange }: { onChange: (dataUrl: string | null) => void }) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const drawing = useRef(false);
+/** A typed signature is valid only as a full name: first AND last name.
+ *  Mirrors the API rule — one word is not a signature. */
+export function isValidSignatureName(name: string): boolean {
+  return name.trim().split(/\s+/).filter(Boolean).length >= 2;
+}
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    canvas.width = Math.max(1, Math.round(rect.width * dpr));
-    canvas.height = Math.max(1, Math.round(rect.height * dpr));
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.scale(dpr, dpr);
-    ctx.lineWidth = 2.5;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.strokeStyle = "#111827";
-  }, []);
-
-  const point = (e: React.PointerEvent) => {
-    const rect = canvasRef.current!.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
-  };
-
-  const emit = () => {
-    const canvas = canvasRef.current;
-    onChange(canvas ? canvas.toDataURL("image/png") : null);
-  };
-
+/** The Signature field: the client types their first and last name — the
+ *  typed name IS the digital signature (no drawing pad). A live preview
+ *  shows the name rendered as it will appear once signed, and an inline
+ *  error explains the first + last name rule until the value satisfies it. */
+export function SignatureField({
+  value,
+  onChange
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const [touched, setTouched] = useState(false);
+  const valid = isValidSignatureName(value);
+  const showError = touched && value.trim().length > 0 && !valid;
   return (
     <div>
-      <canvas
-        ref={canvasRef}
-        data-testid="signature-pad"
-        aria-label="Signature pad — sign with your finger or stylus"
-        style={{
-          width: "100%",
-          height: 180,
-          border: "2px dashed #9ca3af",
-          borderRadius: 8,
-          background: "#ffffff",
-          touchAction: "none",
-          cursor: "crosshair"
-        }}
-        onPointerDown={e => {
-          const canvas = canvasRef.current;
-          const ctx = canvas?.getContext("2d");
-          if (!canvas || !ctx) return;
-          drawing.current = true;
-          canvas.setPointerCapture(e.pointerId);
-          const p = point(e);
-          ctx.beginPath();
-          ctx.moveTo(p.x, p.y);
-          // A dot for tap-only "signatures" so they still record ink.
-          ctx.lineTo(p.x + 0.5, p.y + 0.5);
-          ctx.stroke();
-          e.preventDefault();
-        }}
-        onPointerMove={e => {
-          if (!drawing.current) return;
-          const ctx = canvasRef.current?.getContext("2d");
-          if (!ctx) return;
-          const p = point(e);
-          ctx.lineTo(p.x, p.y);
-          ctx.stroke();
-          e.preventDefault();
-        }}
-        onPointerUp={e => {
-          if (!drawing.current) return;
-          drawing.current = false;
-          try { canvasRef.current?.releasePointerCapture(e.pointerId); } catch { /* noop */ }
-          emit();
-        }}
-        onPointerCancel={() => { drawing.current = false; }}
-      />
-      <button
-        type="button"
-        className="secondary"
-        style={{ marginTop: 8 }}
-        onClick={() => {
-          const canvas = canvasRef.current;
-          const ctx = canvas?.getContext("2d");
-          if (canvas && ctx) {
-            const rect = canvas.getBoundingClientRect();
-            ctx.clearRect(0, 0, rect.width, rect.height);
-          }
-          onChange(null);
-        }}
-      >
-        Clear
-      </button>
+      <label>
+        Signature
+        <input
+          type="text"
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          onBlur={() => setTouched(true)}
+          placeholder="First and last name"
+          autoComplete="name"
+          style={{ display: "block", width: "100%", marginTop: 4 }}
+        />
+      </label>
+      <p className="muted" style={{ marginTop: 6 }}>
+        Enter your first and last name in the signature field.
+      </p>
+      <div className="signature-preview" data-testid="signature-preview">
+        {value.trim() ? (
+          <span className="signature-render">{value.trim()}</span>
+        ) : (
+          <span className="signature-preview-placeholder">Your signature will appear here</span>
+        )}
+      </div>
+      {showError && (
+        <p className="error" role="alert">
+          Please enter your first and last name — both are needed to sign.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** How a stored signature is displayed. A typed signature is the client's
+ *  full name rendered in a signature style; a legacy drawn signature is
+ *  its image (staff surfaces carry the data URL; public projections never
+ *  do, so a drawn signature without an image falls back to the plain
+ *  name). Either way it is accompanied by the signed timestamp and an
+ *  electronically-signed caption. */
+export function SignatureRender({
+  signature
+}: {
+  signature: {
+    name: string;
+    signed_at: string;
+    method?: "typed" | "drawn";
+    signature_data_url?: string;
+  };
+}) {
+  const method = signature.method ?? (signature.signature_data_url ? "drawn" : "typed");
+  return (
+    <div className="signature-block" data-testid="signature-block">
+      {method === "typed" ? (
+        <span className="signature-render" data-testid="signature-render">
+          {signature.name}
+        </span>
+      ) : signature.signature_data_url ? (
+        <img
+          className="signature-image"
+          data-testid="signature-image"
+          src={signature.signature_data_url}
+          alt={`Signature of ${signature.name}`}
+        />
+      ) : (
+        <strong>{signature.name}</strong>
+      )}
+      <small className="signature-caption">
+        Electronically signed by {signature.name} on{" "}
+        {new Date(signature.signed_at).toLocaleString()}
+      </small>
     </div>
   );
 }
 
 /** Client-facing quote: totals only (never supplier cost/margins), channel-
- *  adapted labels, a signature pad, and a typed name. Signing = approval.
- *  After signing it becomes a read-only receipt. Opened by staff on a
- *  phone/tablet and handed to the customer. */
+ *  adapted labels, and a typed signature (first + last name). Signing =
+ *  approval. After signing it becomes a read-only receipt. Opened by staff
+ *  on a phone/tablet and handed to the customer. */
 function ClientQuoteView({
   item,
   onRefresh,
@@ -3979,7 +4536,6 @@ function ClientQuoteView({
 }) {
   const quote = item.quote;
   const [name, setName] = useState("");
-  const [sigUrl, setSigUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
@@ -3990,14 +4546,13 @@ function ClientQuoteView({
     !!quote && (quote.status === "EXPIRED" || new Date(quote.expires_at).getTime() <= Date.now());
 
   async function sign() {
-    if (!quote || !sigUrl) return;
+    if (!quote || !isValidSignatureName(name)) return;
     setBusy(true);
     setError(null);
     try {
       await performAction(item.id, "sign_quote", {
         name: name.trim(),
-        signature_data_url: sigUrl,
-        attribution: "client signature captured in-app"
+        attribution: "client typed signature in-app"
       });
       await onRefresh();
     } catch (e) {
@@ -4053,10 +4608,7 @@ function ClientQuoteView({
 
       {signed ? (
         <>
-          <p className="muted">
-            ✓ Signed by <strong>{quote.signature!.name}</strong> on{" "}
-            {new Date(quote.signature!.signed_at).toLocaleString()}.
-          </p>
+          <SignatureRender signature={quote.signature!} />
           <p className="muted">Thank you — please hand the device back to our staff.</p>
           <button className="secondary" onClick={onBack}>← Back to case</button>
         </>
@@ -4070,24 +4622,12 @@ function ClientQuoteView({
         </>
       ) : (
         <>
-          <label>
-            Printed name
-            <input
-              type="text"
-              value={name}
-              onChange={e => setName(e.target.value)}
-              placeholder="Type your full name"
-              autoComplete="name"
-              style={{ display: "block", width: "100%", marginTop: 4 }}
-            />
-          </label>
-          <p className="muted" style={{ marginTop: 12 }}>Sign below with your finger or stylus:</p>
-          <SignaturePad onChange={setSigUrl} />
+          <SignatureField value={name} onChange={setName} />
           {error && <p className="error">{error}</p>}
           <div className="row" style={{ marginTop: 12 }}>
             <button
               className="primary"
-              disabled={busy || !name.trim() || !sigUrl}
+              disabled={busy || !isValidSignatureName(name)}
               onClick={sign}
             >
               {busy ? "Signing…" : `Sign ${noun}`}
@@ -4140,7 +4680,6 @@ export function PublicQuotePage({ token }: { token: string }) {
   const [view, setView] = useState<PublicQuoteView | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [name, setName] = useState("");
-  const [sigUrl, setSigUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [trackingToken, setTrackingToken] = useState<string | null>(null);
@@ -4181,13 +4720,12 @@ export function PublicQuotePage({ token }: { token: string }) {
   const trackingUrl = trackingToken ? `${window.location.origin}/track/${trackingToken}` : null;
 
   async function sign() {
-    if (!sigUrl) return;
+    if (!isValidSignatureName(name)) return;
     setBusy(true);
     setError(null);
     try {
       const res = await signPublicQuote(token, {
-        name: name.trim(),
-        signature_data_url: sigUrl
+        name: name.trim()
       });
       setTrackingToken(res.tracking_token);
     } catch (e) {
@@ -4246,10 +4784,21 @@ export function PublicQuotePage({ token }: { token: string }) {
           </>
         ) : view.status === "APPROVED" ? (
           <>
-            <p>
-              ✓ Signed by <strong>{view.signed_by}</strong> on{" "}
-              {view.signed_at ? new Date(view.signed_at).toLocaleString() : ""}.
-            </p>
+            {view.signature_method === "typed" && view.signed_by && view.signed_at ? (
+              <SignatureRender
+                signature={{
+                  name: view.signed_by,
+                  signed_at: view.signed_at,
+                  method: "typed",
+                  signature_data_url: ""
+                }}
+              />
+            ) : (
+              <p>
+                ✓ Signed by <strong>{view.signed_by}</strong> on{" "}
+                {view.signed_at ? new Date(view.signed_at).toLocaleString() : ""}.
+              </p>
+            )}
             <p className="muted">Your job is underway — R&R will keep you posted.</p>
           </>
         ) : view.status === "EXPIRED" ? (
@@ -4265,24 +4814,12 @@ export function PublicQuotePage({ token }: { token: string }) {
               <strong>{validityLabel(view.expires_at, now)}</strong> — until{" "}
               {new Date(view.expires_at).toLocaleString()}.
             </p>
-            <label>
-              Printed name
-              <input
-                type="text"
-                value={name}
-                onChange={e => setName(e.target.value)}
-                placeholder="Type your full name"
-                autoComplete="name"
-                style={{ display: "block", width: "100%", marginTop: 4 }}
-              />
-            </label>
-            <p className="muted" style={{ marginTop: 12 }}>Sign below with your finger or stylus:</p>
-            <SignaturePad onChange={setSigUrl} />
+            <SignatureField value={name} onChange={setName} />
             {error && <p className="error">{error}</p>}
             <div className="row" style={{ marginTop: 12 }}>
               <button
                 className="primary"
-                disabled={busy || !name.trim() || !sigUrl}
+                disabled={busy || !isValidSignatureName(name)}
                 onClick={sign}
               >
                 {busy ? "Signing…" : `Sign & approve ${noun}`}
@@ -4395,9 +4932,23 @@ export function PublicTrackingPage({ token }: { token: string }) {
             )}
           </dl>
         )}
+        {view.invoice?.payment && (
+          <p>
+            <strong>{view.invoice.payment.label}</strong>
+            {" · "}
+            <a href={publicInvoicePdfUrl(token)} target="_blank" rel="noreferrer">
+              Download your invoice (PDF)
+            </a>
+          </p>
+        )}
         {view.signed_by && (
           <small>
-            Quote approved by {view.signed_by}
+            Quote approved by{" "}
+            {view.signature_method === "typed" ? (
+              <span className="signature-render signature-render-inline">{view.signed_by}</span>
+            ) : (
+              view.signed_by
+            )}
             {view.signed_at ? ` on ${new Date(view.signed_at).toLocaleString()}` : ""}.
             This page refreshes automatically.
           </small>
@@ -4414,6 +4965,30 @@ const INTAKE_GLASS_OPTIONS: { id: GlassType; label: string }[] = [
   { id: "QUARTER_GLASS", label: "Quarter glass" },
   { id: "VENT_GLASS", label: "Vent glass" }
 ];
+
+/**
+ * Damage-photo caps for the intake glass card (Nelly, 2026-10-21): at
+ * most one photo per glass on the car, images only, and the same 10 MB
+ * per-file ceiling the API enforces with multer. The client blocks
+ * overflow here; the API rejects it again server-side — the client rule
+ * is UX, the server rule is the real gate.
+ */
+export const INTAKE_MAX_DAMAGE_PHOTOS = 6;
+export const INTAKE_MAX_PHOTO_BYTES = 10 * 1024 * 1024;
+
+interface IntakePhoto {
+  file: File;
+  /** Object-URL preview, or null where previews are unavailable. */
+  url: string | null;
+}
+
+function makePhotoPreviewUrl(file: File): string | null {
+  try {
+    return URL.createObjectURL(file);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * ISO 3779 VIN check — mirrors apps/api/src/vin-validation.ts so card 1
@@ -4437,6 +5012,29 @@ function isValidVin(vin: string): boolean {
   }
   const remainder = sum % 11;
   return v[8] === (remainder === 10 ? "X" : String(remainder));
+}
+
+/**
+ * US phone pre-check — mirrors the API's normalizeUsPhone so the
+ * contact card can gate Send exactly the way the server will judge
+ * the number. The server stays the real gate; this is UX only.
+ */
+function normalizeUsPhoneClient(raw: string): string | null {
+  let digits = raw.replace(/\D/g, "");
+  if (digits.length === 11 && digits.startsWith("1")) digits = digits.slice(1);
+  if (digits.length !== 10) return null;
+  if (!/^[2-9]/.test(digits)) return null;
+  return digits;
+}
+
+/** Vehicle-year bounds for the YMM path — mirrored server-side. */
+export const INTAKE_MIN_VEHICLE_YEAR = 1950;
+
+function isValidIntakeYear(raw: string): boolean {
+  const t = raw.trim();
+  if (!/^\d{4}$/.test(t)) return false;
+  const y = Number(t);
+  return y >= INTAKE_MIN_VEHICLE_YEAR && y <= new Date().getFullYear() + 1;
 }
 
 const INTAKE_STATUS_POLL_MS = 4000;
@@ -4539,11 +5137,15 @@ function IntakeLiveStatus({ statusToken }: { statusToken: string }) {
  * first, contact last — and a single POST /public/intake from the final
  * card creates a DIRECT case flagged CLIENT_QR. The customer gets a case
  * reference plus one promise: we'll text a quote link to their mobile.
+ *
+ * Three cards (Nelly, 2026-10-21 — supersedes the original four): (1)
+ * vehicle, (2) glass + optional damage photos, (3) contact. The old
+ * "What happened?" card is gone entirely — its free-text field was
+ * removed by product decision, not moved.
  */
 export function PublicIntakePage() {
   const [step, setStep] = useState(1);
   const [glassType, setGlassType] = useState<GlassType | "">("");
-  const [note, setNote] = useState("");
   const [vin, setVin] = useState("");
   const [showYmm, setShowYmm] = useState(false);
   const [year, setYear] = useState("");
@@ -4551,8 +5153,14 @@ export function PublicIntakePage() {
   const [model, setModel] = useState("");
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
+  const [addressQuery, setAddressQuery] = useState("");
+  const [address, setAddress] = useState<AddressSuggestion | null>(null);
+  const [suggestions, setSuggestions] = useState<AddressSuggestion[]>([]);
+  const [addressError, setAddressError] = useState<string | null>(null);
   const [vinPhoto, setVinPhoto] = useState<File | null>(null);
-  const [photos, setPhotos] = useState<File[]>([]);
+  const [photos, setPhotos] = useState<IntakePhoto[]>([]);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const photosRef = useRef<IntakePhoto[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<{
@@ -4562,10 +5170,15 @@ export function PublicIntakePage() {
   } | null>(null);
 
   const vinValue = vin.trim().toUpperCase();
-  const ymmComplete = Boolean(year.trim() && make.trim() && model.trim());
+  const yearValid = isValidIntakeYear(year);
+  const ymmComplete = Boolean(yearValid && make.trim() && model.trim());
   // An entered VIN stands alone (YMM hides beside it); with no VIN, the
   // "I don't have the VIN" expander's complete YMM is the vehicle ID.
   const vehicleReady = vinValue ? isValidVin(vinValue) : showYmm && ymmComplete;
+  // Contact-card gates, mirroring the server's validation pass.
+  const nameValid = name.trim().length >= 2;
+  const phoneValid = normalizeUsPhoneClient(phone) !== null;
+  const contactReady = nameValid && phoneValid && address !== null;
   const glassLabel = INTAKE_GLASS_OPTIONS.find(o => o.id === glassType)?.label ?? "";
   const vehicleRecap = vinValue
     ? `VIN ····${vinValue.slice(-4)}`
@@ -4574,6 +5187,113 @@ export function PublicIntakePage() {
       : "";
   const recap = [vehicleRecap, glassLabel].filter(Boolean).join(" · ");
 
+  // Revoke preview object URLs when the page goes away (removePhoto
+  // revokes its own as it goes).
+  useEffect(() => {
+    photosRef.current = photos;
+  }, [photos]);
+  useEffect(
+    () => () => {
+      for (const p of photosRef.current) {
+        if (p.url) URL.revokeObjectURL(p.url);
+      }
+    },
+    []
+  );
+
+  /**
+   * Address autocomplete on the contact card: debounced suggestion
+   * lookups as the customer types. This is the ONLY network traffic
+   * allowed before Send, and only on this card — cards 1-2 fetch
+   * nothing. Typing after a pick un-picks the address: free text is
+   * never submittable, only a suggestion the customer chose.
+   */
+  useEffect(() => {
+    if (step !== 3) return;
+    if (address && addressQuery === address.formatted) {
+      setSuggestions([]);
+      return;
+    }
+    const q = addressQuery.trim();
+    if (q.length < 3) {
+      setSuggestions([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      suggestAddresses(q)
+        .then(r => {
+          if (!cancelled) setSuggestions(r.suggestions ?? []);
+        })
+        .catch(() => {
+          // A failed lookup just means no list — the customer can retry
+          // by typing; it must never break the form.
+          if (!cancelled) setSuggestions([]);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [addressQuery, address, step]);
+
+  function onAddressQueryChange(value: string) {
+    setAddressQuery(value);
+    setAddressError(null);
+    if (address && value !== address.formatted) {
+      setAddress(null);
+    }
+  }
+
+  function pickAddress(suggestion: AddressSuggestion) {
+    setAddress(suggestion);
+    setAddressQuery(suggestion.formatted);
+    setSuggestions([]);
+    setAddressError(null);
+  }
+
+  /**
+   * Adds damage photos on the glass card, enforcing the caps: images
+   * only, ≤10 MB each, at most INTAKE_MAX_DAMAGE_PHOTOS total. Anything
+   * refused is named in a plain-language message — never silently dropped.
+   */
+  function addPhotos(list: FileList | File[]) {
+    const problems: string[] = [];
+    const valid: File[] = [];
+    for (const f of Array.from(list)) {
+      if (!f.type.startsWith("image/")) {
+        problems.push(`“${f.name}” isn't an image.`);
+      } else if (f.size > INTAKE_MAX_PHOTO_BYTES) {
+        problems.push(`“${f.name}” is larger than 10 MB.`);
+      } else {
+        valid.push(f);
+      }
+    }
+    const room = Math.max(INTAKE_MAX_DAMAGE_PHOTOS - photos.length, 0);
+    const toAdd = valid.slice(0, room);
+    if (valid.length > toAdd.length) {
+      problems.push(
+        `Up to ${INTAKE_MAX_DAMAGE_PHOTOS} photos — ${valid.length - toAdd.length} extra weren't added.`
+      );
+    }
+    if (toAdd.length > 0) {
+      setPhotos(prev => [
+        ...prev,
+        ...toAdd.map(file => ({ file, url: makePhotoPreviewUrl(file) }))
+      ]);
+    }
+    setPhotoError(problems.length > 0 ? problems.join(" ") : null);
+  }
+
+  function removePhoto(index: number) {
+    setPhotos(prev => {
+      const target = prev[index];
+      if (target?.url) URL.revokeObjectURL(target.url);
+      return prev.filter((_, i) => i !== index);
+    });
+    setPhotoError(null);
+  }
+
   function goBack() {
     setError(null);
     setStep(s => Math.max(1, s - 1));
@@ -4581,17 +5301,16 @@ export function PublicIntakePage() {
 
   function goNext() {
     setError(null);
-    setStep(s => Math.min(4, s + 1));
+    setStep(s => Math.min(3, s + 1));
   }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
-    // Cards 1-3 never submit: Enter/advance just moves to the next card
-    // when that card's gate is met. The one API call fires from card 4.
-    if (step < 4) {
+    // Cards 1-2 never submit: Enter/advance just moves to the next card
+    // when that card's gate is met. The one API call fires from card 3.
+    if (step < 3) {
       if (step === 1 && vehicleReady) goNext();
       if (step === 2 && glassType) goNext();
-      if (step === 3) goNext();
       return;
     }
     setError(null);
@@ -4603,19 +5322,25 @@ export function PublicIntakePage() {
       setError("Add your VIN, or your vehicle's year, make and model.");
       return;
     }
-    if (!name.trim()) {
+    if (!nameValid) {
       setError("We need your name.");
       return;
     }
-    if (!phone.trim()) {
-      setError("We need a mobile number to text your quote to.");
+    if (!phoneValid) {
+      setError("Enter a valid 10-digit US mobile number so we can text your quote.");
+      return;
+    }
+    if (!address) {
+      setAddressError(
+        "Start typing your address and pick it from the list — we need a real address for the car."
+      );
       return;
     }
     const form = new FormData();
     form.append("customer_name", name.trim());
     form.append("customer_phone", phone.trim());
     form.append("glass_type", glassType);
-    if (note.trim()) form.append("note", note.trim());
+    form.append("service_address", JSON.stringify(address));
     if (vinValue) {
       form.append("vin", vinValue);
     } else {
@@ -4624,7 +5349,7 @@ export function PublicIntakePage() {
       if (model.trim()) form.append("model", model.trim());
     }
     if (vinPhoto) form.append("vin_photo", vinPhoto);
-    for (const p of photos) form.append("photos", p);
+    for (const p of photos) form.append("photos", p.file);
     setBusy(true);
     try {
       const res = await submitPublicIntake(form);
@@ -4634,7 +5359,13 @@ export function PublicIntakePage() {
         statusToken: res.status_token ?? null
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong — please try again.");
+      // A field-level API error pins to its field (the service-address
+      // 400 names service_address); anything else is form-level.
+      if (err instanceof ApiError && err.field === "service_address") {
+        setAddressError(err.message);
+      } else {
+        setError(err instanceof Error ? err.message : "Something went wrong — please try again.");
+      }
     } finally {
       setBusy(false);
     }
@@ -4750,6 +5481,12 @@ export function PublicIntakePage() {
                 </label>
               </div>
             )}
+            {showYmm && !vinValue && year.trim() !== "" && !yearValid && (
+              <p className="muted">
+                Enter a 4-digit year between {INTAKE_MIN_VEHICLE_YEAR} and{" "}
+                {new Date().getFullYear() + 1}.
+              </p>
+            )}
           </>
         )}
 
@@ -4770,35 +5507,54 @@ export function PublicIntakePage() {
                 </button>
               ))}
             </div>
-          </>
-        )}
-
-        {step === 3 && (
-          <>
-            <h2>What happened? (optional)</h2>
-            <textarea
-              aria-label="What happened? (optional)"
-              value={note}
-              onChange={e => setNote(e.target.value)}
-              placeholder="e.g. Rock hit the windshield on the highway — crack is spreading"
-              rows={3}
-              style={{ display: "block", width: "100%", marginTop: 4 }}
-            />
             <label>
-              Damage photos (optional, up to 6)
+              Damage photos (optional, up to {INTAKE_MAX_DAMAGE_PHOTOS}) —{" "}
+              <span data-testid="intake-photo-count">
+                {photos.length}/{INTAKE_MAX_DAMAGE_PHOTOS} added
+              </span>
               <input
                 type="file"
                 accept="image/*"
                 multiple
-                onChange={e => setPhotos(Array.from(e.target.files ?? []).slice(0, 6))}
+                onChange={e => {
+                  addPhotos(e.target.files ?? []);
+                  // Reset so picking the same file again re-fires change.
+                  e.target.value = "";
+                }}
                 style={{ display: "block", marginTop: 4 }}
               />
             </label>
-            <p className="muted">Photos help us identify the right glass before we quote.</p>
+            {photoError && (
+              <p className="error" role="alert">
+                {photoError}
+              </p>
+            )}
+            {photos.length > 0 && (
+              <ul className="intake-photo-list">
+                {photos.map((p, i) => (
+                  <li key={`${p.file.name}-${i}`} className="intake-photo-item">
+                    {p.url && <img src={p.url} alt="" className="intake-photo-thumb" />}
+                    <span className="intake-photo-name">{p.file.name}</span>
+                    <button
+                      type="button"
+                      className="intake-photo-remove"
+                      aria-label={`Remove photo ${p.file.name}`}
+                      onClick={() => removePhoto(i)}
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="muted">
+              Photos help us identify the right glass before we quote — one
+              per broken glass is plenty.
+            </p>
           </>
         )}
 
-        {step === 4 && (
+        {step === 3 && (
           <>
             <h2>How do we reach you?</h2>
             {recap && <p className="intake-recap">{recap}</p>}
@@ -4824,6 +5580,52 @@ export function PublicIntakePage() {
                 style={{ display: "block", width: "100%", marginTop: 4 }}
               />
             </label>
+            {phone.trim() !== "" && !phoneValid && (
+              <p className="muted">Enter a valid 10-digit US mobile number.</p>
+            )}
+            <label>
+              Service address
+              <input
+                type="text"
+                value={addressQuery}
+                onChange={e => onAddressQueryChange(e.target.value)}
+                placeholder="Where will the car be? Start typing the address"
+                autoComplete="street-address"
+                role="combobox"
+                aria-expanded={suggestions.length > 0}
+                aria-controls="intake-address-list"
+                style={{ display: "block", width: "100%", marginTop: 4 }}
+              />
+            </label>
+            <p className="muted">
+              This is where we'll find the car — start typing and pick your
+              address from the list so it's a real one.
+            </p>
+            {suggestions.length > 0 && (
+              <ul className="intake-address-list" id="intake-address-list" role="listbox" aria-label="Address suggestions">
+                {suggestions.map(s => (
+                  <li key={s.place_id}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected="false"
+                      className="intake-address-option"
+                      onClick={() => pickAddress(s)}
+                    >
+                      {s.formatted}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {address && (
+              <p className="intake-address-picked">✓ Service address: {address.formatted}</p>
+            )}
+            {addressError && (
+              <p className="error" role="alert">
+                {addressError}
+              </p>
+            )}
             <small>
               Sending this creates your service case with R&R Finest Auto
               Glass. We'll review it and text your quote — you approve it
@@ -4853,15 +5655,10 @@ export function PublicIntakePage() {
             </button>
           )}
           {step === 3 && (
-            <button type="button" className="primary intake-next" onClick={goNext}>
-              {note.trim() || photos.length > 0 ? "Continue" : "Skip"}
-            </button>
-          )}
-          {step === 4 && (
             <button
               type="submit"
               className="primary intake-next"
-              disabled={busy || !name.trim() || !phone.trim()}
+              disabled={busy || !contactReady}
             >
               {busy ? "Sending…" : "Send request"}
             </button>
@@ -4870,11 +5667,11 @@ export function PublicIntakePage() {
 
         <div className="intake-steps">
           <div className="intake-dots" aria-hidden="true">
-            {[1, 2, 3, 4].map(n => (
+            {[1, 2, 3].map(n => (
               <span key={n} className={"intake-dot" + (n === step ? " active" : "")} />
             ))}
           </div>
-          <span className="intake-step-text">Step {step} of 4</span>
+          <span className="intake-step-text">Step {step} of 3</span>
         </div>
       </form>
     </div>

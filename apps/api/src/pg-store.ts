@@ -11,6 +11,7 @@ import type {
   GlassRequest,
   Invoice,
   InvoiceActuals,
+  InvoiceEvent,
   Job,
   OperatorInvite,
   PriceCalculation,
@@ -38,6 +39,8 @@ import type {
   ReserveVinLookupSpendResult,
   SaveGlassIdentificationInput,
   SaveInvoiceInput,
+  AppendInvoiceEventInput,
+  UpdateInvoicePaymentInput,
   SavePriceCalculationInput,
   SaveQuoteInput,
   SaveSupplierOfferInput,
@@ -294,6 +297,35 @@ function invoiceRow(row: any): Invoice {
       quote_version: 0,
       source: "unknown"
     }),
+    created_at: iso(row.created_at),
+    // Payment lifecycle (migration 013). Null-safe so rows read before
+    // the migration lands still project as UNSENT.
+    payment_status: row.payment_status ?? "UNSENT",
+    sent_at: row.sent_at ? iso(row.sent_at) : null,
+    sent_via: row.sent_via ?? null,
+    sent_to: row.sent_to ?? null,
+    paid_at: row.paid_at ? iso(row.paid_at) : null,
+    paid_method: row.paid_method ?? null,
+    paid_ref: row.paid_ref ?? null,
+    paid_by: row.paid_by ?? null,
+    dispute_reason_code: row.dispute_reason_code ?? null,
+    dispute_reason: row.dispute_reason ?? null,
+    disputed_at: row.disputed_at ? iso(row.disputed_at) : null,
+    dispute_resolution: row.dispute_resolution ?? null,
+    dispute_resolved_at: row.dispute_resolved_at ? iso(row.dispute_resolved_at) : null
+  };
+}
+
+function invoiceEventRow(row: any): InvoiceEvent {
+  return {
+    id: row.id,
+    invoice_id: row.invoice_id,
+    case_id: row.case_id,
+    kind: row.kind,
+    actor_type: row.actor_type,
+    actor_id: row.actor_id ?? null,
+    note: row.note ?? null,
+    payload: parseJson<Record<string, unknown>>(row.payload, {}),
     created_at: iso(row.created_at)
   };
 }
@@ -920,7 +952,8 @@ export class PgCaseStore implements CaseStore {
           signed_at: input.signedAt,
           attribution: input.attribution,
           signature_hash: input.signatureHash,
-          signature_data_url: input.signatureDataUrl
+          signature_data_url: input.signatureDataUrl,
+          method: input.method
         })
       ]
     );
@@ -1157,5 +1190,63 @@ export class PgCaseStore implements CaseStore {
     );
     if (!result.rowCount) throw new Error("Job not found.");
     return jobRow(result.rows[0]);
+  }
+
+  async listAllInvoices(): Promise<Invoice[]> {
+    const result = await this.pool.query(
+      "select * from invoices order by created_at desc"
+    );
+    return result.rows.map(invoiceRow);
+  }
+
+  async updateInvoicePayment(
+    invoiceId: string,
+    patch: UpdateInvoicePaymentInput
+  ): Promise<Invoice> {
+    // Column names are a fixed whitelist (the patch keys), never user
+    // input — values always ride as bound parameters.
+    const entries = Object.entries(patch).filter(([, v]) => v !== undefined);
+    if (entries.length === 0) {
+      const current = await this.pool.query("select * from invoices where id = $1", [invoiceId]);
+      if (!current.rowCount) throw new Error("Invoice not found.");
+      return invoiceRow(current.rows[0]);
+    }
+    const sets = entries.map(([key], i) => `${key} = $${i + 2}`).join(", ");
+    const result = await this.pool.query(
+      `update invoices set ${sets} where id = $1 returning *`,
+      [invoiceId, ...entries.map(([, v]) => v)]
+    );
+    if (!result.rowCount) throw new Error("Invoice not found.");
+    return invoiceRow(result.rows[0]);
+  }
+
+  async appendInvoiceEvent(input: AppendInvoiceEventInput): Promise<InvoiceEvent> {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    await this.pool.query(
+      `insert into invoice_events(id, invoice_id, case_id, kind, actor_type, actor_id, note, payload, created_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)`,
+      [
+        id,
+        input.invoiceId,
+        input.caseId,
+        input.kind,
+        input.actor.type,
+        input.actor.id,
+        input.note ?? null,
+        JSON.stringify(input.payload ?? {}),
+        now
+      ]
+    );
+    const result = await this.pool.query("select * from invoice_events where id = $1", [id]);
+    return invoiceEventRow(result.rows[0]);
+  }
+
+  async listInvoiceEvents(invoiceId: string): Promise<InvoiceEvent[]> {
+    const result = await this.pool.query(
+      "select * from invoice_events where invoice_id = $1 order by created_at asc, id asc",
+      [invoiceId]
+    );
+    return result.rows.map(invoiceEventRow);
   }
 }

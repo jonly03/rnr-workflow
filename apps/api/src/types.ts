@@ -338,6 +338,7 @@ export interface StoreShape {
   price_calculations: PriceCalculation[];
   quotes: Quote[];
   invoices: Invoice[];
+  invoice_events: InvoiceEvent[];
 }
 
 /** Quote lifecycle: sent (awaiting signature) -> approved (signed) by the
@@ -364,16 +365,33 @@ export interface QuoteSnapshot {
   price_calculation_id: string;
 }
 
+/** How a quote signature was captured: "typed" — the client typed their
+ *  first and last name into the Signature field and the typed name IS the
+ *  signature; "drawn" — a legacy signature-pad image. */
+export type SignatureMethod = "typed" | "drawn";
+
 /** The client's ESIGN-style signature record on a quote (signature =
- *  approval). The raw signature image (data URL) is stored alongside,
- *  staff-visible only; clients and API consumers see the hash, name,
- *  and timestamp. */
+ *  approval). For drawn signatures the raw image (data URL) is stored
+ *  alongside, staff-visible only; clients and API consumers see the hash,
+ *  name, and timestamp. Typed signatures store no image — the name is the
+ *  signature, rendered in a signature style wherever it is displayed. */
 export interface QuoteSignature {
   name: string;
   signed_at: string;
   attribution: string;
   signature_hash: string;
+  /** Drawn-signature image (data URL). Empty string for typed signatures. */
   signature_data_url: string;
+  /** Absent on records written before typed signatures shipped — those
+   *  are all drawn (they carry a data URL). */
+  method?: SignatureMethod;
+}
+
+/** The effective capture method of a stored signature record. Records
+ *  written before the `method` field existed are drawn when they carry a
+ *  data URL, typed otherwise. */
+export function signatureMethodOf(signature: QuoteSignature): SignatureMethod {
+  return signature.method ?? (signature.signature_data_url ? "drawn" : "typed");
 }
 
 /** A persisted quote. Versions are append-only: a requote supersedes by
@@ -406,14 +424,73 @@ export interface InvoiceActuals {
   source: string;
 }
 
+/** Invoice payment lifecycle (Slice D): an invoice starts UNSENT, is
+ *  recorded SENT when staff send it to the client, may be DISPUTED, and
+ *  ends PAID. When the latest invoice is PAID the case may close (and
+ *  auto-closes if the service is already complete). */
+export type InvoicePaymentStatus = "UNSENT" | "SENT" | "DISPUTED" | "PAID";
+
+/** How a dispute ended. RESOLVED_ADJUSTED means staff re-invoiced (a new
+ *  version supersedes this one); RESOLVED_WRITTEN_OFF is owner/admin-only
+ *  and still permits closing the case, flagged (brief §5.4). */
+export type InvoiceDisputeResolution =
+  | "RESOLVED_PAID"
+  | "RESOLVED_ADJUSTED"
+  | "RESOLVED_WRITTEN_OFF";
+
 /** A persisted invoice, generated off a client-signed quote. Versions are
  *  append-only: re-invoicing creates a new version; history is never
  *  mutated. There is no invoice signature — the signed quote is the
- *  authorization. */
+ *  authorization. Payment fields track the collection lifecycle on the
+ *  invoice version itself; the blow-by-blow lives in InvoiceEvent. */
 export interface Invoice {
   id: string;
   case_id: string;
   version: number;
   actuals: InvoiceActuals;
+  created_at: string;
+  payment_status: InvoicePaymentStatus;
+  /** When staff recorded sending the invoice file to the client. */
+  sent_at: string | null;
+  /** How it was sent (text / email / in_person / mail / other). */
+  sent_via: string | null;
+  /** Who it was sent to (phone, email, or name as recorded by staff). */
+  sent_to: string | null;
+  paid_at: string | null;
+  /** Payment method as recorded by staff (card / cash / check / ach / other). */
+  paid_method: string | null;
+  /** Payment reference (check #, transaction id, claim #, ...). */
+  paid_ref: string | null;
+  /** Who paid (client name, insurer, auction house) — channels record the
+   *  payer in the same states rather than a separate flow (brief §5.5). */
+  paid_by: string | null;
+  dispute_reason_code: string | null;
+  dispute_reason: string | null;
+  disputed_at: string | null;
+  dispute_resolution: InvoiceDisputeResolution | null;
+  dispute_resolved_at: string | null;
+}
+
+export type InvoiceEventKind =
+  | "SENT"
+  | "DISPUTE_OPENED"
+  | "DISPUTE_UPDATE"
+  | "DISPUTE_RESOLVED"
+  | "PAID";
+
+/** One entry in an invoice's append-only payment thread: sends, dispute
+ *  openings and updates, resolutions, and the payment itself. Dispute
+ *  updates append here; the thread is staff-only and never projected to
+ *  client surfaces. */
+export interface InvoiceEvent {
+  id: string;
+  invoice_id: string;
+  case_id: string;
+  kind: InvoiceEventKind;
+  actor_type: string;
+  actor_id: string | null;
+  /** Free-text note (dispute reason / update / resolution note). */
+  note: string | null;
+  payload: Record<string, unknown>;
   created_at: string;
 }
