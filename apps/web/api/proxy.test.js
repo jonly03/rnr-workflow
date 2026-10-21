@@ -35,6 +35,29 @@ describe("staging API proxy", () => {
     delete process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
   });
 
+  it("forwards query parameters to the upstream API (address suggest `q`)", async () => {
+    let captured;
+    vi.stubGlobal("fetch", vi.fn(async (url, init) => {
+      captured = { url, init };
+      return {
+        status: 200,
+        headers: { get: () => "application/json" },
+        arrayBuffer: async () => Buffer.from(JSON.stringify({ suggestions: [] }))
+      };
+    }));
+
+    const req = mockReq({
+      method: "GET",
+      query: { path: ["public", "address", "suggest"], q: "118 Terr" }
+    });
+    const res = mockRes();
+    await handler(req, res);
+
+    expect(captured.url).toBe(
+      "https://api.example.test/api/v1/public/address/suggest?q=118+Terr"
+    );
+  });
+
   it("disables Vercel body parsing so uploads stream raw", () => {
     expect(config).toEqual({ api: { bodyParser: false } });
   });
