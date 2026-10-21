@@ -117,6 +117,43 @@ describe("Public client intake (QR front door)", () => {
     expect(submitted.payload.customer_phone).toBe("(617) 555-0142");
   });
 
+  it("accepts an intake with no note (3-card flow) and projects note as null; a legacy note is still honored", async () => {
+    const f = await fixture();
+    const res = await intake(f, VALID).expect(201);
+    const list = await staffGet(f, "/api/v1/cases").expect(200);
+    const c = list.body.find((x: { reference: string }) => x.reference === res.body.reference);
+    expect(c.client_intake.note).toBeNull();
+
+    // Backward compatibility: a client still sending the removed field
+    // (older cached page) is accepted and staff still see the note.
+    const legacy = await intake(f, { ...VALID, note: "Legacy client note" }).expect(201);
+    const list2 = await staffGet(f, "/api/v1/cases").expect(200);
+    const legacyCase = list2.body.find(
+      (x: { reference: string }) => x.reference === legacy.body.reference
+    );
+    expect(legacyCase.client_intake.note).toBe("Legacy client note");
+  });
+
+  it("accepts exactly 6 damage photos (the one-per-glass cap)", async () => {
+    const f = await fixture();
+    let req = request(f.app)
+      .post("/api/v1/public/intake")
+      .field("customer_name", "Jane Customer")
+      .field("customer_phone", "6175550142")
+      .field("glass_type", "WINDSHIELD")
+      .field("vin", VIN_17)
+      .field("year", "2020")
+      .field("make", "Honda")
+      .field("model", "Accord");
+    for (let i = 0; i < 6; i++) {
+      req = req.attach("photos", TINY_PNG, `p${i}.jpg`);
+    }
+    const res = await req.expect(201);
+    const list = await staffGet(f, "/api/v1/cases").expect(200);
+    const c = list.body.find((x: { reference: string }) => x.reference === res.body.reference);
+    expect(c.client_intake.photo_count).toBe(6);
+  });
+
   it("accepts a YMM-only intake (no VIN) and stores an empty VIN", async () => {
     const f = await fixture();
     const { vin: _vin, ...ymmOnly } = VALID;

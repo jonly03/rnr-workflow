@@ -102,6 +102,9 @@ const publicIntakeSchema = z.object({
   customer_name: z.string().trim().min(1).max(120),
   customer_phone: z.string().trim().min(7).max(32),
   glass_type: z.enum(["WINDSHIELD", "BACK_GLASS", "DOOR_GLASS", "QUARTER_GLASS", "VENT_GLASS"]),
+  // Legacy: the 3-card intake (2026-10-21) removed the "What happened?"
+  // free-text field, and the client no longer sends it. Still accepted
+  // (and projected for staff) so older clients in the field don't break.
   note: z.string().trim().max(1000).optional(),
   vin: z.string().trim().max(17).optional(),
   year: z.coerce.number().int().min(1886).max(2100).optional(),
@@ -829,6 +832,17 @@ export function createApp(
       const photoMeta: { kind: string; size_bytes: number; content_type: string }[] = [];
       for (const f of files.photos ?? []) {
         photoMeta.push({ kind: "damage", size_bytes: f.size, content_type: f.mimetype });
+      }
+      // Damage photos cap at 6 (one per glass on the car). Multer's
+      // maxCount already rejects a 7th upload before this handler runs;
+      // this explicit check keeps the rule true even if the upload
+      // wiring changes — the cap is a product rule, not a multer detail.
+      if (photoMeta.length > 6) {
+        return intakeValidationError(
+          res,
+          "Up to 6 damage photos — please remove the extras and try again.",
+          "photos"
+        );
       }
       let vinOcrSuggestion: string | null = null;
       const vinPhoto = files.vin_photo?.[0];

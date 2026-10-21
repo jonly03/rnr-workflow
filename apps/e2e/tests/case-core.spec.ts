@@ -139,7 +139,7 @@ test("Case Core browser path does not expose paid VIN lookup action", async ({ p
 });
 
 test("Client intake → live progress → sign → staff lands on Order parts", async ({ page }) => {
-  // The customer arrives from the QR code: no login, the 4-card form.
+  // The customer arrives from the QR code: no login, the 3-card form.
   await page.goto("/intake");
   await expect(
     page.getByRole("heading", { name: "How can we service your auto glass?" })
@@ -153,14 +153,11 @@ test("Client intake → live progress → sign → staff lands on Order parts", 
   await page.getByLabel(/^Model/).fill("Wrangler");
   await page.getByRole("button", { name: "Continue" }).click();
 
-  // Card 2: the glass.
+  // Card 2: the glass (damage photos are optional here — none added).
   await page.getByRole("radio", { name: "Windshield" }).click();
   await page.getByRole("button", { name: "Continue" }).click();
 
-  // Card 3: optional — skip it.
-  await page.getByRole("button", { name: "Skip" }).click();
-
-  // Card 4: contact, then send. This single submission drives the case
+  // Card 3: contact, then send. This single submission drives the case
   // through identification → sourcing → pricing → quote on its own.
   await page.getByLabel(/Your name/).fill("Jane Customer");
   await page.getByLabel(/Mobile phone/).fill("(617) 555-0142");
@@ -253,7 +250,6 @@ test("Staff queue updates live when a client intake lands (no refresh)", async (
   await clientPage.getByRole("button", { name: "Continue" }).click();
   await clientPage.getByRole("radio", { name: "Windshield" }).click();
   await clientPage.getByRole("button", { name: "Continue" }).click();
-  await clientPage.getByRole("button", { name: "Skip" }).click();
   await clientPage.getByLabel(/Your name/).fill("Live Arrival");
   await clientPage.getByLabel(/Mobile phone/).fill("(617) 555-0142");
   await clientPage.getByRole("button", { name: "Send request" }).click();
@@ -295,7 +291,7 @@ test("Customer deep links load the app by direct navigation (SPA fallback)", asy
   await expect(
     page.getByRole("heading", { name: "How can we service your auto glass?" })
   ).toBeVisible();
-  // Card flow (Amendment 2): the headline sits on card 1 of 4, with the
-  // step indicator visible at the bottom.
-  await expect(page.getByText("Step 1 of 4")).toBeVisible();
+  // Card flow: the headline sits on card 1 of 3, with the step
+  // indicator visible at the bottom.
+  await expect(page.getByText("Step 1 of 3")).toBeVisible();
 });

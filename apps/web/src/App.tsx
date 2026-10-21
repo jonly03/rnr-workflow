@@ -3450,6 +3450,30 @@ const INTAKE_GLASS_OPTIONS: { id: GlassType; label: string }[] = [
 ];
 
 /**
+ * Damage-photo caps for the intake glass card (Nelly, 2026-10-21): at
+ * most one photo per glass on the car, images only, and the same 10 MB
+ * per-file ceiling the API enforces with multer. The client blocks
+ * overflow here; the API rejects it again server-side — the client rule
+ * is UX, the server rule is the real gate.
+ */
+export const INTAKE_MAX_DAMAGE_PHOTOS = 6;
+export const INTAKE_MAX_PHOTO_BYTES = 10 * 1024 * 1024;
+
+interface IntakePhoto {
+  file: File;
+  /** Object-URL preview, or null where previews are unavailable. */
+  url: string | null;
+}
+
+function makePhotoPreviewUrl(file: File): string | null {
+  try {
+    return URL.createObjectURL(file);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * ISO 3779 VIN check — mirrors apps/api/src/vin-validation.ts so card 1
  * can gate its Continue button exactly the way the server gates the VIN.
  * The server stays the real gate; this is a UX pre-check only.
@@ -3573,11 +3597,15 @@ function IntakeLiveStatus({ statusToken }: { statusToken: string }) {
  * first, contact last — and a single POST /public/intake from the final
  * card creates a DIRECT case flagged CLIENT_QR. The customer gets a case
  * reference plus one promise: we'll text a quote link to their mobile.
+ *
+ * Three cards (Nelly, 2026-10-21 — supersedes the original four): (1)
+ * vehicle, (2) glass + optional damage photos, (3) contact. The old
+ * "What happened?" card is gone entirely — its free-text field was
+ * removed by product decision, not moved.
  */
 export function PublicIntakePage() {
   const [step, setStep] = useState(1);
   const [glassType, setGlassType] = useState<GlassType | "">("");
-  const [note, setNote] = useState("");
   const [vin, setVin] = useState("");
   const [showYmm, setShowYmm] = useState(false);
   const [year, setYear] = useState("");
@@ -3586,7 +3614,9 @@ export function PublicIntakePage() {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [vinPhoto, setVinPhoto] = useState<File | null>(null);
-  const [photos, setPhotos] = useState<File[]>([]);
+  const [photos, setPhotos] = useState<IntakePhoto[]>([]);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const photosRef = useRef<IntakePhoto[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<{
@@ -3608,6 +3638,62 @@ export function PublicIntakePage() {
       : "";
   const recap = [vehicleRecap, glassLabel].filter(Boolean).join(" · ");
 
+  // Revoke preview object URLs when the page goes away (removePhoto
+  // revokes its own as it goes).
+  useEffect(() => {
+    photosRef.current = photos;
+  }, [photos]);
+  useEffect(
+    () => () => {
+      for (const p of photosRef.current) {
+        if (p.url) URL.revokeObjectURL(p.url);
+      }
+    },
+    []
+  );
+
+  /**
+   * Adds damage photos on the glass card, enforcing the caps: images
+   * only, ≤10 MB each, at most INTAKE_MAX_DAMAGE_PHOTOS total. Anything
+   * refused is named in a plain-language message — never silently dropped.
+   */
+  function addPhotos(list: FileList | File[]) {
+    const problems: string[] = [];
+    const valid: File[] = [];
+    for (const f of Array.from(list)) {
+      if (!f.type.startsWith("image/")) {
+        problems.push(`“${f.name}” isn't an image.`);
+      } else if (f.size > INTAKE_MAX_PHOTO_BYTES) {
+        problems.push(`“${f.name}” is larger than 10 MB.`);
+      } else {
+        valid.push(f);
+      }
+    }
+    const room = Math.max(INTAKE_MAX_DAMAGE_PHOTOS - photos.length, 0);
+    const toAdd = valid.slice(0, room);
+    if (valid.length > toAdd.length) {
+      problems.push(
+        `Up to ${INTAKE_MAX_DAMAGE_PHOTOS} photos — ${valid.length - toAdd.length} extra weren't added.`
+      );
+    }
+    if (toAdd.length > 0) {
+      setPhotos(prev => [
+        ...prev,
+        ...toAdd.map(file => ({ file, url: makePhotoPreviewUrl(file) }))
+      ]);
+    }
+    setPhotoError(problems.length > 0 ? problems.join(" ") : null);
+  }
+
+  function removePhoto(index: number) {
+    setPhotos(prev => {
+      const target = prev[index];
+      if (target?.url) URL.revokeObjectURL(target.url);
+      return prev.filter((_, i) => i !== index);
+    });
+    setPhotoError(null);
+  }
+
   function goBack() {
     setError(null);
     setStep(s => Math.max(1, s - 1));
@@ -3615,17 +3701,16 @@ export function PublicIntakePage() {
 
   function goNext() {
     setError(null);
-    setStep(s => Math.min(4, s + 1));
+    setStep(s => Math.min(3, s + 1));
   }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
-    // Cards 1-3 never submit: Enter/advance just moves to the next card
-    // when that card's gate is met. The one API call fires from card 4.
-    if (step < 4) {
+    // Cards 1-2 never submit: Enter/advance just moves to the next card
+    // when that card's gate is met. The one API call fires from card 3.
+    if (step < 3) {
       if (step === 1 && vehicleReady) goNext();
       if (step === 2 && glassType) goNext();
-      if (step === 3) goNext();
       return;
     }
     setError(null);
@@ -3649,7 +3734,6 @@ export function PublicIntakePage() {
     form.append("customer_name", name.trim());
     form.append("customer_phone", phone.trim());
     form.append("glass_type", glassType);
-    if (note.trim()) form.append("note", note.trim());
     if (vinValue) {
       form.append("vin", vinValue);
     } else {
@@ -3658,7 +3742,7 @@ export function PublicIntakePage() {
       if (model.trim()) form.append("model", model.trim());
     }
     if (vinPhoto) form.append("vin_photo", vinPhoto);
-    for (const p of photos) form.append("photos", p);
+    for (const p of photos) form.append("photos", p.file);
     setBusy(true);
     try {
       const res = await submitPublicIntake(form);
@@ -3804,35 +3888,54 @@ export function PublicIntakePage() {
                 </button>
               ))}
             </div>
-          </>
-        )}
-
-        {step === 3 && (
-          <>
-            <h2>What happened? (optional)</h2>
-            <textarea
-              aria-label="What happened? (optional)"
-              value={note}
-              onChange={e => setNote(e.target.value)}
-              placeholder="e.g. Rock hit the windshield on the highway — crack is spreading"
-              rows={3}
-              style={{ display: "block", width: "100%", marginTop: 4 }}
-            />
             <label>
-              Damage photos (optional, up to 6)
+              Damage photos (optional, up to {INTAKE_MAX_DAMAGE_PHOTOS}) —{" "}
+              <span data-testid="intake-photo-count">
+                {photos.length}/{INTAKE_MAX_DAMAGE_PHOTOS} added
+              </span>
               <input
                 type="file"
                 accept="image/*"
                 multiple
-                onChange={e => setPhotos(Array.from(e.target.files ?? []).slice(0, 6))}
+                onChange={e => {
+                  addPhotos(e.target.files ?? []);
+                  // Reset so picking the same file again re-fires change.
+                  e.target.value = "";
+                }}
                 style={{ display: "block", marginTop: 4 }}
               />
             </label>
-            <p className="muted">Photos help us identify the right glass before we quote.</p>
+            {photoError && (
+              <p className="error" role="alert">
+                {photoError}
+              </p>
+            )}
+            {photos.length > 0 && (
+              <ul className="intake-photo-list">
+                {photos.map((p, i) => (
+                  <li key={`${p.file.name}-${i}`} className="intake-photo-item">
+                    {p.url && <img src={p.url} alt="" className="intake-photo-thumb" />}
+                    <span className="intake-photo-name">{p.file.name}</span>
+                    <button
+                      type="button"
+                      className="intake-photo-remove"
+                      aria-label={`Remove photo ${p.file.name}`}
+                      onClick={() => removePhoto(i)}
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="muted">
+              Photos help us identify the right glass before we quote — one
+              per broken glass is plenty.
+            </p>
           </>
         )}
 
-        {step === 4 && (
+        {step === 3 && (
           <>
             <h2>How do we reach you?</h2>
             {recap && <p className="intake-recap">{recap}</p>}
@@ -3887,11 +3990,6 @@ export function PublicIntakePage() {
             </button>
           )}
           {step === 3 && (
-            <button type="button" className="primary intake-next" onClick={goNext}>
-              {note.trim() || photos.length > 0 ? "Continue" : "Skip"}
-            </button>
-          )}
-          {step === 4 && (
             <button
               type="submit"
               className="primary intake-next"
@@ -3904,11 +4002,11 @@ export function PublicIntakePage() {
 
         <div className="intake-steps">
           <div className="intake-dots" aria-hidden="true">
-            {[1, 2, 3, 4].map(n => (
+            {[1, 2, 3].map(n => (
               <span key={n} className={"intake-dot" + (n === step ? " active" : "")} />
             ))}
           </div>
-          <span className="intake-step-text">Step {step} of 4</span>
+          <span className="intake-step-text">Step {step} of 3</span>
         </div>
       </form>
     </div>

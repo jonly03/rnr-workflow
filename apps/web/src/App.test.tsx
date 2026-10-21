@@ -441,7 +441,7 @@ describe("public intake page (QR front door)", () => {
     return screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement;
   }
 
-  /** Walk card 1 (valid VIN) and card 2 (Windshield) to land on card 3. */
+  /** Walk card 1 (valid VIN) and card 2 (Windshield) to land on card 3 (contact). */
   function walkToCard3() {
     fireEvent.change(screen.getByLabelText(/^VIN/), {
       target: { value: VALID_VIN }
@@ -451,7 +451,7 @@ describe("public intake page (QR front door)", () => {
     fireEvent.click(continueButton());
   }
 
-  it("walks the 4 cards in order and submits the same payload shape as the one-page form — no prices anywhere", async () => {
+  it("walks the 3 cards in order and submits the same payload shape as the one-page form — no prices anywhere", async () => {
     const posted = stubIntakeFetch();
     render(<PublicIntakePage />);
 
@@ -459,7 +459,7 @@ describe("public intake page (QR front door)", () => {
     expect(
       screen.getByRole("heading", { name: "How can we service your auto glass?" })
     ).toBeInTheDocument();
-    expect(screen.getByText("Step 1 of 4")).toBeInTheDocument();
+    expect(screen.getByText("Step 1 of 3")).toBeInTheDocument();
     expect(screen.queryByRole("radio", { name: "Windshield" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/^Year/)).not.toBeInTheDocument();
     expect(screen.getByLabelText(/scan vin/i)).toBeInTheDocument();
@@ -478,21 +478,26 @@ describe("public intake page (QR front door)", () => {
     fireEvent.click(continueButton());
 
     // Card 2: headline is card-1 only; picking a glass enables Continue.
-    expect(screen.getByText("Step 2 of 4")).toBeInTheDocument();
+    // The damage-photo upload lives here now (it moved off the removed
+    // "What happened?" card) — and that card's free-text field is gone
+    // entirely, not relocated.
+    expect(screen.getByText("Step 2 of 3")).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "How can we service your auto glass?" })
     ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/what happened/i)).not.toBeInTheDocument();
     expect(continueButton().disabled).toBe(true);
     fireEvent.click(screen.getByRole("radio", { name: "Windshield" }));
     expect(continueButton().disabled).toBe(false);
+    const damagePhoto = new File(["crack-bytes"], "crack.jpg", { type: "image/jpeg" });
+    fireEvent.change(screen.getByLabelText(/damage photos/i), {
+      target: { files: [damagePhoto] }
+    });
+    expect(screen.getByTestId("intake-photo-count")).toHaveTextContent("1/6 added");
     fireEvent.click(continueButton());
 
-    // Card 3 is skippable untouched.
-    expect(screen.getByText("Step 3 of 4")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Skip" }));
-
-    // Card 4: recap line, and Send stays blocked until name + mobile.
-    expect(screen.getByText("Step 4 of 4")).toBeInTheDocument();
+    // Card 3 is the contact card — there is no card 4 anymore.
+    expect(screen.getByText("Step 3 of 3")).toBeInTheDocument();
     expect(screen.getByText(/····4352 · Windshield/)).toBeInTheDocument();
     const send = screen.getByRole("button", { name: "Send request" }) as HTMLButtonElement;
     expect(send.disabled).toBe(true);
@@ -516,6 +521,10 @@ describe("public intake page (QR front door)", () => {
     expect(posted.body!.get("glass_type")).toBe("WINDSHIELD");
     expect(posted.body!.get("vin")).toBe(VALID_VIN);
     expect(posted.body!.get("vin_photo")).toBe(vinPhoto);
+    // The damage photo picked up on card 2 rides along; the removed
+    // "What happened?" note field is never sent.
+    expect(posted.body!.getAll("photos")).toEqual([damagePhoto]);
+    expect(posted.body!.get("note")).toBeNull();
     expect(posted.body!.get("customer_name")).toBe("Jane Customer");
     expect(posted.body!.get("customer_phone")).toBe("(617) 555-0142");
     // The confirmation page completes itself: live progress polls behind
@@ -559,19 +568,56 @@ describe("public intake page (QR front door)", () => {
     expect(continueButton().disabled).toBe(false);
   });
 
-  it("card 3 reads Skip while empty and Continue once anything is added, and always advances", () => {
+  it("damage photos on card 2: live count, per-photo remove, 6-photo cap, image-only and 10 MB rules", () => {
     stubIntakeFetch();
     render(<PublicIntakePage />);
-    walkToCard3();
-    expect(screen.getByText("Step 3 of 4")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Skip" })).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText(/what happened/i), {
-      target: { value: "Rock chip on the highway" }
+    // Land on card 2.
+    fireEvent.change(screen.getByLabelText(/^VIN/), {
+      target: { value: VALID_VIN }
     });
-    expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    expect(screen.getByText("Step 4 of 4")).toBeInTheDocument();
-    // The note rides along in the recap-free payload path: recap shows vehicle + glass.
+    fireEvent.click(continueButton());
+    expect(screen.getByText("Step 2 of 3")).toBeInTheDocument();
+    const photoInput = () => screen.getByLabelText(/damage photos/i);
+    const img = (name: string, size = 8) =>
+      new File([new Uint8Array(size)], name, { type: "image/jpeg" });
+
+    expect(screen.getByTestId("intake-photo-count")).toHaveTextContent("0/6 added");
+    fireEvent.change(photoInput(), {
+      target: { files: [img("a.jpg"), img("b.jpg"), img("c.jpg")] }
+    });
+    expect(screen.getByTestId("intake-photo-count")).toHaveTextContent("3/6 added");
+    expect(screen.getByText("b.jpg")).toBeInTheDocument();
+
+    // Per-photo remove.
+    fireEvent.click(screen.getByRole("button", { name: "Remove photo b.jpg" }));
+    expect(screen.getByTestId("intake-photo-count")).toHaveTextContent("2/6 added");
+    expect(screen.queryByText("b.jpg")).not.toBeInTheDocument();
+
+    // The cap is hard: offering 5 more when 2 are present adds only 4
+    // and says so — the 7th photo never lands.
+    fireEvent.change(photoInput(), {
+      target: { files: [img("d.jpg"), img("e.jpg"), img("f.jpg"), img("g.jpg"), img("h.jpg")] }
+    });
+    expect(screen.getByTestId("intake-photo-count")).toHaveTextContent("6/6 added");
+    expect(screen.queryByText("h.jpg")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/Up to 6 photos/);
+
+    // Non-images and oversized files are refused by name.
+    fireEvent.click(screen.getByRole("button", { name: "Remove photo a.jpg" }));
+    fireEvent.change(photoInput(), {
+      target: { files: [new File(["x"], "notes.txt", { type: "text/plain" })] }
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(/notes\.txt.*isn't an image/);
+    fireEvent.change(photoInput(), {
+      target: { files: [img("huge.jpg", 10 * 1024 * 1024 + 1)] }
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(/huge\.jpg.*larger than 10 MB/);
+    expect(screen.getByTestId("intake-photo-count")).toHaveTextContent("5/6 added");
+
+    // Photos never gate the card: with a glass picked, Continue works.
+    fireEvent.click(screen.getByRole("radio", { name: "Windshield" }));
+    fireEvent.click(continueButton());
+    expect(screen.getByText("Step 3 of 3")).toBeInTheDocument();
     expect(screen.getByText(/····4352 · Windshield/)).toBeInTheDocument();
   });
 
@@ -582,9 +628,9 @@ describe("public intake page (QR front door)", () => {
       target: { value: VALID_VIN }
     });
     fireEvent.click(continueButton());
-    expect(screen.getByText("Step 2 of 4")).toBeInTheDocument();
+    expect(screen.getByText("Step 2 of 3")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Back/i }));
-    expect(screen.getByText("Step 1 of 4")).toBeInTheDocument();
+    expect(screen.getByText("Step 1 of 3")).toBeInTheDocument();
     expect((screen.getByLabelText(/^VIN/) as HTMLInputElement).value).toBe(VALID_VIN);
   });
 });
