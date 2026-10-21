@@ -115,6 +115,10 @@ export interface CaseRecord {
   supplier_offers: SupplierOffer[];
   price_calculation: PriceCalculation | null;
   invoice: Invoice | null;
+  /** Payment thread of the latest invoice (staff-only). */
+  invoice_events?: InvoiceEvent[];
+  /** Service complete but the invoice is not paid/written off yet. */
+  awaiting_payment?: boolean;
   quote: Quote | null;
   created_at: string;
   updated_at: string;
@@ -175,11 +179,58 @@ export interface InvoiceActuals {
   source: string;
 }
 
+/** Invoice payment lifecycle (Slice D): UNSENT -> SENT -> PAID, with
+ *  DISPUTED reachable from SENT/UNSENT and resolvable to paid, adjusted
+ *  (re-invoiced), or written off (admin only). Paid -> case closes. */
+export type InvoicePaymentStatus = "UNSENT" | "SENT" | "DISPUTED" | "PAID";
+
+export type InvoiceDisputeResolution =
+  | "RESOLVED_PAID"
+  | "RESOLVED_ADJUSTED"
+  | "RESOLVED_WRITTEN_OFF";
+
 export interface Invoice {
   id: string;
   case_id: string;
   version: number;
   actuals: InvoiceActuals;
+  created_at: string;
+  payment_status: InvoicePaymentStatus;
+  sent_at: string | null;
+  sent_via: string | null;
+  sent_to: string | null;
+  paid_at: string | null;
+  paid_method: string | null;
+  paid_ref: string | null;
+  paid_by: string | null;
+  dispute_reason_code: string | null;
+  dispute_reason: string | null;
+  disputed_at: string | null;
+  dispute_resolution: InvoiceDisputeResolution | null;
+  dispute_resolved_at: string | null;
+  /** Server-derived: whole days waiting while SENT/DISPUTED. */
+  aging_days?: number | null;
+  /** Server-derived: payment state lets the case close. */
+  closable?: boolean;
+}
+
+export type InvoiceEventKind =
+  | "SENT"
+  | "DISPUTE_OPENED"
+  | "DISPUTE_UPDATE"
+  | "DISPUTE_RESOLVED"
+  | "PAID";
+
+/** One entry in an invoice's append-only payment thread (staff-only). */
+export interface InvoiceEvent {
+  id: string;
+  invoice_id: string;
+  case_id: string;
+  kind: InvoiceEventKind;
+  actor_type: string;
+  actor_id: string | null;
+  note: string | null;
+  payload: Record<string, unknown>;
   created_at: string;
 }
 

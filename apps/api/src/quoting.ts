@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { invoiceClosable } from "./payments.js";
 import type { CaseStore } from "./store.js";
 import type { CaseRecord, Quote, QuoteSnapshot, SignatureMethod } from "./types.js";
 
@@ -75,6 +76,7 @@ export type QuotingErrorCode =
   | "VALIDATION_ERROR"
   | "QUOTE_EXPIRED"
   | "QUOTE_NOT_SIGNED"
+  | "INVOICE_NOT_PAID"
   | "NO_SIGNED_QUOTE";
 
 export class QuotingError extends Error {
@@ -462,8 +464,12 @@ export async function generateInvoice(
 
 /**
  * Closes the case. Only legal from SERVICE_COMPLETED (fulfillment done)
- * when an invoice exists and the underlying quote is signed; otherwise
- * rejected. CLOSED is terminal.
+ * when an invoice exists, the underlying quote is signed, AND — the
+ * Slice D close rule (brief §3.6, superseding the 2026-10-19 rule) —
+ * the invoice is PAID (or written off by an admin, which closes with a
+ * flag). A finished job with an unpaid invoice stays open; the staff
+ * invoice board surfaces it as awaiting payment. When payment lands
+ * after completion, payments.ts auto-closes instead. CLOSED is terminal.
  */
 export async function closeCase(
   store: CaseStore,
@@ -479,6 +485,13 @@ export async function closeCase(
     throw new QuotingError(
       "NO_SIGNED_QUOTE",
       "An invoice is required before the case can be closed.",
+      409
+    );
+  }
+  if (!invoiceClosable(latestInvoice)) {
+    throw new QuotingError(
+      "INVOICE_NOT_PAID",
+      "The invoice must be paid before the case can be closed.",
       409
     );
   }
@@ -502,7 +515,11 @@ export async function closeCase(
       quote_version: latestQuote.version,
       sell_price_cents: latestInvoice.actuals.sell_price_cents,
       signed_by: latestQuote.signature.name,
-      signed_at: latestQuote.signature.signed_at
+      signed_at: latestQuote.signature.signed_at,
+      invoice_payment_status: latestInvoice.payment_status,
+      ...(latestInvoice.dispute_resolution === "RESOLVED_WRITTEN_OFF"
+        ? { invoice_written_off: true }
+        : {})
     }
   });
   const updated = await store.getCase(caseId);

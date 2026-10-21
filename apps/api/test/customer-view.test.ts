@@ -167,11 +167,21 @@ describe("Customer view (Direct): sign link + tracking link", () => {
     await act(f, caseId, "complete_service").expect(200);
     // Out-of-order steps are rejected.
     await act(f, caseId, "order_parts").expect(409);
-    await act(f, caseId, "close_case").expect(200);
+    // Slice D close rule: the unpaid invoice blocks closing; recording
+    // the payment auto-closes the case.
+    const blocked = await act(f, caseId, "close_case").expect(409);
+    expect(blocked.body.error.code).toBe("INVOICE_NOT_PAID");
+    const paidRes = await act(f, caseId, "mark_invoice_paid", { method: "card" }).expect(200);
+    expect(paidRes.body.current_state).toBe("CLOSED");
 
     const done = await request(f.app).get(`/api/v1/public/track/${trackingToken}`).expect(200);
     expect(done.body.current_state).toBe("CLOSED");
     expect(done.body.milestones.every((m: any) => m.done)).toBe(true);
+    // Payment shows at summary level: received, with thanks.
+    expect(done.body.invoice.payment).toEqual({
+      status: "PAID",
+      label: "Payment received — thank you"
+    });
   });
 
   it("signs via link with a typed name only — no signature image", async () => {

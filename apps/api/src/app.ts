@@ -60,6 +60,18 @@ import {
   LIFECYCLE_STEPS,
   LifecycleError
 } from "./lifecycle.js";
+import {
+  addInvoiceDisputeUpdate,
+  buildInvoiceClientView,
+  invoiceClosable,
+  invoicePaymentView,
+  InvoicePaymentError,
+  markInvoicePaid,
+  markInvoiceSent,
+  openInvoiceDispute,
+  resolveInvoiceDispute
+} from "./payments.js";
+import { renderInvoicePdf } from "./invoice-pdf.js";
 import { createRateLimiter } from "./rate-limit.js";
 import {
   createAddressProvider,
@@ -335,7 +347,19 @@ export function createApp(
     const price_calculation = glass_request
       ? await store.getLatestPriceCalculation(glass_request.id)
       : null;
-    const invoice = await store.getLatestInvoice(c.id);
+    const rawInvoice = await store.getLatestInvoice(c.id);
+    const invoice = rawInvoice ? invoicePaymentView(rawInvoice) : null;
+    const invoice_events = rawInvoice
+      ? await store.listInvoiceEvents(rawInvoice.id)
+      : [];
+    // Slice D close rule surfaced plainly: a finished job whose invoice
+    // is not yet paid (or written off) is open BECAUSE it is awaiting
+    // payment — staff see why, not just a stuck SERVICE_COMPLETED.
+    const awaiting_payment = Boolean(
+      rawInvoice &&
+        c.current_state === "SERVICE_COMPLETED" &&
+        !invoiceClosable(rawInvoice)
+    );
     const quote = await store.getLatestQuote(c.id);
     // Staff-only projection of a client self-service intake (Slice A):
     // the CLIENT_INTAKE_SUBMITTED event is the source of truth for who
@@ -348,7 +372,7 @@ export function createApp(
     const client_intake = intakeEvent
       ? clientIntakeView(intakeEvent.payload, intakeEvent.occurred_at)
       : null;
-    return { ...c, vehicle, glass_request, glass_identification, supplier_offers, price_calculation, quote, invoice, client_intake };
+    return { ...c, vehicle, glass_request, glass_identification, supplier_offers, price_calculation, quote, invoice, invoice_events, awaiting_payment, client_intake };
   };
 
   /**
@@ -628,6 +652,22 @@ export function createApp(
     QUOTE_EXPIRED: "Quote expired"
   };
 
+  /**
+   * Payment at summary level only (Slice D): the client learns THAT
+   * payment is due / received / under review — never amounts beyond the
+   * totals this projection already shows, and never dispute internals.
+   * An UNSENT invoice has not been sent to the client, so it projects
+   * as no payment state at all.
+   */
+  const paymentSummary = (status: string) =>
+    status === "PAID"
+      ? { status: "PAID", label: "Payment received — thank you" }
+      : status === "SENT"
+        ? { status: "DUE", label: "Payment due" }
+        : status === "DISPUTED"
+          ? { status: "REVIEW", label: "Payment under review" }
+          : null;
+
   /** Customer tracking projection: milestones + totals, from safe fields only. */
   const publicTrackingView = async (c: CaseRecord) => {
     const [quote, invoice, events] = await Promise.all([
@@ -671,7 +711,11 @@ export function createApp(
       signed_at: quote?.signature?.signed_at ?? null,
       signature_method: quote?.signature ? signatureMethodOf(quote.signature) : null,
       invoice: invoice
-        ? { version: invoice.version, total_cents: invoice.actuals.sell_price_cents }
+        ? {
+            version: invoice.version,
+            total_cents: invoice.actuals.sell_price_cents,
+            payment: paymentSummary(invoice.payment_status)
+          }
         : null,
       labor_cents: totals?.labor_cents ?? null,
       tax_cents: totals?.tax_cents ?? null,
@@ -794,6 +838,40 @@ export function createApp(
     const c = await store.getCase(grant.caseId);
     if (!c || c.channel !== grant.channel) return linkInvalid(res);
     return res.json(await publicTrackingView(c));
+  });
+
+  /** Streams the case's invoice PDF (client projection only). */
+  const sendInvoicePdf = async (
+    res: express.Response,
+    caseId: string,
+    disposition: "attachment" | "inline"
+  ): Promise<boolean> => {
+    const view = await buildInvoiceClientView(store, caseId);
+    if (!view) return false;
+    const pdf = renderInvoicePdf(view);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `${disposition}; filename="invoice-${view.reference}-v${view.invoice_version}.pdf"`
+    );
+    res.send(pdf);
+    return true;
+  };
+
+  /**
+   * The client's own invoice file, behind their tracking link. Only
+   * once the invoice has actually been sent to them (SENT / DISPUTED /
+   * PAID): an UNSENT invoice is still an internal draft, so the file
+   * 404s exactly like a bad link — its existence is not revealed.
+   */
+  app.get("/api/v1/public/track/:token/invoice.pdf", publicLimiter, async (req, res) => {
+    const grant = await verifyApprovalToken(store, String(req.params.token), "case-view");
+    if (!grant) return linkInvalid(res);
+    const c = await store.getCase(grant.caseId);
+    if (!c || c.channel !== grant.channel) return linkInvalid(res);
+    const invoice = await store.getLatestInvoice(c.id);
+    if (!invoice || invoice.payment_status === "UNSENT") return linkInvalid(res);
+    await sendInvoicePdf(res, c.id, "inline");
   });
 
   // ---------------------------------------------------------------------
@@ -1412,6 +1490,89 @@ export function createApp(
     });
   });
 
+  /**
+   * Staff collections board (Slice D): the latest invoice version of
+   * every case, ordered for collections work — UNSENT first (send
+   * them), then SENT oldest-first (aging), DISPUTED, then PAID.
+   * Filter with ?payment_status=UNSENT|SENT|DISPUTED|PAID. Channel
+   * scoping applies exactly as on case routes.
+   */
+  app.get("/api/v1/invoices", auth, async (req, res) => {
+    const statusFilter =
+      typeof req.query.payment_status === "string" ? req.query.payment_status : null;
+    const all = await store.listAllInvoices();
+    // listAllInvoices is newest-first, so the first row seen per case
+    // is its latest invoice version; older versions are history.
+    const latestByCase = new Map<string, (typeof all)[number]>();
+    for (const inv of all) {
+      if (!latestByCase.has(inv.case_id)) latestByCase.set(inv.case_id, inv);
+    }
+    type BoardItem = ReturnType<typeof invoicePaymentView> & {
+      case_reference: string;
+      case_state: string;
+      channel: Channel;
+      vehicle: { year: number; make: string; model: string } | null;
+      glass_type: string | null;
+      bill_to: string | null;
+      awaiting_payment: boolean;
+    };
+    const items: BoardItem[] = [];
+    for (const inv of latestByCase.values()) {
+      const c = await store.getCase(inv.case_id);
+      if (!c || !canAccessChannel(req.staff, c.channel)) continue;
+      if (statusFilter && inv.payment_status !== statusFilter) continue;
+      const [vehicle, quote] = await Promise.all([
+        store.getVehicle(c.vehicle_id),
+        store.getLatestQuote(c.id)
+      ]);
+      items.push({
+        ...invoicePaymentView(inv),
+        case_reference: c.reference,
+        case_state: c.current_state,
+        channel: c.channel,
+        vehicle: vehicle
+          ? { year: vehicle.year, make: vehicle.make, model: vehicle.model }
+          : null,
+        glass_type: quote?.snapshot.glass_type ?? null,
+        bill_to: quote?.signature?.name ?? null,
+        awaiting_payment:
+          c.current_state === "SERVICE_COMPLETED" && !invoiceClosable(inv)
+      });
+    }
+    const rank: Record<string, number> = { UNSENT: 0, SENT: 1, DISPUTED: 2, PAID: 3 };
+    const stamp = (i: (typeof items)[number]) =>
+      i.payment_status === "SENT"
+        ? (i.sent_at ?? i.created_at)
+        : i.payment_status === "DISPUTED"
+          ? (i.disputed_at ?? i.created_at)
+          : i.payment_status === "PAID"
+            ? (i.paid_at ?? i.created_at)
+            : i.created_at;
+    items.sort((a, b) => {
+      const byRank = (rank[a.payment_status] ?? 9) - (rank[b.payment_status] ?? 9);
+      if (byRank !== 0) return byRank;
+      // Oldest first while money is outstanding; newest first once paid.
+      return a.payment_status === "PAID"
+        ? stamp(b).localeCompare(stamp(a))
+        : stamp(a).localeCompare(stamp(b));
+    });
+    return res.json(items);
+  });
+
+  /** Staff download of the case's invoice file (client projection). */
+  app.get("/api/v1/cases/:caseId/invoice.pdf", async (req, res) => {
+    const c = await store.getCase(req.params.caseId);
+    if (!c || !canAccessChannel(req.staff, c.channel)) {
+      return channelNotFound(res);
+    }
+    const sent = await sendInvoicePdf(res, c.id, "attachment");
+    if (!sent) {
+      return res.status(404).json({
+        error: { code: "NO_INVOICE", message: "This case has no invoice yet." }
+      });
+    }
+  });
+
   app.post("/api/v1/cases/:caseId/actions", async (req, res) => {
     const c = await store.getCase(req.params.caseId);
     if (!c || !canAccessChannel(req.staff, c.channel)) {
@@ -1419,6 +1580,11 @@ export function createApp(
     }
 
     const staffActor = { type: "RNR_STAFF", id: req.staff?.id ?? null };
+    const paymentActor = {
+      type: "RNR_STAFF",
+      id: req.staff?.id ?? null,
+      role: req.staff?.role ?? null
+    };
     const action = String(req.body?.action ?? "");
 
     try {
@@ -1583,6 +1749,23 @@ export function createApp(
         case "generate_invoice":
           await generateInvoice(store, c.id, staffActor);
           break;
+        // Invoice payment lifecycle (Slice D, payments.ts). All act on
+        // the case's LATEST invoice version.
+        case "mark_invoice_sent":
+          await markInvoiceSent(store, c.id, req.body ?? {}, paymentActor);
+          break;
+        case "mark_invoice_paid":
+          await markInvoicePaid(store, c.id, req.body ?? {}, paymentActor);
+          break;
+        case "dispute_invoice":
+          await openInvoiceDispute(store, c.id, req.body ?? {}, paymentActor);
+          break;
+        case "invoice_dispute_update":
+          await addInvoiceDisputeUpdate(store, c.id, req.body ?? {}, paymentActor);
+          break;
+        case "resolve_invoice_dispute":
+          await resolveInvoiceDispute(store, c.id, req.body ?? {}, paymentActor);
+          break;
         case "close_case":
           await closeCase(store, c.id, staffActor);
           break;
@@ -1616,6 +1799,11 @@ export function createApp(
         });
       }
       if (error instanceof LifecycleError) {
+        return res.status(error.httpStatus).json({
+          error: { code: error.code, message: error.message }
+        });
+      }
+      if (error instanceof InvoicePaymentError) {
         return res.status(error.httpStatus).json({
           error: { code: error.code, message: error.message }
         });

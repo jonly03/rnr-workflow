@@ -386,17 +386,29 @@ describe("Quote sign-off (signature = approval)", () => {
     await act(f, caseId, "start_service").expect(200);
     await act(f, caseId, "complete_service").expect(200);
 
-    const closed = await act(f, caseId, "close_case").expect(200);
-    expect(closed.body.current_state).toBe("CLOSED");
+    // Slice D close rule: a completed service with an UNPAID invoice
+    // cannot close — the case stays open, awaiting payment.
+    const blocked = await act(f, caseId, "close_case").expect(409);
+    expect(blocked.body.error.code).toBe("INVOICE_NOT_PAID");
+
+    // Recording the payment auto-closes the case.
+    const paid = await act(f, caseId, "mark_invoice_paid", {
+      method: "card",
+      ref: "txn-1"
+    }).expect(200);
+    expect(paid.body.current_state).toBe("CLOSED");
+    expect(paid.body.invoice.payment_status).toBe("PAID");
 
     const events = await getEvents(f, caseId).expect(200);
     const types = events.body.map((e: any) => e.event_type);
-    for (const t of ["QUOTE_GENERATED", "QUOTE_SIGNED", "INVOICE_GENERATED", "CASE_CLOSED"]) {
+    for (const t of ["QUOTE_GENERATED", "QUOTE_SIGNED", "INVOICE_GENERATED", "INVOICE_PAID", "CASE_CLOSED"]) {
       expect(types).toContain(t);
     }
     const closeEvent = events.body.find((e: any) => e.event_type === "CASE_CLOSED");
     expect(closeEvent.payload.signed_by).toBe("Lou Customer");
     expect(closeEvent.payload.quote_version).toBe(1);
+    expect(closeEvent.payload.auto).toBe(true);
+    expect(closeEvent.payload.trigger).toBe("invoice_paid");
   });
 
   it("rejects close_case without a signed quote", async () => {
