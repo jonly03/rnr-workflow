@@ -106,6 +106,9 @@ jobs:
           vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
           web_url="$(vercel deploy --prod --yes --token="$VERCEL_TOKEN" \
             --env UPSTREAM_API_URL="$API_URL" \
+            --env DATABASE_URL="$DATABASE_URL" \
+            --env AUTH_SECRET="$AUTH_SECRET" \
+            --env VERCEL_AUTOMATION_BYPASS_SECRET="$VERCEL_AUTOMATION_BYPASS_SECRET" \
             --build-env VITE_API_BASE_URL="/api/v1" | tail -n1)"
           echo "url=$web_url" >> "$GITHUB_OUTPUT"
           echo "Production Web: $web_url" >> "$GITHUB_STEP_SUMMARY"
