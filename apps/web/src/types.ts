@@ -231,6 +231,61 @@ export interface CaseJobView {
   assets: CaseAsset[];
 }
 
+/** One tech position report as the API returns it to the poster (Slice C). */
+export interface JobLocationPing {
+  id: string;
+  job_id: string;
+  case_id: string;
+  tech_id: string;
+  lat: number;
+  lon: number;
+  accuracy_m: number | null;
+  recorded_at: string;
+}
+
+/** One job on the staff daily ops map (Slice C): the service pin is
+ *  null when the case carries no geocoded address — the job still
+ *  lists, it just has no pin. */
+export interface OpsMapJob {
+  job_id: string;
+  case_id: string;
+  reference: string;
+  channel: string;
+  case_state: string;
+  job_status: JobAssignment["status"];
+  glass_type: string | null;
+  tech_id: string | null;
+  tech_name: string | null;
+  scheduled_start: string | null;
+  scheduled_end: string | null;
+  service_address: string | null;
+  service_lat: number | null;
+  service_lon: number | null;
+  current_step: JobStep | null;
+  current_step_label: string | null;
+}
+
+/** An active tech's latest position for the ops map (Slice C). A tech
+ *  with no ping yet has NO entry here — the UI shows "no signal yet"
+ *  rather than inventing a position. */
+export interface OpsMapTech {
+  tech_id: string;
+  tech_name: string | null;
+  job_id: string;
+  reference: string;
+  lat: number;
+  lon: number;
+  accuracy_m: number | null;
+  recorded_at: string;
+  age_seconds: number;
+}
+
+export interface OpsMapView {
+  date: string;
+  jobs: OpsMapJob[];
+  techs: OpsMapTech[];
+}
+
 export type OperatorStatus = "INVITED" | "PROFILE_PENDING" | "ACTIVE" | "DEACTIVATED";
 
 export interface AvailabilityWindow {

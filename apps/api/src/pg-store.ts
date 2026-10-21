@@ -14,6 +14,7 @@ import type {
   InvoiceActuals,
   InvoiceEvent,
   Job,
+  JobLocationPing,
   JobStepEvent,
   OperatorInvite,
   PriceCalculation,
@@ -29,6 +30,7 @@ import type {
 } from "./types.js";
 import type {
   AppendEventInput,
+  AppendJobLocationPingInput,
   AppendJobStepEventInput,
   CaseAssetPatch,
   CaseStore,
@@ -296,6 +298,19 @@ function jobStepEventRow(row: any): JobStepEvent {
     actor_id: row.actor_id ?? null,
     payload: parseJson<Record<string, unknown>>(row.payload, {}),
     occurred_at: iso(row.occurred_at)
+  };
+}
+
+function jobLocationPingRow(row: any): JobLocationPing {
+  return {
+    id: row.id,
+    job_id: row.job_id,
+    case_id: row.case_id,
+    tech_id: row.tech_id,
+    lat: Number(row.lat),
+    lon: Number(row.lon),
+    accuracy_m: row.accuracy_m == null ? null : Number(row.accuracy_m),
+    recorded_at: iso(row.recorded_at)
   };
 }
 
@@ -1311,6 +1326,45 @@ export class PgCaseStore implements CaseStore {
       [jobId]
     );
     return result.rows.map(jobStepEventRow);
+  }
+
+  async appendJobLocationPing(
+    input: AppendJobLocationPingInput
+  ): Promise<JobLocationPing> {
+    const id = randomUUID();
+    const recordedAt = input.recordedAt ?? new Date().toISOString();
+    const result = await this.pool.query(
+      `insert into job_location_pings(id, job_id, case_id, tech_id, lat, lon, accuracy_m, recorded_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8) returning *`,
+      [
+        id,
+        input.jobId,
+        input.caseId,
+        input.techId,
+        input.lat,
+        input.lon,
+        input.accuracyM ?? null,
+        recordedAt
+      ]
+    );
+    return jobLocationPingRow(result.rows[0]);
+  }
+
+  async listJobLocationPings(jobId: string): Promise<JobLocationPing[]> {
+    const result = await this.pool.query(
+      "select * from job_location_pings where job_id = $1 order by recorded_at asc, id asc",
+      [jobId]
+    );
+    return result.rows.map(jobLocationPingRow);
+  }
+
+  async latestJobLocationPings(): Promise<JobLocationPing[]> {
+    const result = await this.pool.query(
+      `select distinct on (job_id) *
+       from job_location_pings
+       order by job_id, recorded_at desc, id desc`
+    );
+    return result.rows.map(jobLocationPingRow);
   }
 
   async createCaseAsset(input: CreateCaseAssetInput): Promise<CaseAsset> {

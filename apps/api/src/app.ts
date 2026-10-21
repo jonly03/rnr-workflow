@@ -138,6 +138,12 @@ import {
   nextStep as nextJobStep,
   techJobView
 } from "./job-execution.js";
+import {
+  clientEtaForCase,
+  opsMapView,
+  recordJobLocationPing,
+  TrackingError
+} from "./tracking.js";
 import { createRateLimiter } from "./rate-limit.js";
 import {
   createAddressProvider,
@@ -1049,6 +1055,28 @@ export function createApp(
     return res.json({ date: board.date, entries });
   });
 
+  /**
+   * Staff daily ops map (Slice C, brief §3.4): today's jobs as pins at
+   * their service addresses + each active tech's latest position.
+   * Staff-only (tech tokens are refused — a tech never sees another
+   * tech's position); channel scoping applies exactly as to the queue.
+   * The web polls this endpoint on a light interval — pings are NOT
+   * case events, so nothing rides the realtime socket for location.
+   */
+  app.get("/api/v1/ops-map", auth, staffRoles, async (req, res) => {
+    const date =
+      typeof req.query.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date)
+        ? req.query.date
+        : todayKey();
+    const view = await opsMapView(store, date, operatorTimezone());
+    const jobs = view.jobs.filter(j =>
+      canAccessChannel(req.staff, j.channel as Channel)
+    );
+    const visibleJobIds = new Set(jobs.map(j => j.job_id));
+    const techs = view.techs.filter(t => visibleJobIds.has(t.job_id));
+    return res.json({ date: view.date, jobs, techs });
+  });
+
   // ---------------------------------------------------------------------
   // Tech job execution + case assets (Slice B, brief §3.3/§7.2/§7.3).
   //
@@ -1067,7 +1095,8 @@ export function createApp(
     if (
       error instanceof JobExecutionError ||
       error instanceof AssetError ||
-      error instanceof LifecycleError
+      error instanceof LifecycleError ||
+      error instanceof TrackingError
     ) {
       res.status(error.httpStatus).json({
         error: { code: error.code, message: error.message }
@@ -1141,6 +1170,51 @@ export function createApp(
       throw error;
     }
   });
+
+  const jobLocationSchema = z.object({
+    lat: z.number(),
+    lon: z.number(),
+    accuracy_m: z.number().nonnegative().optional()
+  });
+
+  /**
+   * Location ping (Slice C, brief §3.4). The tech's device posts its
+   * position while the job is active; tracking.ts enforces the law —
+   * assigned tech only (else 404, as everywhere on this surface), job
+   * IN_PROGRESS only, consent on only. Pings land in their own table,
+   * never in the case event log.
+   */
+  app.post(
+    "/api/v1/tech/jobs/:jobId/location",
+    auth,
+    requireRole("tech"),
+    async (req, res) => {
+      const job = await myJob(req);
+      if (!job) return jobNotFound(res);
+      const parsed = jobLocationSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(422).json({
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "lat and lon are required coordinates."
+          }
+        });
+      }
+      try {
+        const ping = await recordJobLocationPing(store, {
+          jobId: job.id,
+          techId: req.staff!.id,
+          lat: parsed.data.lat,
+          lon: parsed.data.lon,
+          accuracyM: parsed.data.accuracy_m
+        });
+        return res.status(201).json({ ping });
+      } catch (error) {
+        if (jobError(res, error)) return;
+        throw error;
+      }
+    }
+  );
 
   const jobAssetUploadSchema = z.object({
     kind: z.enum(["BEFORE_PHOTO", "AFTER_PHOTO"]),
@@ -1507,6 +1581,12 @@ export function createApp(
     return {
       reference: c.reference,
       channel: c.channel,
+      // Slice C: while the tech is travelling to the client, an ETA
+      // summary (an estimate, computed from the latest position ping).
+      // Null in every other state — and NEVER coordinates or a raw
+      // position: tracking.ts computes the window server-side and the
+      // position itself stays staff-only.
+      eta: await clientEtaForCase(store, c.id),
       vehicle: quote
         ? {
             year: quote.snapshot.vehicle.year,
