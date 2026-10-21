@@ -419,6 +419,16 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .intake-next { padding: 12px 26px; font-size: 1.05rem; margin-left: auto; }
 .intake-next:disabled { opacity: .45; cursor: not-allowed; }
 .intake-steps { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 16px; }
+.intake-address-list { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; }
+.intake-address-list li { margin: 0; }
+.intake-address-option { display: block; width: 100%; text-align: left; background: #172033; color: #f8fafc; border: 1px solid #334155; border-radius: 8px; padding: 9px 12px; cursor: pointer; font-size: .95rem; }
+.intake-address-option:hover { border-color: #c1271b; }
+.intake-address-picked { color: #4ade80; font-weight: 600; margin: 8px 0 0; }
+.intake-photo-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
+.intake-photo-item { display: flex; align-items: center; gap: 10px; }
+.intake-photo-thumb { width: 44px; height: 44px; object-fit: cover; border-radius: 6px; border: 1px solid #334155; }
+.intake-photo-name { font-size: .9rem; color: #cbd5e1; overflow-wrap: anywhere; }
+.intake-photo-remove { background: none; border: 1px solid #475569; border-radius: 8px; color: #cbd5e1; padding: 4px 10px; cursor: pointer; margin-left: auto; }
 .intake-dots { display: flex; gap: 6px; }
 .intake-dot { width: 8px; height: 8px; border-radius: 50%; background: #cbd5e1; }
 .intake-dot.active { background: #c1271b; }

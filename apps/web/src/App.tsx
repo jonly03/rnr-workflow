@@ -23,7 +23,10 @@ import {
   startIdentification,
   submitPublicIntake,
   subscribeStaffEvents,
+  suggestAddresses,
+  ApiError,
   UnauthorizedError,
+  type AddressSuggestion,
   type DecodedVehicle,
   type PublicIntakeStatus,
   type PublicQuoteView,
@@ -728,6 +731,9 @@ export function App() {
                                 ? ` · ${c.client_intake.customer_phone}`
                                 : ""}
                               {c.client_intake.note ? ` — “${c.client_intake.note}”` : ""}
+                              {c.client_intake.service_address
+                                ? ` · Service at: ${c.client_intake.service_address.formatted}`
+                                : ""}
                             </p>
                           )}
                           <PricingSummary item={c} />
@@ -1591,6 +1597,9 @@ function CaseDetail({
                 : ""}
               {item.client_intake.vin_ocr_suggestion
                 ? ` · VIN photo reads: ${item.client_intake.vin_ocr_suggestion} (suggestion only)`
+                : ""}
+              {item.client_intake.service_address
+                ? ` · Service at: ${item.client_intake.service_address.formatted}`
                 : ""}
             </p>
           )}
@@ -3450,6 +3459,30 @@ const INTAKE_GLASS_OPTIONS: { id: GlassType; label: string }[] = [
 ];
 
 /**
+ * Damage-photo caps for the intake glass card (Nelly, 2026-10-21): at
+ * most one photo per glass on the car, images only, and the same 10 MB
+ * per-file ceiling the API enforces with multer. The client blocks
+ * overflow here; the API rejects it again server-side — the client rule
+ * is UX, the server rule is the real gate.
+ */
+export const INTAKE_MAX_DAMAGE_PHOTOS = 6;
+export const INTAKE_MAX_PHOTO_BYTES = 10 * 1024 * 1024;
+
+interface IntakePhoto {
+  file: File;
+  /** Object-URL preview, or null where previews are unavailable. */
+  url: string | null;
+}
+
+function makePhotoPreviewUrl(file: File): string | null {
+  try {
+    return URL.createObjectURL(file);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * ISO 3779 VIN check — mirrors apps/api/src/vin-validation.ts so card 1
  * can gate its Continue button exactly the way the server gates the VIN.
  * The server stays the real gate; this is a UX pre-check only.
@@ -3471,6 +3504,29 @@ function isValidVin(vin: string): boolean {
   }
   const remainder = sum % 11;
   return v[8] === (remainder === 10 ? "X" : String(remainder));
+}
+
+/**
+ * US phone pre-check — mirrors the API's normalizeUsPhone so the
+ * contact card can gate Send exactly the way the server will judge
+ * the number. The server stays the real gate; this is UX only.
+ */
+function normalizeUsPhoneClient(raw: string): string | null {
+  let digits = raw.replace(/\D/g, "");
+  if (digits.length === 11 && digits.startsWith("1")) digits = digits.slice(1);
+  if (digits.length !== 10) return null;
+  if (!/^[2-9]/.test(digits)) return null;
+  return digits;
+}
+
+/** Vehicle-year bounds for the YMM path — mirrored server-side. */
+export const INTAKE_MIN_VEHICLE_YEAR = 1950;
+
+function isValidIntakeYear(raw: string): boolean {
+  const t = raw.trim();
+  if (!/^\d{4}$/.test(t)) return false;
+  const y = Number(t);
+  return y >= INTAKE_MIN_VEHICLE_YEAR && y <= new Date().getFullYear() + 1;
 }
 
 const INTAKE_STATUS_POLL_MS = 4000;
@@ -3573,11 +3629,15 @@ function IntakeLiveStatus({ statusToken }: { statusToken: string }) {
  * first, contact last — and a single POST /public/intake from the final
  * card creates a DIRECT case flagged CLIENT_QR. The customer gets a case
  * reference plus one promise: we'll text a quote link to their mobile.
+ *
+ * Three cards (Nelly, 2026-10-21 — supersedes the original four): (1)
+ * vehicle, (2) glass + optional damage photos, (3) contact. The old
+ * "What happened?" card is gone entirely — its free-text field was
+ * removed by product decision, not moved.
  */
 export function PublicIntakePage() {
   const [step, setStep] = useState(1);
   const [glassType, setGlassType] = useState<GlassType | "">("");
-  const [note, setNote] = useState("");
   const [vin, setVin] = useState("");
   const [showYmm, setShowYmm] = useState(false);
   const [year, setYear] = useState("");
@@ -3585,8 +3645,14 @@ export function PublicIntakePage() {
   const [model, setModel] = useState("");
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
+  const [addressQuery, setAddressQuery] = useState("");
+  const [address, setAddress] = useState<AddressSuggestion | null>(null);
+  const [suggestions, setSuggestions] = useState<AddressSuggestion[]>([]);
+  const [addressError, setAddressError] = useState<string | null>(null);
   const [vinPhoto, setVinPhoto] = useState<File | null>(null);
-  const [photos, setPhotos] = useState<File[]>([]);
+  const [photos, setPhotos] = useState<IntakePhoto[]>([]);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const photosRef = useRef<IntakePhoto[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<{
@@ -3596,10 +3662,15 @@ export function PublicIntakePage() {
   } | null>(null);
 
   const vinValue = vin.trim().toUpperCase();
-  const ymmComplete = Boolean(year.trim() && make.trim() && model.trim());
+  const yearValid = isValidIntakeYear(year);
+  const ymmComplete = Boolean(yearValid && make.trim() && model.trim());
   // An entered VIN stands alone (YMM hides beside it); with no VIN, the
   // "I don't have the VIN" expander's complete YMM is the vehicle ID.
   const vehicleReady = vinValue ? isValidVin(vinValue) : showYmm && ymmComplete;
+  // Contact-card gates, mirroring the server's validation pass.
+  const nameValid = name.trim().length >= 2;
+  const phoneValid = normalizeUsPhoneClient(phone) !== null;
+  const contactReady = nameValid && phoneValid && address !== null;
   const glassLabel = INTAKE_GLASS_OPTIONS.find(o => o.id === glassType)?.label ?? "";
   const vehicleRecap = vinValue
     ? `VIN ····${vinValue.slice(-4)}`
@@ -3608,6 +3679,113 @@ export function PublicIntakePage() {
       : "";
   const recap = [vehicleRecap, glassLabel].filter(Boolean).join(" · ");
 
+  // Revoke preview object URLs when the page goes away (removePhoto
+  // revokes its own as it goes).
+  useEffect(() => {
+    photosRef.current = photos;
+  }, [photos]);
+  useEffect(
+    () => () => {
+      for (const p of photosRef.current) {
+        if (p.url) URL.revokeObjectURL(p.url);
+      }
+    },
+    []
+  );
+
+  /**
+   * Address autocomplete on the contact card: debounced suggestion
+   * lookups as the customer types. This is the ONLY network traffic
+   * allowed before Send, and only on this card — cards 1-2 fetch
+   * nothing. Typing after a pick un-picks the address: free text is
+   * never submittable, only a suggestion the customer chose.
+   */
+  useEffect(() => {
+    if (step !== 3) return;
+    if (address && addressQuery === address.formatted) {
+      setSuggestions([]);
+      return;
+    }
+    const q = addressQuery.trim();
+    if (q.length < 3) {
+      setSuggestions([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      suggestAddresses(q)
+        .then(r => {
+          if (!cancelled) setSuggestions(r.suggestions ?? []);
+        })
+        .catch(() => {
+          // A failed lookup just means no list — the customer can retry
+          // by typing; it must never break the form.
+          if (!cancelled) setSuggestions([]);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [addressQuery, address, step]);
+
+  function onAddressQueryChange(value: string) {
+    setAddressQuery(value);
+    setAddressError(null);
+    if (address && value !== address.formatted) {
+      setAddress(null);
+    }
+  }
+
+  function pickAddress(suggestion: AddressSuggestion) {
+    setAddress(suggestion);
+    setAddressQuery(suggestion.formatted);
+    setSuggestions([]);
+    setAddressError(null);
+  }
+
+  /**
+   * Adds damage photos on the glass card, enforcing the caps: images
+   * only, ≤10 MB each, at most INTAKE_MAX_DAMAGE_PHOTOS total. Anything
+   * refused is named in a plain-language message — never silently dropped.
+   */
+  function addPhotos(list: FileList | File[]) {
+    const problems: string[] = [];
+    const valid: File[] = [];
+    for (const f of Array.from(list)) {
+      if (!f.type.startsWith("image/")) {
+        problems.push(`“${f.name}” isn't an image.`);
+      } else if (f.size > INTAKE_MAX_PHOTO_BYTES) {
+        problems.push(`“${f.name}” is larger than 10 MB.`);
+      } else {
+        valid.push(f);
+      }
+    }
+    const room = Math.max(INTAKE_MAX_DAMAGE_PHOTOS - photos.length, 0);
+    const toAdd = valid.slice(0, room);
+    if (valid.length > toAdd.length) {
+      problems.push(
+        `Up to ${INTAKE_MAX_DAMAGE_PHOTOS} photos — ${valid.length - toAdd.length} extra weren't added.`
+      );
+    }
+    if (toAdd.length > 0) {
+      setPhotos(prev => [
+        ...prev,
+        ...toAdd.map(file => ({ file, url: makePhotoPreviewUrl(file) }))
+      ]);
+    }
+    setPhotoError(problems.length > 0 ? problems.join(" ") : null);
+  }
+
+  function removePhoto(index: number) {
+    setPhotos(prev => {
+      const target = prev[index];
+      if (target?.url) URL.revokeObjectURL(target.url);
+      return prev.filter((_, i) => i !== index);
+    });
+    setPhotoError(null);
+  }
+
   function goBack() {
     setError(null);
     setStep(s => Math.max(1, s - 1));
@@ -3615,17 +3793,16 @@ export function PublicIntakePage() {
 
   function goNext() {
     setError(null);
-    setStep(s => Math.min(4, s + 1));
+    setStep(s => Math.min(3, s + 1));
   }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
-    // Cards 1-3 never submit: Enter/advance just moves to the next card
-    // when that card's gate is met. The one API call fires from card 4.
-    if (step < 4) {
+    // Cards 1-2 never submit: Enter/advance just moves to the next card
+    // when that card's gate is met. The one API call fires from card 3.
+    if (step < 3) {
       if (step === 1 && vehicleReady) goNext();
       if (step === 2 && glassType) goNext();
-      if (step === 3) goNext();
       return;
     }
     setError(null);
@@ -3637,19 +3814,25 @@ export function PublicIntakePage() {
       setError("Add your VIN, or your vehicle's year, make and model.");
       return;
     }
-    if (!name.trim()) {
+    if (!nameValid) {
       setError("We need your name.");
       return;
     }
-    if (!phone.trim()) {
-      setError("We need a mobile number to text your quote to.");
+    if (!phoneValid) {
+      setError("Enter a valid 10-digit US mobile number so we can text your quote.");
+      return;
+    }
+    if (!address) {
+      setAddressError(
+        "Start typing your address and pick it from the list — we need a real address for the car."
+      );
       return;
     }
     const form = new FormData();
     form.append("customer_name", name.trim());
     form.append("customer_phone", phone.trim());
     form.append("glass_type", glassType);
-    if (note.trim()) form.append("note", note.trim());
+    form.append("service_address", JSON.stringify(address));
     if (vinValue) {
       form.append("vin", vinValue);
     } else {
@@ -3658,7 +3841,7 @@ export function PublicIntakePage() {
       if (model.trim()) form.append("model", model.trim());
     }
     if (vinPhoto) form.append("vin_photo", vinPhoto);
-    for (const p of photos) form.append("photos", p);
+    for (const p of photos) form.append("photos", p.file);
     setBusy(true);
     try {
       const res = await submitPublicIntake(form);
@@ -3668,7 +3851,13 @@ export function PublicIntakePage() {
         statusToken: res.status_token ?? null
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong — please try again.");
+      // A field-level API error pins to its field (the service-address
+      // 400 names service_address); anything else is form-level.
+      if (err instanceof ApiError && err.field === "service_address") {
+        setAddressError(err.message);
+      } else {
+        setError(err instanceof Error ? err.message : "Something went wrong — please try again.");
+      }
     } finally {
       setBusy(false);
     }
@@ -3784,6 +3973,12 @@ export function PublicIntakePage() {
                 </label>
               </div>
             )}
+            {showYmm && !vinValue && year.trim() !== "" && !yearValid && (
+              <p className="muted">
+                Enter a 4-digit year between {INTAKE_MIN_VEHICLE_YEAR} and{" "}
+                {new Date().getFullYear() + 1}.
+              </p>
+            )}
           </>
         )}
 
@@ -3804,35 +3999,54 @@ export function PublicIntakePage() {
                 </button>
               ))}
             </div>
-          </>
-        )}
-
-        {step === 3 && (
-          <>
-            <h2>What happened? (optional)</h2>
-            <textarea
-              aria-label="What happened? (optional)"
-              value={note}
-              onChange={e => setNote(e.target.value)}
-              placeholder="e.g. Rock hit the windshield on the highway — crack is spreading"
-              rows={3}
-              style={{ display: "block", width: "100%", marginTop: 4 }}
-            />
             <label>
-              Damage photos (optional, up to 6)
+              Damage photos (optional, up to {INTAKE_MAX_DAMAGE_PHOTOS}) —{" "}
+              <span data-testid="intake-photo-count">
+                {photos.length}/{INTAKE_MAX_DAMAGE_PHOTOS} added
+              </span>
               <input
                 type="file"
                 accept="image/*"
                 multiple
-                onChange={e => setPhotos(Array.from(e.target.files ?? []).slice(0, 6))}
+                onChange={e => {
+                  addPhotos(e.target.files ?? []);
+                  // Reset so picking the same file again re-fires change.
+                  e.target.value = "";
+                }}
                 style={{ display: "block", marginTop: 4 }}
               />
             </label>
-            <p className="muted">Photos help us identify the right glass before we quote.</p>
+            {photoError && (
+              <p className="error" role="alert">
+                {photoError}
+              </p>
+            )}
+            {photos.length > 0 && (
+              <ul className="intake-photo-list">
+                {photos.map((p, i) => (
+                  <li key={`${p.file.name}-${i}`} className="intake-photo-item">
+                    {p.url && <img src={p.url} alt="" className="intake-photo-thumb" />}
+                    <span className="intake-photo-name">{p.file.name}</span>
+                    <button
+                      type="button"
+                      className="intake-photo-remove"
+                      aria-label={`Remove photo ${p.file.name}`}
+                      onClick={() => removePhoto(i)}
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="muted">
+              Photos help us identify the right glass before we quote — one
+              per broken glass is plenty.
+            </p>
           </>
         )}
 
-        {step === 4 && (
+        {step === 3 && (
           <>
             <h2>How do we reach you?</h2>
             {recap && <p className="intake-recap">{recap}</p>}
@@ -3858,6 +4072,52 @@ export function PublicIntakePage() {
                 style={{ display: "block", width: "100%", marginTop: 4 }}
               />
             </label>
+            {phone.trim() !== "" && !phoneValid && (
+              <p className="muted">Enter a valid 10-digit US mobile number.</p>
+            )}
+            <label>
+              Service address
+              <input
+                type="text"
+                value={addressQuery}
+                onChange={e => onAddressQueryChange(e.target.value)}
+                placeholder="Where will the car be? Start typing the address"
+                autoComplete="street-address"
+                role="combobox"
+                aria-expanded={suggestions.length > 0}
+                aria-controls="intake-address-list"
+                style={{ display: "block", width: "100%", marginTop: 4 }}
+              />
+            </label>
+            <p className="muted">
+              This is where we'll find the car — start typing and pick your
+              address from the list so it's a real one.
+            </p>
+            {suggestions.length > 0 && (
+              <ul className="intake-address-list" id="intake-address-list" role="listbox" aria-label="Address suggestions">
+                {suggestions.map(s => (
+                  <li key={s.place_id}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected="false"
+                      className="intake-address-option"
+                      onClick={() => pickAddress(s)}
+                    >
+                      {s.formatted}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {address && (
+              <p className="intake-address-picked">✓ Service address: {address.formatted}</p>
+            )}
+            {addressError && (
+              <p className="error" role="alert">
+                {addressError}
+              </p>
+            )}
             <small>
               Sending this creates your service case with R&R Finest Auto
               Glass. We'll review it and text your quote — you approve it
@@ -3887,15 +4147,10 @@ export function PublicIntakePage() {
             </button>
           )}
           {step === 3 && (
-            <button type="button" className="primary intake-next" onClick={goNext}>
-              {note.trim() || photos.length > 0 ? "Continue" : "Skip"}
-            </button>
-          )}
-          {step === 4 && (
             <button
               type="submit"
               className="primary intake-next"
-              disabled={busy || !name.trim() || !phone.trim()}
+              disabled={busy || !contactReady}
             >
               {busy ? "Sending…" : "Send request"}
             </button>
@@ -3904,11 +4159,11 @@ export function PublicIntakePage() {
 
         <div className="intake-steps">
           <div className="intake-dots" aria-hidden="true">
-            {[1, 2, 3, 4].map(n => (
+            {[1, 2, 3].map(n => (
               <span key={n} className={"intake-dot" + (n === step ? " active" : "")} />
             ))}
           </div>
-          <span className="intake-step-text">Step {step} of 4</span>
+          <span className="intake-step-text">Step {step} of 3</span>
         </div>
       </form>
     </div>
