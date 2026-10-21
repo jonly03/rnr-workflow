@@ -70,6 +70,34 @@ jobs:
           npm install
           npm run migrate
 
+      - name: Pin ADDRESS_PROVIDER in API project env (preview = mock)
+        env:
+          ADDRESS_PIN_VALUE: "mock"
+          ADDRESS_PIN_TARGET: "preview"
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYEOF'
+          import json, os, urllib.request
+          token = os.environ["VERCEL_TOKEN"]
+          team = os.environ["VERCEL_ORG_ID"]
+          project = os.environ["API_PROJECT_ID"]
+          key = "ADDRESS_PROVIDER"
+          value = os.environ["ADDRESS_PIN_VALUE"]
+          target = os.environ["ADDRESS_PIN_TARGET"]
+          base = f"https://api.vercel.com/v9/projects/{project}/env?teamId={team}"
+          def call(method, url, body=None):
+            req = urllib.request.Request(url, method=method, data=json.dumps(body).encode() if body is not None else None, headers={{"Authorization": f"Bearer {token}", "Content-Type": "application/json"}})
+            with urllib.request.urlopen(req) as r:
+              return json.loads(r.read() or b"{}")
+          existing = [e for e in call("GET", base).get("envs", []) if e.get("key") == key and target in (e.get("target") or [])]
+          if existing:
+            call("PATCH", f"https://api.vercel.com/v9/projects/{project}/env/{existing[0]['id']}?teamId={team}", {{"value": value}})
+            print(f"updated {key} [{preview}] -> {mock}")
+          else:
+            call("POST", base, {{"key": key, "value": value, "type": "encrypted", "target": [target]}})
+            print(f"created {key} [{preview}] -> {mock}")
+          PYEOF
       - name: Deploy staging API
         id: api
         working-directory: apps/api
@@ -79,7 +107,7 @@ jobs:
         run: |
           set -euo pipefail
           vercel pull --yes --environment=preview --token="$VERCEL_TOKEN"
-          api_url="$(vercel deploy --yes --token="$VERCEL_TOKEN" --env DATABASE_URL="$DATABASE_URL" --env PG_POOL_MAX=3 --env AUTH_SECRET="$AUTH_SECRET" --env STAFF_ADMIN_EMAIL="$STAFF_ADMIN_EMAIL" --env STAFF_ADMIN_PASSWORD="$STAFF_ADMIN_PASSWORD" --env MYGRANT_USERNAME="$MYGRANT_USERNAME" --env MYGRANT_PASSWORD="$MYGRANT_PASSWORD" --env MYGRANT_BROWSER_URL="$MYGRANT_BROWSER_URL" --env MYGRANT_BROWSER_SECRET="$MYGRANT_BROWSER_SECRET" --env GLASS_CATALOG_PROVIDER="${GLASS_CATALOG_PROVIDER:-mock}" --env SOURCING_PROVIDER="${SOURCING_PROVIDER:-mock}" --env ADDRESS_PROVIDER="${ADDRESS_PROVIDER:-mock}" | tail -n1)"
+          api_url="$(vercel deploy --yes --token="$VERCEL_TOKEN" --env DATABASE_URL="$DATABASE_URL" --env PG_POOL_MAX=3 --env AUTH_SECRET="$AUTH_SECRET" --env STAFF_ADMIN_EMAIL="$STAFF_ADMIN_EMAIL" --env STAFF_ADMIN_PASSWORD="$STAFF_ADMIN_PASSWORD" --env MYGRANT_USERNAME="$MYGRANT_USERNAME" --env MYGRANT_PASSWORD="$MYGRANT_PASSWORD" --env MYGRANT_BROWSER_URL="$MYGRANT_BROWSER_URL" --env MYGRANT_BROWSER_SECRET="$MYGRANT_BROWSER_SECRET" --env GLASS_CATALOG_PROVIDER="${GLASS_CATALOG_PROVIDER:-mock}" --env SOURCING_PROVIDER="${SOURCING_PROVIDER:-mock}" | tail -n1)"
           echo "url=$api_url" >> "$GITHUB_OUTPUT"
           echo "API: $api_url" >> "$GITHUB_STEP_SUMMARY"
 
@@ -292,3 +320,4 @@ jobs:
           Live Playwright: **PASS**
 
           This commit is eligible for production promotion."
+
