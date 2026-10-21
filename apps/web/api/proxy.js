@@ -57,7 +57,31 @@ export default async function handler(req, res) {
 
   const pathValue = req.query?.path;
   const path = Array.isArray(pathValue) ? pathValue.join("/") : String(pathValue || "");
-  const url = `${upstream.replace(/\/$/, "")}/api/v1/${path}`;
+
+  // Forward the caller's query string (e.g. ?q= for address suggestions,
+  // ?date= for the ops map). The /api/v1/* rewrite delivers the resource
+  // path in `path`; every other parameter belongs to the API call. These
+  // used to be silently dropped: the suggest endpoint saw no `q` and
+  // answered an empty list, which looked exactly like a provider outage.
+  const queryParams = new URLSearchParams();
+  const addParam = (key, value) => {
+    if (key === "path" || value === undefined || value === null) return;
+    if (Array.isArray(value)) value.forEach((v) => queryParams.append(key, String(v)));
+    else queryParams.append(key, String(value));
+  };
+  for (const [key, value] of Object.entries(req.query || {})) addParam(key, value);
+  try {
+    // Belt and braces: if the platform preserved the original query string
+    // on req.url instead of merging it into req.query, pick it up there.
+    const rawUrl = new URL(String(req.url || ""), "http://proxy.local");
+    for (const [key, value] of rawUrl.searchParams.entries()) {
+      if (!queryParams.has(key)) addParam(key, value);
+    }
+  } catch {
+    // req.url unparsable — the query object above is authoritative.
+  }
+  const qs = queryParams.toString();
+  const url = `${upstream.replace(/\/$/, "")}/api/v1/${path}${qs ? `?${qs}` : ""}`;
 
   const headers = {};
   for (const [key, value] of Object.entries(req.headers || {})) {
