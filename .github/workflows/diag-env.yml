@@ -8,34 +8,49 @@ jobs:
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
       API_PROJECT_ID: ${{ vars.VERCEL_API_PROJECT_ID }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
       VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+      STAFF_ADMIN_EMAIL: ${{ secrets.STAFF_ADMIN_EMAIL }}
+      STAFF_ADMIN_PASSWORD: ${{ secrets.STAFF_ADMIN_PASSWORD }}
+      MYGRANT_USERNAME: ${{ secrets.MYGRANT_USERNAME }}
+      MYGRANT_PASSWORD: ${{ secrets.MYGRANT_PASSWORD }}
+      MYGRANT_BROWSER_URL: ${{ secrets.MYGRANT_BROWSER_URL }}
+      MYGRANT_BROWSER_SECRET: ${{ secrets.MYGRANT_BROWSER_SECRET }}
+      GLASS_CATALOG_PROVIDER: ${{ vars.GLASS_CATALOG_PROVIDER }}
+      SOURCING_PROVIDER: ${{ vars.SOURCING_PROVIDER }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
       - run: npm install --global vercel@latest
-      - name: Inspect API project preview env
+      - name: Deploy A - full flag list, ADDRESS_PROVIDER literal
         working-directory: apps/api
         env:
           VERCEL_PROJECT_ID: ${{ env.API_PROJECT_ID }}
         shell: bash
         run: |
-          set -uo pipefail
+          set -euo pipefail
           vercel pull --yes --environment=preview --token="$VERCEL_TOKEN"
-          echo '--- vercel env ls preview:'
-          vercel env ls preview --token="$VERCEL_TOKEN" || true
-          echo '--- keys in .vercel/.env.preview.local:'
-          grep -o '^[A-Za-z_][A-Za-z0-9_]*' .vercel/.env.preview.local | sort || true
-          echo '--- ADDRESS_PROVIDER in pulled env file (not a secret):'
-          grep '^ADDRESS_PROVIDER=' .vercel/.env.preview.local || echo 'ABSENT from pulled env file'
-      - name: Probe live staging API through the web alias
+          url_a="$(vercel deploy --yes --token="$VERCEL_TOKEN" --env DATABASE_URL="$DATABASE_URL" --env PG_POOL_MAX=3 --env AUTH_SECRET="$AUTH_SECRET" --env STAFF_ADMIN_EMAIL="$STAFF_ADMIN_EMAIL" --env STAFF_ADMIN_PASSWORD="$STAFF_ADMIN_PASSWORD" --env MYGRANT_USERNAME="$MYGRANT_USERNAME" --env MYGRANT_PASSWORD="$MYGRANT_PASSWORD" --env MYGRANT_BROWSER_URL="$MYGRANT_BROWSER_URL" --env MYGRANT_BROWSER_SECRET="$MYGRANT_BROWSER_SECRET" --env GLASS_CATALOG_PROVIDER="${GLASS_CATALOG_PROVIDER:-mock}" --env SOURCING_PROVIDER="${SOURCING_PROVIDER:-mock}" --env ADDRESS_PROVIDER=mock | tail -n1)"
+          echo "DEPLOY_A_URL=$url_a"
+          echo "--- A health:"
+          curl -s -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" "$url_a/api/v1/health" || true
+          echo
+          echo "--- A suggest:"
+          curl -s -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" "$url_a/api/v1/public/address/suggest?q=118%20Terr" || true
+          echo
+      - name: Deploy B - minimal flag list
+        working-directory: apps/api
+        env:
+          VERCEL_PROJECT_ID: ${{ env.API_PROJECT_ID }}
         shell: bash
         run: |
-          set -uo pipefail
-          echo '--- health:'
-          curl -s -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" 'https://rnr-case-staging-zero-to100-edu.vercel.app/api/v1/health'
-          echo
-          echo '--- suggest q=118 Terr:'
-          curl -s -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" 'https://rnr-case-staging-zero-to100-edu.vercel.app/api/v1/public/address/suggest?q=118%20Terr'
+          set -euo pipefail
+          vercel pull --yes --environment=preview --token="$VERCEL_TOKEN"
+          url_b="$(vercel deploy --yes --token="$VERCEL_TOKEN" --env DATABASE_URL="$DATABASE_URL" --env AUTH_SECRET="$AUTH_SECRET" --env ADDRESS_PROVIDER=mock | tail -n1)"
+          echo "DEPLOY_B_URL=$url_b"
+          echo "--- B suggest:"
+          curl -s -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" "$url_b/api/v1/public/address/suggest?q=118%20Terr" || true
           echo
