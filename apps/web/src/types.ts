@@ -120,8 +120,102 @@ export interface CaseRecord {
   /** Service complete but the invoice is not paid/written off yet. */
   awaiting_payment?: boolean;
   quote: Quote | null;
+  /** Fulfillment assignment (Slice A); null until staff open scheduling. */
+  job?: JobAssignment | null;
   created_at: string;
   updated_at: string;
+}
+
+/** The case's fulfillment job (Slice A): assignment + schedule window. */
+export interface JobAssignment {
+  id: string;
+  case_id: string;
+  status: "UNASSIGNED" | "ASSIGNED";
+  assignment_mode: "DIRECT" | "OFFERED";
+  assigned_tech_id: string | null;
+  scheduled_start: string | null;
+  scheduled_end: string | null;
+  calendar_event_id: string | null;
+  tech_name: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type OperatorStatus = "INVITED" | "PROFILE_PENDING" | "ACTIVE" | "DEACTIVATED";
+
+export interface AvailabilityWindow {
+  day_of_week: number;
+  start: string;
+  end: string;
+}
+
+/** Tech profile as staff may see it (no credential material, ever). */
+export interface TechProfile {
+  user_id: string;
+  status: Exclude<OperatorStatus, "INVITED">;
+  phone: string | null;
+  home_base: string | null;
+  service_area: string | null;
+  claimed_qualifications: string[];
+  qualifications: string[];
+  availability: AvailabilityWindow[];
+  live_status: "AVAILABLE" | "OFF";
+  location_sharing_consent: boolean;
+  google_sub: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Operator {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  status: OperatorStatus;
+  profile: TechProfile | null;
+  created_at: string;
+}
+
+export interface OperatorInviteView {
+  id: string;
+  email: string;
+  status: "INVITED";
+  expires_at: string;
+  created_at: string;
+}
+
+export interface SchedulerCandidate {
+  tech_id: string;
+  name: string;
+  email: string;
+  free_at: string | null;
+  jobs_that_day: number;
+  qualifications: string[];
+}
+
+export interface SchedulerProposal {
+  requirement: {
+    glass_type: GlassType;
+    requires_adas: boolean;
+    service_mode: "MOBILE" | "IN_SHOP" | null;
+    required_tags: string[];
+  };
+  window: { start: string; end: string };
+  eligible: SchedulerCandidate[];
+  excluded: { tech_id: string; name: string; email: string; reasons: string[] }[];
+}
+
+export interface ScheduleBoardEntry {
+  job: JobAssignment | null;
+  case_id: string;
+  reference: string;
+  channel: string;
+  current_state: string;
+  glass_type: GlassType | null;
+  tech_id: string | null;
+  tech_name: string | null;
+  scheduled_start: string | null;
+  scheduled_end: string | null;
 }
 
 export type QuoteStatus = "SENT" | "APPROVED" | "DECLINED" | "EXPIRED";

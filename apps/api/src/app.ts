@@ -3,7 +3,7 @@ import cors from "cors";
 import multer from "multer";
 import { z } from "zod";
 import { signatureMethodOf, type CaseRecord, type Channel, type StaffUser } from "./types.js";
-import type { CaseStore } from "./store.js";
+import type { CaseStore, TechProfilePatch } from "./store.js";
 import type { GlassCatalogProvider } from "./glass-catalog.js";
 import { createGlassCatalogProvider } from "./mygrant.js";
 import { decodeVinNhtsa, VinDecodeError } from "./vin-decode.js";
@@ -46,10 +46,53 @@ import {
 import {
   ensureSeedAdmin,
   requireAuth,
+  requireRole,
   signToken,
   verifyPassword,
   type AuthConfig
 } from "./auth.js";
+import {
+  acceptInviteWithGoogleIdentity,
+  deactivateOperator,
+  inviteOperator,
+  inviteView,
+  loadTech,
+  OperatorError,
+  operatorView,
+  publicProfile,
+  reactivateOperator,
+  resolveInvite,
+  sanitizeQualifications,
+  isValidAvailability,
+  verifyOperator
+} from "./operators.js";
+import {
+  GoogleAuthError,
+  HttpGoogleIdentityProvider,
+  loadGoogleOidcConfig,
+  newOAuthState,
+  signOAuthState,
+  verifyOAuthState,
+  type GoogleIdentityProvider,
+  type GoogleOidcConfig
+} from "./google-auth.js";
+import {
+  GoogleCalendarProvider,
+  NoopCalendarProvider,
+  type CalendarProvider
+} from "./google-calendar.js";
+import {
+  assignJob,
+  deriveRequirement,
+  ensureJob,
+  proposeAssignments,
+  reassignJob,
+  scheduleBoard,
+  SchedulerError,
+  todayKey,
+  operatorTimezone
+} from "./scheduler.js";
+import type { Job } from "./types.js";
 import {
   consumeApprovalToken,
   mintApprovalToken,
@@ -271,6 +314,23 @@ export interface AppDeps {
    */
   vinOcr?: (image: Buffer) => Promise<OcrVinResult>;
   /**
+   * Google OIDC configuration override (tests). Defaults to the
+   * GOOGLE_OIDC_* env vars; null = Google Sign-In disabled (inert).
+   */
+  googleConfig?: GoogleOidcConfig | null;
+  /**
+   * Google identity provider override (tests inject the mock provider so
+   * no live Google calls happen). Defaults to the real HTTP provider
+   * when configured, null when unconfigured.
+   */
+  googleProvider?: GoogleIdentityProvider | null;
+  /**
+   * Calendar surface override (tests inject the mock provider). Defaults
+   * to the live Google Calendar provider when configured, otherwise a
+   * logged no-op.
+   */
+  calendarProvider?: CalendarProvider;
+  /**
    * Address-suggestion provider for the intake service-address field.
    * Defaults to the env-selected provider (ADDRESS_PROVIDER=nominatim|mock).
    * Injectable so tests never call the live geocoder.
@@ -289,6 +349,19 @@ export function createApp(
   const addressProvider = deps.addressProvider ?? createAddressProvider();
   const pricingConfig = deps.pricingConfig ?? loadPricingConfig();
   const quotingConfig = deps.quotingConfig ?? loadQuotingConfig();
+  // Google Sign-In + Calendar (Slice A §7.1): complete but inert when
+  // unconfigured — every Google surface feature-detects off these two.
+  const googleConfig =
+    deps.googleConfig !== undefined ? deps.googleConfig : loadGoogleOidcConfig();
+  const googleProvider =
+    deps.googleProvider !== undefined
+      ? deps.googleProvider
+      : googleConfig
+        ? new HttpGoogleIdentityProvider(googleConfig)
+        : null;
+  const calendarProvider =
+    deps.calendarProvider ??
+    (googleConfig ? new GoogleCalendarProvider(googleConfig) : new NoopCalendarProvider());
   const app = express();
 
   // Do not fingerprint the framework: Express sets X-Powered-By by default.
@@ -322,7 +395,7 @@ export function createApp(
 
   app.use(express.json({ limit: "256kb" }));
 
-  const auth = requireAuth(authConfig);
+  const auth = requireAuth(store, authConfig);
 
   const loginLimiter = createRateLimiter({
     windowMs:
@@ -361,6 +434,15 @@ export function createApp(
         !invoiceClosable(rawInvoice)
     );
     const quote = await store.getLatestQuote(c.id);
+    const jobRecord = await store.getJobByCase(c.id);
+    const job = jobRecord
+      ? {
+          ...jobRecord,
+          tech_name: jobRecord.assigned_tech_id
+            ? ((await store.getStaffById(jobRecord.assigned_tech_id))?.name ?? null)
+            : null
+        }
+      : null;
     // Staff-only projection of a client self-service intake (Slice A):
     // the CLIENT_INTAKE_SUBMITTED event is the source of truth for who
     // sent the case in and how staff reach them. Staff-created cases
@@ -372,7 +454,7 @@ export function createApp(
     const client_intake = intakeEvent
       ? clientIntakeView(intakeEvent.payload, intakeEvent.occurred_at)
       : null;
-    return { ...c, vehicle, glass_request, glass_identification, supplier_offers, price_calculation, quote, invoice, invoice_events, awaiting_payment, client_intake };
+    return { ...c, vehicle, glass_request, glass_identification, supplier_offers, price_calculation, quote, invoice, invoice_events, awaiting_payment, client_intake, job };
   };
 
   /**
@@ -448,7 +530,10 @@ export function createApp(
       // Boolean only: proves the MyGrant secrets reached the runtime without
       // ever exposing their values. Live mode additionally requires
       // GLASS_CATALOG_PROVIDER/SOURCING_PROVIDER=mygrant.
-      mygrant_configured: Boolean(process.env.MYGRANT_USERNAME && process.env.MYGRANT_PASSWORD)
+      mygrant_configured: Boolean(process.env.MYGRANT_USERNAME && process.env.MYGRANT_PASSWORD),
+      // Boolean only: Google Sign-In is configured (Slice A). The web app
+      // shows the Google button only when this is true.
+      google_signin: googleProvider !== null
     });
   };
   app.get("/health", healthHandler);
@@ -471,8 +556,18 @@ export function createApp(
     await ensureSeedAdmin(store);
 
     const record = await store.findStaffByEmail(parsed.data.email);
+    // Google-only accounts (techs) hold no local password: a null hash
+    // can never satisfy a password login. A deactivated tech is likewise
+    // refused — with the same generic error, so nothing is revealed.
+    let deactivated = false;
+    if (record?.role === "tech") {
+      const profile = await store.getTechProfile(record.id);
+      deactivated = !profile || profile.status === "DEACTIVATED";
+    }
     const valid =
       record !== null &&
+      !deactivated &&
+      record.password_hash !== null &&
       (await verifyPassword(parsed.data.password, record.password_hash));
 
     if (!valid) {
@@ -492,6 +587,427 @@ export function createApp(
 
   app.get("/api/v1/auth/me", auth, (req, res) => {
     res.json({ staff: req.staff });
+  });
+
+  // ---------------------------------------------------------------------
+  // Google Sign-In (Slice A, brief §7.1) — the tech onboarding key.
+  //
+  // Inert when unconfigured: /config reports enabled:false, /start 404s,
+  // and the web app never shows the button. When configured, the flow is
+  // a standard OIDC authorization-code grant against Google; tests drive
+  // it through the injected mock provider (no live Google calls).
+  //
+  // Two entry modes share one callback:
+  //  - plain sign-in: the Google account must already have a Case Core
+  //    account (staff, or a tech past onboarding).
+  //  - invite accept (?invite=<credential>): the Google account email
+  //    must match the invite; success creates the tech account in
+  //    PROFILE_PENDING and consumes the invite.
+  // The session JWT returns in the redirect fragment (#session=...) so
+  // it never reaches a server log; failures land on #auth_error=...
+  // ---------------------------------------------------------------------
+
+  const GOOGLE_STATE_COOKIE = "rnr_google_state";
+
+  const parseCookies = (req: express.Request): Record<string, string> => {
+    const out: Record<string, string> = {};
+    const raw = req.headers.cookie;
+    if (!raw) return out;
+    for (const part of raw.split(";")) {
+      const idx = part.indexOf("=");
+      if (idx > 0) out[part.slice(0, idx).trim()] = decodeURIComponent(part.slice(idx + 1).trim());
+    }
+    return out;
+  };
+
+  const googleLanding = (fragment: string): string =>
+    googleConfig?.webOrigin ? `${googleConfig.webOrigin}/${fragment}` : `/${fragment}`;
+
+  const googleFail = (res: express.Response, message: string) =>
+    res.redirect(googleLanding(`#auth_error=${encodeURIComponent(message)}`));
+
+  app.get("/api/v1/auth/google/config", (_req, res) => {
+    res.json({ enabled: googleProvider !== null });
+  });
+
+  app.get("/api/v1/auth/google/start", (req, res) => {
+    if (!googleProvider || !googleConfig) {
+      return res.status(404).json({
+        error: {
+          code: "GOOGLE_NOT_CONFIGURED",
+          message: "Google sign-in is not configured on this deployment."
+        }
+      });
+    }
+    const invite =
+      typeof req.query.invite === "string" && req.query.invite ? req.query.invite : null;
+    const state = signOAuthState(newOAuthState(invite), authConfig.authSecret);
+    const secure = googleConfig.redirectUri.startsWith("https://") ? "; Secure" : "";
+    res.setHeader(
+      "Set-Cookie",
+      `${GOOGLE_STATE_COOKIE}=${encodeURIComponent(state)}; HttpOnly; SameSite=Lax; Path=/api/v1/auth/google; Max-Age=600${secure}`
+    );
+    return res.redirect(googleProvider.buildAuthorizationUrl(state));
+  });
+
+  app.get("/api/v1/auth/google/callback", async (req, res) => {
+    if (!googleProvider || !googleConfig) {
+      return res.status(404).json({
+        error: {
+          code: "GOOGLE_NOT_CONFIGURED",
+          message: "Google sign-in is not configured on this deployment."
+        }
+      });
+    }
+    try {
+      const code = typeof req.query.code === "string" ? req.query.code : "";
+      const stateParam = typeof req.query.state === "string" ? req.query.state : "";
+      if (typeof req.query.error === "string" || !code || !stateParam) {
+        return googleFail(res, "Google sign-in was cancelled or incomplete. Please try again.");
+      }
+      const state = verifyOAuthState(stateParam, authConfig.authSecret);
+      const cookieState = parseCookies(req)[GOOGLE_STATE_COOKIE];
+      if (!state || cookieState !== stateParam) {
+        return googleFail(res, "This sign-in link has expired. Please start again.");
+      }
+      const tokens = await googleProvider.exchangeCode(code);
+      const identity = await googleProvider.verifyIdToken(tokens.idToken);
+      if (!identity.emailVerified) {
+        return googleFail(res, "That Google account's email is not verified.");
+      }
+
+      let user: StaffUser | null = null;
+      if (state.invite) {
+        const invite = await resolveInvite(store, state.invite);
+        const accepted = await acceptInviteWithGoogleIdentity(
+          store,
+          invite,
+          identity,
+          tokens.refreshCredential
+        );
+        user = accepted.user;
+      } else {
+        const record = await store.findStaffByEmail(identity.email);
+        if (!record) {
+          return googleFail(
+            res,
+            "There is no Case Core account for that Google account. Ask R&R for an invite."
+          );
+        }
+        if (record.role === "tech") {
+          const profile = await store.getTechProfile(record.id);
+          if (!profile || profile.status === "DEACTIVATED") {
+            return googleFail(res, "This account is not active. Please contact R&R.");
+          }
+          // Bind/refresh the Google identity on the profile. A fresh
+          // refresh credential (first consent) replaces the stored one;
+          // Google omits it on later grants, so keep the old one then.
+          const patch: TechProfilePatch = { google_sub: identity.sub };
+          if (tokens.refreshCredential) {
+            patch.google_refresh_credential = tokens.refreshCredential;
+          }
+          await store.updateTechProfile(record.id, patch);
+        }
+        const { password_hash: _hash, ...staffUser } = record;
+        user = staffUser;
+      }
+
+      const session = signToken(user, authConfig.authSecret, authConfig.tokenTtlSeconds);
+      return res.redirect(googleLanding(`#session=${encodeURIComponent(session)}`));
+    } catch (error) {
+      if (error instanceof OperatorError) {
+        return googleFail(res, error.message);
+      }
+      if (error instanceof GoogleAuthError) {
+        return googleFail(res, error.message);
+      }
+      console.error("Google sign-in callback failed:", error);
+      return googleFail(res, "Google sign-in could not be completed. Please try again.");
+    }
+  });
+
+  // ---------------------------------------------------------------------
+  // Operators (Slice A): tech management + onboarding + assignment.
+  //
+  // Access law, enforced here server-side:
+  //  - admin/owner manage operators (invite, verify, deactivate);
+  //  - staff (and admin/owner) run scheduling + assignment;
+  //  - a tech sees ONLY their own profile (/operators/me) — never the
+  //    operators list, the schedule board, or any case route (the /cases
+  //    mount below refuses tech tokens outright, so a tech can never
+  //    read the queue, other techs' work, or any case economics).
+  // ---------------------------------------------------------------------
+
+  const staffRoles = requireRole("staff", "admin", "owner");
+  const manageRoles = requireRole("admin", "owner");
+
+  const operatorError = (res: express.Response, error: unknown): boolean => {
+    if (error instanceof OperatorError || error instanceof SchedulerError) {
+      res.status(error.httpStatus).json({
+        error: { code: error.code, message: error.message }
+      });
+      return true;
+    }
+    return false;
+  };
+
+  app.get("/api/v1/operators", auth, staffRoles, async (_req, res) => {
+    const [users, profiles, invites] = await Promise.all([
+      store.listStaffUsers(),
+      store.listTechProfiles(),
+      store.listOperatorInvites()
+    ]);
+    const profileByUser = new Map(profiles.map(p => [p.user_id, p]));
+    const operators = users
+      .filter(u => u.role === "tech")
+      .map(u => {
+        const { password_hash: _hash, ...staff } = u;
+        return operatorView(staff, profileByUser.get(u.id) ?? null);
+      });
+    const openInvites = invites.filter(i => !i.consumed_at).map(inviteView);
+    res.json({ operators, invites: openInvites });
+  });
+
+  const inviteSchema = z.object({
+    email: z.string().trim().toLowerCase().email()
+  });
+
+  app.post("/api/v1/operators/invites", auth, manageRoles, async (req, res) => {
+    const parsed = inviteSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(422).json({
+        error: { code: "VALIDATION_ERROR", message: "A valid email address is required." }
+      });
+    }
+    try {
+      const { invite, credential } = await inviteOperator(store, {
+        email: parsed.data.email,
+        invitedBy: req.staff?.id ?? null
+      });
+      return res.status(201).json({
+        invite: inviteView(invite),
+        // Shown exactly once: staff send this link to the tech. The API
+        // stores only the credential's hash.
+        invite_path: `/invite/${credential}`,
+        credential
+      });
+    } catch (error) {
+      if (operatorError(res, error)) return;
+      throw error;
+    }
+  });
+
+  app.delete("/api/v1/operators/invites/:inviteId", auth, manageRoles, async (req, res) => {
+    const invites = await store.listOperatorInvites();
+    const invite = invites.find(i => i.id === req.params.inviteId);
+    if (!invite || invite.consumed_at) {
+      return res.status(404).json({
+        error: { code: "INVITE_NOT_FOUND", message: "Invite not found." }
+      });
+    }
+    await store.deleteOperatorInvite(invite.id);
+    return res.json({ ok: true });
+  });
+
+  const availabilitySchema = z.array(
+    z.object({
+      day_of_week: z.number().int().min(0).max(6),
+      start: z.string(),
+      end: z.string()
+    })
+  );
+
+  const verifySchema = z.object({
+    qualifications: z.array(z.string()).optional(),
+    availability: availabilitySchema.optional()
+  });
+
+  // NOTE: /operators/me routes are registered before /operators/:userId
+  // so "me" is never captured as a user id.
+  app.get("/api/v1/operators/me", auth, async (req, res) => {
+    const staff = req.staff!;
+    if (staff.role !== "tech") {
+      return res.json({ staff, status: "ACTIVE", profile: null });
+    }
+    const profile = await store.getTechProfile(staff.id);
+    return res.json({
+      staff,
+      status: profile?.status ?? "PROFILE_PENDING",
+      profile: publicProfile(profile)
+    });
+  });
+
+  const myProfileSchema = z.object({
+    phone: z.string().trim().min(7).max(32),
+    home_base: z.string().trim().min(1).max(120),
+    service_area: z.string().trim().min(1).max(120),
+    claimed_qualifications: z.array(z.string()),
+    location_sharing_consent: z.boolean()
+  });
+
+  app.put("/api/v1/operators/me/profile", auth, requireRole("tech"), async (req, res) => {
+    const parsed = myProfileSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      const first = parsed.error.issues[0];
+      return res.status(422).json({
+        error: {
+          code: "VALIDATION_ERROR",
+          message: first?.message ?? "Invalid profile.",
+          details: { field: first?.path.join(".") }
+        }
+      });
+    }
+    const claimed = sanitizeQualifications(parsed.data.claimed_qualifications);
+    if (claimed === null) {
+      return res.status(422).json({
+        error: { code: "VALIDATION_ERROR", message: "Unknown qualification tag." }
+      });
+    }
+    const staff = req.staff!;
+    const profile = await store.getTechProfile(staff.id);
+    if (!profile) {
+      return res.status(404).json({
+        error: { code: "OPERATOR_NOT_FOUND", message: "Tech profile not found." }
+      });
+    }
+    const updated = await store.updateTechProfile(staff.id, {
+      phone: parsed.data.phone,
+      home_base: parsed.data.home_base,
+      service_area: parsed.data.service_area,
+      claimed_qualifications: claimed,
+      location_sharing_consent: parsed.data.location_sharing_consent
+    });
+    return res.json({
+      staff,
+      status: updated.status,
+      profile: publicProfile(updated)
+    });
+  });
+
+  app.post("/api/v1/operators/:userId/verify", auth, manageRoles, async (req, res) => {
+    const parsed = verifySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(422).json({
+        error: { code: "VALIDATION_ERROR", message: "Invalid verification payload." }
+      });
+    }
+    const qualifications =
+      parsed.data.qualifications !== undefined
+        ? sanitizeQualifications(parsed.data.qualifications)
+        : undefined;
+    if (qualifications === null) {
+      return res.status(422).json({
+        error: { code: "VALIDATION_ERROR", message: "Unknown qualification tag." }
+      });
+    }
+    if (
+      parsed.data.availability !== undefined &&
+      !isValidAvailability(parsed.data.availability)
+    ) {
+      return res.status(422).json({
+        error: { code: "VALIDATION_ERROR", message: "Invalid availability window." }
+      });
+    }
+    try {
+      const view = await verifyOperator(store, String(req.params.userId), {
+        qualifications: qualifications ?? undefined,
+        availability: parsed.data.availability
+      });
+      return res.json({ operator: view });
+    } catch (error) {
+      if (operatorError(res, error)) return;
+      throw error;
+    }
+  });
+
+  app.post("/api/v1/operators/:userId/deactivate", auth, manageRoles, async (req, res) => {
+    try {
+      const view = await deactivateOperator(store, String(req.params.userId));
+      return res.json({ operator: view });
+    } catch (error) {
+      if (operatorError(res, error)) return;
+      throw error;
+    }
+  });
+
+  app.post("/api/v1/operators/:userId/reactivate", auth, manageRoles, async (req, res) => {
+    try {
+      const view = await reactivateOperator(store, String(req.params.userId));
+      return res.json({ operator: view });
+    } catch (error) {
+      if (operatorError(res, error)) return;
+      throw error;
+    }
+  });
+
+  const staffProfileSchema = z.object({
+    phone: z.string().trim().max(32).nullable().optional(),
+    home_base: z.string().trim().max(120).nullable().optional(),
+    service_area: z.string().trim().max(120).nullable().optional(),
+    qualifications: z.array(z.string()).optional(),
+    availability: availabilitySchema.optional(),
+    live_status: z.enum(["AVAILABLE", "OFF"]).optional()
+  });
+
+  app.put("/api/v1/operators/:userId/profile", auth, manageRoles, async (req, res) => {
+    const parsed = staffProfileSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(422).json({
+        error: { code: "VALIDATION_ERROR", message: "Invalid profile payload." }
+      });
+    }
+    const qualifications =
+      parsed.data.qualifications !== undefined
+        ? sanitizeQualifications(parsed.data.qualifications)
+        : undefined;
+    if (qualifications === null) {
+      return res.status(422).json({
+        error: { code: "VALIDATION_ERROR", message: "Unknown qualification tag." }
+      });
+    }
+    if (
+      parsed.data.availability !== undefined &&
+      !isValidAvailability(parsed.data.availability)
+    ) {
+      return res.status(422).json({
+        error: { code: "VALIDATION_ERROR", message: "Invalid availability window." }
+      });
+    }
+    try {
+      const { user } = await loadTech(store, String(req.params.userId));
+      const patch: TechProfilePatch = {
+        ...(parsed.data.phone !== undefined ? { phone: parsed.data.phone } : {}),
+        ...(parsed.data.home_base !== undefined ? { home_base: parsed.data.home_base } : {}),
+        ...(parsed.data.service_area !== undefined
+          ? { service_area: parsed.data.service_area }
+          : {}),
+        ...(parsed.data.availability !== undefined
+          ? { availability: parsed.data.availability }
+          : {}),
+        ...(parsed.data.live_status !== undefined
+          ? { live_status: parsed.data.live_status }
+          : {}),
+        ...(qualifications !== undefined ? { qualifications } : {})
+      };
+      const updated = await store.updateTechProfile(String(req.params.userId), patch);
+      return res.json({ operator: operatorView(user, updated) });
+    } catch (error) {
+      if (operatorError(res, error)) return;
+      throw error;
+    }
+  });
+
+  app.get("/api/v1/schedule", auth, staffRoles, async (req, res) => {
+    const date =
+      typeof req.query.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date)
+        ? req.query.date
+        : todayKey();
+    const board = await scheduleBoard(store, date, operatorTimezone());
+    // Channel scoping applies to the board exactly as to the queue.
+    const entries = board.entries.filter(e =>
+      canAccessChannel(req.staff, e.channel as Channel)
+    );
+    return res.json({ date: board.date, entries });
   });
 
   /**
@@ -1328,6 +1844,23 @@ export function createApp(
   // All case routes require staff authentication.
   app.use("/api/v1/cases", auth);
 
+  // Access law (Slice A): a tech identity never touches the staff case
+  // surface — not the queue, not another tech's case, not any case
+  // economics. Techs get their own surface in Slice B; in Slice A their
+  // only routes are /operators/me/*. This runs after auth, so req.staff
+  // is the stored record (role changes apply immediately).
+  app.use("/api/v1/cases", (req, res, next) => {
+    if (req.staff?.role === "tech") {
+      return res.status(403).json({
+        error: {
+          code: "FORBIDDEN",
+          message: "Tech accounts do not have access to the staff case queue."
+        }
+      });
+    }
+    return next();
+  });
+
   /**
    * Channel isolation: staff whose token carries a `channels` claim may only
    * touch cases in those channels. Staff without the claim (e.g. the admin)
@@ -1351,6 +1884,139 @@ export function createApp(
     res.status(404).json({
       error: { code: "CASE_NOT_FOUND", message: "Case not found." }
     });
+
+  /** Job as staff may see it: assignment record + the tech's name. */
+  const jobView = async (job: Job | null) => {
+    if (!job) return null;
+    const tech = job.assigned_tech_id
+      ? await store.getStaffById(job.assigned_tech_id)
+      : null;
+    return { ...job, tech_name: tech?.name ?? null };
+  };
+
+  const assignmentWindowSchema = z.object({
+    scheduled_start: z.string().datetime(),
+    scheduled_end: z.string().datetime()
+  });
+
+  /**
+   * Scheduler proposal for a case: derives the job requirement from the
+   * case, records the window on the job, and returns the ranked
+   * candidates (+ who was excluded and why). Proposing changes nothing
+   * about assignment — staff still confirm.
+   */
+  app.post("/api/v1/cases/:caseId/assignment/propose", async (req, res) => {
+    const c = await store.getCase(req.params.caseId);
+    if (!c || !canAccessChannel(req.staff, c.channel)) {
+      return channelNotFound(res);
+    }
+    const parsed = assignmentWindowSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(422).json({
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "scheduled_start and scheduled_end (ISO timestamps) are required."
+        }
+      });
+    }
+    if (Date.parse(parsed.data.scheduled_end) <= Date.parse(parsed.data.scheduled_start)) {
+      return res.status(422).json({
+        error: { code: "VALIDATION_ERROR", message: "The job window must end after it starts." }
+      });
+    }
+    const job = await ensureJob(store, c.id);
+    const updated = await store.updateJob(job.id, {
+      scheduled_start: parsed.data.scheduled_start,
+      scheduled_end: parsed.data.scheduled_end
+    });
+    const glassRequest = await store.getGlassRequest(c.glass_request_id);
+    const identification = glassRequest
+      ? await store.getLatestGlassIdentification(glassRequest.id)
+      : null;
+    const requirement = deriveRequirement(glassRequest?.glass_type ?? "WINDSHIELD", identification);
+    const proposals = await proposeAssignments(store, {
+      requirement,
+      startIso: parsed.data.scheduled_start,
+      endIso: parsed.data.scheduled_end,
+      excludeCaseId: c.id
+    });
+    return res.json({ job: await jobView(updated), proposals });
+  });
+
+  app.get("/api/v1/cases/:caseId/assignment", async (req, res) => {
+    const c = await store.getCase(req.params.caseId);
+    if (!c || !canAccessChannel(req.staff, c.channel)) {
+      return channelNotFound(res);
+    }
+    const job = await store.getJobByCase(c.id);
+    const glassRequest = await store.getGlassRequest(c.glass_request_id);
+    const identification = glassRequest
+      ? await store.getLatestGlassIdentification(glassRequest.id)
+      : null;
+    const requirement = deriveRequirement(glassRequest?.glass_type ?? "WINDSHIELD", identification);
+    const proposals =
+      job?.scheduled_start && job?.scheduled_end
+        ? await proposeAssignments(store, {
+            requirement,
+            startIso: job.scheduled_start,
+            endIso: job.scheduled_end,
+            excludeCaseId: c.id
+          })
+        : null;
+    return res.json({ job: await jobView(job), requirement, proposals });
+  });
+
+  const assignSchema = assignmentWindowSchema.extend({
+    tech_id: z.string().min(1),
+    override_reason: z.string().trim().max(500).optional()
+  });
+
+  const runAssignment = async (
+    req: express.Request,
+    res: express.Response,
+    mode: "assign" | "reassign"
+  ) => {
+    const c = await store.getCase(String(req.params.caseId));
+    if (!c || !canAccessChannel(req.staff, c.channel)) {
+      return channelNotFound(res);
+    }
+    const parsed = assignSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(422).json({
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "tech_id, scheduled_start and scheduled_end are required."
+        }
+      });
+    }
+    try {
+      const job = await (mode === "assign" ? assignJob : reassignJob)(
+        store,
+        calendarProvider,
+        c.id,
+        {
+          techId: parsed.data.tech_id,
+          startIso: parsed.data.scheduled_start,
+          endIso: parsed.data.scheduled_end,
+          overrideReason: parsed.data.override_reason ?? null,
+          actor: { type: "RNR_STAFF", id: req.staff?.id ?? null }
+        }
+      );
+      const updated = await store.getCase(c.id);
+      return res.json({ job: await jobView(job), case: await detail(updated!) });
+    } catch (error) {
+      if (operatorError(res, error)) return;
+      throw error;
+    }
+  };
+
+  app.post("/api/v1/cases/:caseId/assignment", (req, res) =>
+    runAssignment(req, res, "assign")
+  );
+
+  app.post("/api/v1/cases/:caseId/assignment/reassign", (req, res) =>
+    runAssignment(req, res, "reassign")
+  );
 
   app.post("/api/v1/cases", async (req, res) => {
     const parsed = createCaseSchema.safeParse(req.body);
@@ -1591,7 +2257,23 @@ export function createApp(
       if (action in LIFECYCLE_STEPS) {
         // Fulfillment steps (order → schedule → dispatch → start →
         // complete) live in lifecycle.ts; they share one handler.
-        await advanceLifecycle(store, c.id, action, staffActor, req.body ?? {});
+        let payload = req.body ?? {};
+        if (action === "dispatch_technician" && !payload.technician_name) {
+          // Slice A: when the job has an assigned tech, the customer
+          // sees that tech's first name — the same projection the legacy
+          // free-text field fed, now sourced from the assignment.
+          const job = await store.getJobByCase(c.id);
+          if (job?.assigned_tech_id) {
+            const tech = await store.getStaffById(job.assigned_tech_id);
+            if (tech) {
+              payload = {
+                ...payload,
+                technician_name: tech.name.trim().split(/\s+/)[0] ?? tech.name
+              };
+            }
+          }
+        }
+        await advanceLifecycle(store, c.id, action, staffActor, payload);
         const updated = await store.getCase(c.id);
         return res.json(await detail(updated!));
       }

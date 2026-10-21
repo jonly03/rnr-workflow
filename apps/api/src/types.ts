@@ -75,9 +75,11 @@ export interface StaffUser {
   channels?: Channel[];
 }
 
-/** Staff record as stored, including the password hash. Never sent to clients. */
+/** Staff record as stored, including the password hash. Never sent to clients.
+ *  The hash is null for Google-only accounts (techs onboarded via Google
+ *  Sign-In hold no local password; password login rejects null hashes). */
 export interface StaffUserRecord extends StaffUser {
-  password_hash: string;
+  password_hash: string | null;
 }
 
 export type ApprovalTokenPurpose = "quote-approval" | "case-view" | "intake-status";
@@ -212,6 +214,112 @@ export interface PriceCalculation {
   created_at: string;
 }
 
+/**
+ * Operator (tech) onboarding lifecycle (brief §7.1):
+ * INVITED (an invite row exists, no account yet) → PROFILE_PENDING
+ * (Google sign-in matched the invite; profile submitted, awaiting staff
+ * verification) → ACTIVE ⇄ DEACTIVATED. Only ACTIVE techs can sign in
+ * and be assigned work.
+ */
+export type OperatorStatus =
+  | "INVITED"
+  | "PROFILE_PENDING"
+  | "ACTIVE"
+  | "DEACTIVATED";
+
+/**
+ * Qualification tags a tech can hold. Glass types reuse the GlassType
+ * codes; the rest are capability tags. A job's requirement is a set of
+ * these tags and a tech is qualified when they hold every required tag.
+ */
+export const QUALIFICATION_TAGS: readonly string[] = [
+  "WINDSHIELD",
+  "BACK_GLASS",
+  "DOOR_GLASS",
+  "QUARTER_GLASS",
+  "VENT_GLASS",
+  "ADAS_CALIBRATION",
+  "MOBILE",
+  "IN_SHOP"
+];
+
+/** One recurring weekly availability window. Times are "HH:MM" in the
+ *  shop timezone (OPERATOR_TIMEZONE, default America/New_York). */
+export interface AvailabilityWindow {
+  /** 0 = Sunday … 6 = Saturday. */
+  day_of_week: number;
+  start: string;
+  end: string;
+}
+
+/** Tech-side profile keyed to a staff_users row with role "tech". */
+export interface TechProfile {
+  user_id: string;
+  status: Exclude<OperatorStatus, "INVITED">;
+  phone: string | null;
+  home_base: string | null;
+  service_area: string | null;
+  /** Qualifications the tech claimed at profile completion. */
+  claimed_qualifications: string[];
+  /** Qualifications staff verified. This is what the scheduler reads. */
+  qualifications: string[];
+  availability: AvailabilityWindow[];
+  /** Live availability: OFF excludes the tech from scheduler proposals. */
+  live_status: "AVAILABLE" | "OFF";
+  /** Consent to share location while a job is active (Slice C enforces). */
+  location_sharing_consent: boolean;
+  /** Google account subject id, bound at Google sign-in. */
+  google_sub: string | null;
+  /**
+   * Google OAuth refresh credential for calendar writes (Slice A §7.1).
+   * Server-side only — never serialized into any API response.
+   */
+  google_refresh_credential: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * An invitation for a tech to onboard, addressed to a Gmail account.
+ * Only the sha256 hash of the invite credential is stored; the raw
+ * credential is shown once, inside the invite link staff send.
+ */
+export interface OperatorInvite {
+  id: string;
+  email: string;
+  credential_hash: string;
+  invited_by: string | null;
+  expires_at: string;
+  consumed_at: string | null;
+  created_at: string;
+}
+
+/** How a job gets its tech. DIRECT = staff-confirmed assignment (v1).
+ *  OFFERED is the later bid/pickup marketplace — designed-for, not built. */
+export type AssignmentMode = "DIRECT" | "OFFERED";
+
+export type JobStatus = "UNASSIGNED" | "ASSIGNED";
+
+/**
+ * The assignment record for a case's fulfillment work (1 job per case in
+ * v1). Granular tech checklist steps land on this entity in Slice B; for
+ * Slice A it carries the schedule window + the assigned tech.
+ */
+export interface Job {
+  id: string;
+  case_id: string;
+  status: JobStatus;
+  assignment_mode: AssignmentMode;
+  assigned_tech_id: string | null;
+  /** ISO instants for the scheduled work window. Null until scheduled. */
+  scheduled_start: string | null;
+  scheduled_end: string | null;
+  /** Google Calendar event id once the calendar surface has written it. */
+  calendar_event_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface StoreShape {
   cases: CaseRecord[];
   vehicles: Vehicle[];
@@ -219,6 +327,9 @@ export interface StoreShape {
   events: CaseEvent[];
   idempotency: Record<string, string>;
   staff_users: StaffUserRecord[];
+  tech_profiles: TechProfile[];
+  operator_invites: OperatorInvite[];
+  jobs: Job[];
   approval_tokens: ApprovalTokenRecord[];
   glass_identifications: GlassIdentification[];
   vin_lookups: VinLookupRecord[];

@@ -1,27 +1,40 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  assignTech,
   createCase,
   createIntakeQuoteLink,
   createQuoteLink,
   createTrackingLink,
+  deactivateOperator,
   declinePublicQuote,
   decodeVin,
   downloadInvoicePdf,
+  getAssignment,
   getCase,
   getCaseEvents,
+  getGoogleConfig,
   getHealth,
   getMe,
+  getMyOperator,
   getPublicIntakeStatus,
   getPublicQuote,
   getPublicTracking,
+  getSchedule,
   getToken,
+  googleStartUrl,
+  inviteOperator,
   listCases,
   listInvoices,
+  listOperators,
   login,
   logout,
   ocrVinPhoto,
   performAction,
+  proposeAssignment,
   publicInvoicePdfUrl,
+  reactivateOperator,
+  revokeInvite,
+  setToken,
   signPublicQuote,
   startIdentification,
   submitPublicIntake,
@@ -29,18 +42,35 @@ import {
   suggestAddresses,
   ApiError,
   UnauthorizedError,
+  updateMyProfile,
+  updateOperatorProfile,
+  verifyOperator,
   type AddressSuggestion,
   type DecodedVehicle,
   type InvoiceBoardItem,
+  type MyOperator,
   type PublicIntakeStatus,
   type PublicQuoteView,
   type PublicTrackingView,
   type StaffEventsStatus,
   type StaffUser
 } from "./api";
-import type { CaseEvent, CaseRecord, Channel, GlassCandidate, GlassType, Invoice, InvoicePaymentStatus } from "./types";
+import type {
+  AvailabilityWindow,
+  CaseEvent,
+  CaseRecord,
+  Channel,
+  GlassCandidate,
+  GlassType,
+  Invoice,
+  InvoicePaymentStatus,
+  Operator,
+  OperatorInviteView,
+  ScheduleBoardEntry,
+  SchedulerProposal
+} from "./types";
 
-type Screen = "queue" | "new" | "detail" | "quote" | "invoices";
+type Screen = "queue" | "new" | "detail" | "quote" | "operators" | "schedule" | "invoices";
 
 const humanize = (value: string) =>
   value.toLowerCase().replaceAll("_", " ").replace(/(^|\s)\S/g, c => c.toUpperCase());
@@ -170,6 +200,7 @@ export function App() {
   const [events, setEvents] = useState<CaseEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
+  const [authError, setAuthError] = useState("");
 
   // A load error (e.g. a transient "Load failed" when the queue fetch hits
   // a network blip) belongs to the screen where it happened. Clear it on
@@ -285,6 +316,27 @@ export function App() {
     }
     setMessage(error instanceof Error ? error.message : "Could not load cases.");
   };
+
+  // Google Sign-In returns through the URL fragment: #session=<jwt> on
+  // success, #auth_error=<message> on failure (the JWT never reaches a
+  // server log this way). Consume it once, then scrub the fragment.
+  // Declared before the session boot effect below so the token is in
+  // storage by the time it reads.
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.location.hash) return;
+    const params = new URLSearchParams(window.location.hash.slice(1));
+    const session = params.get("session");
+    const error = params.get("auth_error");
+    if (session) setToken(session);
+    if (error) setAuthError(error);
+    if (session || error) {
+      window.history.replaceState(
+        null,
+        "",
+        window.location.pathname + window.location.search
+      );
+    }
+  }, []);
 
   useEffect(() => {
     if (!getToken()) {
@@ -428,6 +480,10 @@ export function App() {
     if (window.location.pathname === "/intake") {
       return { kind: "intake" as const, token: "" };
     }
+    const invite = window.location.pathname.match(/^\/invite\/([A-Za-z0-9_-]+)$/);
+    if (invite) {
+      return { kind: "invite" as const, token: invite[1] };
+    }
     const m = window.location.pathname.match(/^\/(quote|track)\/([A-Za-z0-9_-]+)$/);
     return m ? { kind: m[1] as "quote" | "track", token: m[2] } : null;
   }, []);
@@ -441,6 +497,9 @@ export function App() {
   if (publicRoute?.kind === "intake") {
     return <PublicIntakePage />;
   }
+  if (publicRoute?.kind === "invite") {
+    return <InviteAcceptPage credential={publicRoute.token} authError={authError} />;
+  }
 
   if (!authChecked) {
     return (
@@ -453,7 +512,47 @@ export function App() {
   if (!staff) {
     return (
       <Shell staff={null} onSignOut={signOut}>
-        <LoginScreen onSignedIn={s => setStaff(s)} />
+        <LoginScreen onSignedIn={s => setStaff(s)} authError={authError} />
+      </Shell>
+    );
+  }
+
+  // Techs land on their own surface, never the staff queue (the API
+  // refuses tech tokens on case routes anyway; this keeps the UI honest).
+  if (staff.role === "tech") {
+    return (
+      <Shell staff={staff} onSignOut={signOut}>
+        <TechGate staff={staff} />
+      </Shell>
+    );
+  }
+
+  if (screen === "operators") {
+    return (
+      <Shell
+        staff={staff}
+        onSignOut={signOut}
+        crumbs={[
+          { label: "Case queue", onClick: () => setScreen("queue") },
+          { label: "Operators" }
+        ]}
+      >
+        <OperatorsScreen currentStaff={staff} />
+      </Shell>
+    );
+  }
+
+  if (screen === "schedule") {
+    return (
+      <Shell
+        staff={staff}
+        onSignOut={signOut}
+        crumbs={[
+          { label: "Case queue", onClick: () => setScreen("queue") },
+          { label: "Schedule" }
+        ]}
+      >
+        <ScheduleScreen onOpenCase={id => { void openCase(id); }} />
       </Shell>
     );
   }
@@ -579,6 +678,10 @@ export function App() {
           <aside className="queue-sidebar" aria-label="Case filters">
             <button type="button" className="primary sidebar-new" onClick={() => { setNewCaseOrigin({ screen: "queue" }); setScreen("new"); }}>+ New Case</button>
             <button type="button" className="secondary sidebar-new" onClick={() => setScreen("invoices")}>Invoice board</button>
+            <div className="sidebar-nav">
+              <button type="button" className="secondary" onClick={() => setScreen("schedule")}>Schedule board</button>
+              <button type="button" className="secondary" onClick={() => setScreen("operators")}>Operators</button>
+            </div>
             <div className="queue-toolbar">
               <div className="toolbar-section">
                 <input
@@ -920,11 +1023,29 @@ function Shell({
   );
 }
 
-function LoginScreen({ onSignedIn }: { onSignedIn: (s: StaffUser) => void }) {
+function LoginScreen({
+  onSignedIn,
+  authError = ""
+}: {
+  onSignedIn: (s: StaffUser) => void;
+  authError?: string;
+}) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [signingIn, setSigningIn] = useState(false);
+  // Google Sign-In appears only when the deployment has it configured
+  // (feature-detected; inert otherwise — Slice A §7.1).
+  const [googleEnabled, setGoogleEnabled] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    getGoogleConfig().then(config => {
+      if (!cancelled) setGoogleEnabled(config.enabled);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -949,7 +1070,16 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (s: StaffUser) => void }) {
         </div>
       </div>
 
+      {authError && <div className="alert" role="alert">{authError}</div>}
       {error && <div className="alert" role="alert">{error}</div>}
+
+      {googleEnabled && (
+        <div className="actions">
+          <a className="secondary" href={googleStartUrl()} data-testid="google-signin">
+            Continue with Google
+          </a>
+        </div>
+      )}
 
       <label>
         Email
@@ -975,6 +1105,628 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (s: StaffUser) => void }) {
         <button className="primary" disabled={signingIn}>
           {signingIn ? "Signing in…" : "Sign in"}
         </button>
+      </div>
+    </form>
+  );
+}
+
+// ---------------------------------------------------------------------
+// Operators (Slice A): techs management, onboarding, schedule board.
+// ---------------------------------------------------------------------
+
+export const QUALIFICATION_OPTIONS: { id: string; label: string }[] = [
+  { id: "WINDSHIELD", label: "Windshield" },
+  { id: "BACK_GLASS", label: "Back glass" },
+  { id: "DOOR_GLASS", label: "Door glass" },
+  { id: "QUARTER_GLASS", label: "Quarter glass" },
+  { id: "VENT_GLASS", label: "Vent glass" },
+  { id: "ADAS_CALIBRATION", label: "ADAS calibration" },
+  { id: "MOBILE", label: "Mobile service" },
+  { id: "IN_SHOP", label: "In-shop" }
+];
+
+export const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+export function qualificationLabel(id: string): string {
+  return QUALIFICATION_OPTIONS.find(o => o.id === id)?.label ?? id;
+}
+
+export function QualificationCheckboxes({
+  value,
+  onChange,
+  legend
+}: {
+  value: string[];
+  onChange: (next: string[]) => void;
+  legend: string;
+}) {
+  const toggle = (id: string, on: boolean) =>
+    onChange(on ? [...value, id] : value.filter(v => v !== id));
+  return (
+    <fieldset className="qualifications">
+      <legend>{legend}</legend>
+      {QUALIFICATION_OPTIONS.map(o => (
+        <label key={o.id} className="check">
+          <input
+            type="checkbox"
+            checked={value.includes(o.id)}
+            onChange={e => toggle(o.id, e.target.checked)}
+          />{" "}
+          {o.label}
+        </label>
+      ))}
+    </fieldset>
+  );
+}
+
+/** One recurring window per weekday: check the day, set start/end. */
+export function AvailabilityEditor({
+  value,
+  onChange
+}: {
+  value: AvailabilityWindow[];
+  onChange: (next: AvailabilityWindow[]) => void;
+}) {
+  const byDay = new Map(value.map(w => [w.day_of_week, w]));
+  const setDay = (day: number, window: AvailabilityWindow | null) => {
+    const rest = value.filter(w => w.day_of_week !== day);
+    onChange(window ? [...rest, window].sort((a, b) => a.day_of_week - b.day_of_week) : rest);
+  };
+  return (
+    <fieldset className="availability">
+      <legend>Availability</legend>
+      {WEEKDAY_LABELS.map((label, day) => {
+        const window = byDay.get(day);
+        return (
+          <div key={day} className="availability-row">
+            <label className="check">
+              <input
+                type="checkbox"
+                aria-label={`${label} available`}
+                checked={Boolean(window)}
+                onChange={e =>
+                  setDay(day, e.target.checked ? { day_of_week: day, start: "08:00", end: "17:00" } : null)
+                }
+              />{" "}
+              {label}
+            </label>
+            {window && (
+              <>
+                <input
+                  type="time"
+                  aria-label={`${label} start`}
+                  value={window.start}
+                  onChange={e => setDay(day, { ...window, start: e.target.value })}
+                />
+                <span>–</span>
+                <input
+                  type="time"
+                  aria-label={`${label} end`}
+                  value={window.end}
+                  onChange={e => setDay(day, { ...window, end: e.target.value })}
+                />
+              </>
+            )}
+          </div>
+        );
+      })}
+    </fieldset>
+  );
+}
+
+function OperatorCard({
+  operator,
+  canManage,
+  onChanged
+}: {
+  operator: Operator;
+  canManage: boolean;
+  onChanged: () => Promise<void>;
+}) {
+  const profile = operator.profile;
+  const [qualifications, setQualifications] = useState<string[]>(
+    profile?.qualifications.length ? profile.qualifications : (profile?.claimed_qualifications ?? [])
+  );
+  const [availability, setAvailability] = useState<AvailabilityWindow[]>(profile?.availability ?? []);
+  const [liveStatus, setLiveStatus] = useState<"AVAILABLE" | "OFF">(profile?.live_status ?? "AVAILABLE");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    setError("");
+    try {
+      await fn();
+      await onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Action failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <article className="card operator-card" data-testid="operator-card">
+      <div className="case-card-head">
+        <div>
+          <strong>{operator.name}</strong> <span className="channel">{operator.email}</span>
+        </div>
+        <span className={`status-badge status-${operator.status.toLowerCase()}`}>{humanize(operator.status)}</span>
+      </div>
+      {profile?.phone && <p className="muted">{profile.phone}{profile.home_base ? ` · ${profile.home_base}` : ""}{profile.service_area ? ` · ${profile.service_area}` : ""}</p>}
+      {profile && profile.claimed_qualifications.length > 0 && (
+        <p className="muted">
+          Claimed: {profile.claimed_qualifications.map(qualificationLabel).join(", ")}
+        </p>
+      )}
+      {profile && profile.qualifications.length > 0 && (
+        <p>
+          Verified:{" "}
+          {profile.qualifications.map(tag => (
+            <span key={tag} className="tag">{qualificationLabel(tag)}</span>
+          ))}
+        </p>
+      )}
+      {error && <p className="error" role="alert">{error}</p>}
+      {canManage && operator.status === "PROFILE_PENDING" && (
+        <div className="operator-actions">
+          <QualificationCheckboxes value={qualifications} onChange={setQualifications} legend="Verify qualifications" />
+          <AvailabilityEditor value={availability} onChange={setAvailability} />
+          <button
+            type="button"
+            className="primary"
+            disabled={busy}
+            onClick={() => run(() => verifyOperator(operator.id, { qualifications, availability }))}
+          >
+            Verify & activate
+          </button>
+        </div>
+      )}
+      {canManage && operator.status === "ACTIVE" && (
+        <div className="operator-actions">
+          <QualificationCheckboxes value={qualifications} onChange={setQualifications} legend="Qualifications" />
+          <AvailabilityEditor value={availability} onChange={setAvailability} />
+          <label>
+            Live status{" "}
+            <select value={liveStatus} onChange={e => setLiveStatus(e.target.value as "AVAILABLE" | "OFF")}>
+              <option value="AVAILABLE">Available</option>
+              <option value="OFF">Off</option>
+            </select>
+          </label>
+          <div className="row">
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy}
+              onClick={() =>
+                run(() =>
+                  updateOperatorProfile(operator.id, {
+                    qualifications,
+                    availability,
+                    live_status: liveStatus
+                  })
+                )
+              }
+            >
+              Save changes
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy}
+              onClick={() => run(() => deactivateOperator(operator.id))}
+            >
+              Deactivate
+            </button>
+          </div>
+        </div>
+      )}
+      {canManage && operator.status === "DEACTIVATED" && (
+        <button
+          type="button"
+          className="primary"
+          disabled={busy}
+          onClick={() => run(() => reactivateOperator(operator.id))}
+        >
+          Reactivate
+        </button>
+      )}
+    </article>
+  );
+}
+
+export function OperatorsScreen({ currentStaff }: { currentStaff: StaffUser }) {
+  const canManage = currentStaff.role === "admin" || currentStaff.role === "owner";
+  const [operators, setOperators] = useState<Operator[]>([]);
+  const [invites, setInvites] = useState<OperatorInviteView[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const [inviting, setInviting] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const data = await listOperators();
+      setOperators(data.operators);
+      setInvites(data.invites);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load operators.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const sendInvite = async (e: FormEvent) => {
+    e.preventDefault();
+    setInviting(true);
+    setError("");
+    setInviteUrl(null);
+    try {
+      const result = await inviteOperator(inviteEmail.trim());
+      setInviteUrl(`${window.location.origin}${result.invite_path}`);
+      setInviteEmail("");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not send the invite.");
+    } finally {
+      setInviting(false);
+    }
+  };
+
+  return (
+    <section>
+      <div className="page-head">
+        <div>
+          <p className="eyebrow">R&R Operations</p>
+          <h1>Operators</h1>
+          <p className="muted">Technicians onboard by invite + Google sign-in. Only verified, active techs can be assigned work.</p>
+        </div>
+      </div>
+      {error && <div className="alert" role="alert">{error}</div>}
+      {canManage && (
+        <form className="card" onSubmit={sendInvite}>
+          <h2>Invite a technician</h2>
+          <label>
+            Gmail address
+            <input
+              type="email"
+              required
+              value={inviteEmail}
+              onChange={e => setInviteEmail(e.target.value)}
+              placeholder="tech@gmail.com"
+            />
+          </label>
+          <div className="actions">
+            <button className="primary" disabled={inviting}>
+              {inviting ? "Creating…" : "Create invite"}
+            </button>
+          </div>
+          {inviteUrl && (
+            <>
+              <p className="muted">Send this link to the tech — it's shown once. They sign in with the invited Google account to claim it.</p>
+              <CustomerLinkBox url={inviteUrl} />
+            </>
+          )}
+        </form>
+      )}
+      {invites.length > 0 && (
+        <div className="card">
+          <h2>Pending invites</h2>
+          {invites.map(invite => (
+            <div key={invite.id} className="row">
+              <span>{invite.email}</span>
+              <span className="muted">expires {new Date(invite.expires_at).toLocaleDateString()}</span>
+              {canManage && (
+                <button
+                  type="button"
+                  className="link"
+                  onClick={() => { void revokeInvite(invite.id).then(load); }}
+                >
+                  Revoke
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {loading ? (
+        <div className="card">Loading operators…</div>
+      ) : operators.length === 0 ? (
+        <div className="card">
+          <h2>No technicians yet.</h2>
+          <p className="muted">Invite the first tech above — they'll appear here once they sign in.</p>
+        </div>
+      ) : (
+        operators.map(operator => (
+          <OperatorCard key={operator.id} operator={operator} canManage={canManage} onChanged={load} />
+        ))
+      )}
+    </section>
+  );
+}
+
+export function ScheduleScreen({ onOpenCase }: { onOpenCase: (id: string) => void }) {
+  const today = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+  const [date, setDate] = useState(today);
+  const [entries, setEntries] = useState<ScheduleBoardEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const board = await getSchedule(date);
+      setEntries(board.entries);
+      setError("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load the schedule.");
+    } finally {
+      setLoading(false);
+    }
+  }, [date]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const scheduled = entries.filter(e => e.scheduled_start);
+  const unscheduled = entries.filter(e => !e.scheduled_start);
+  const byTech = new Map<string, ScheduleBoardEntry[]>();
+  for (const entry of scheduled) {
+    const key = entry.tech_name ?? "Unassigned";
+    byTech.set(key, [...(byTech.get(key) ?? []), entry]);
+  }
+  const formatTime = (iso: string) =>
+    new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+  return (
+    <section>
+      <div className="page-head">
+        <div>
+          <p className="eyebrow">R&R Operations</p>
+          <h1>Schedule board</h1>
+          <p className="muted">Who is doing what, today. Assign techs from a case's Fulfillment card.</p>
+        </div>
+      </div>
+      <label>
+        Day{" "}
+        <input type="date" value={date} onChange={e => setDate(e.target.value)} aria-label="Schedule day" />
+      </label>
+      {error && <div className="alert" role="alert">{error}</div>}
+      {loading ? (
+        <div className="card">Loading schedule…</div>
+      ) : (
+        <>
+          {[...byTech.entries()].map(([tech, jobs]) => (
+            <div className="card" key={tech} data-testid="schedule-tech-column">
+              <h2>{tech}</h2>
+              {jobs.map(entry => (
+                <div key={entry.case_id} className="row">
+                  <span>
+                    {entry.scheduled_start ? formatTime(entry.scheduled_start) : ""}–
+                    {entry.scheduled_end ? formatTime(entry.scheduled_end) : ""}
+                  </span>
+                  <button type="button" className="link" onClick={() => onOpenCase(entry.case_id)}>
+                    {entry.reference}
+                  </button>
+                  <span>{entry.glass_type ? humanize(entry.glass_type) : ""}</span>
+                  <span className="muted">{humanize(entry.current_state)}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+          {scheduled.length === 0 && (
+            <div className="card"><p className="muted">No jobs scheduled for this day yet.</p></div>
+          )}
+          {unscheduled.length > 0 && (
+            <div className="card" data-testid="schedule-unscheduled">
+              <h2>Needs scheduling</h2>
+              {unscheduled.map(entry => (
+                <div key={entry.case_id} className="row">
+                  <button type="button" className="link" onClick={() => onOpenCase(entry.case_id)}>
+                    {entry.reference}
+                  </button>
+                  <span>{entry.glass_type ? humanize(entry.glass_type) : ""}</span>
+                  <span className="muted">{humanize(entry.current_state)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+/** Public invite landing: /invite/<credential> — the tech claims the
+ *  invite by signing in with the invited Google account. */
+export function InviteAcceptPage({
+  credential,
+  authError = ""
+}: {
+  credential: string;
+  authError?: string;
+}) {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getGoogleConfig().then(config => {
+      if (!cancelled) setEnabled(config.enabled);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return (
+    <div className="app-shell">
+      <main>
+        <div className="card" style={{ maxWidth: 520, margin: "48px auto" }}>
+          <p className="eyebrow">R&R Finest Auto Glass</p>
+          <h1>Join as a technician</h1>
+          {authError && <div className="alert" role="alert">{authError}</div>}
+          {enabled === null ? (
+            <p className="muted">Loading…</p>
+          ) : enabled ? (
+            <>
+              <p className="muted">
+                Sign in with the Google account this invite was sent to. You'll
+                finish your profile next, and R&R will verify your qualifications
+                before your first job.
+              </p>
+              <div className="actions">
+                <a className="primary" href={googleStartUrl(credential)} data-testid="invite-google-signin">
+                  Continue with Google
+                </a>
+              </div>
+            </>
+          ) : (
+            <p className="muted">
+              Google sign-in isn't switched on for this deployment yet — ask R&R
+              to finish the setup, then open this link again.
+            </p>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}
+
+/** Tech landing after Google sign-in: profile completion while pending,
+ *  a plain "no jobs yet" home once active (the job view is Slice B). */
+export function TechGate({ staff }: { staff: StaffUser }) {
+  const [mine, setMine] = useState<MyOperator | null>(null);
+  const [error, setError] = useState("");
+  const load = useCallback(async () => {
+    try {
+      setMine(await getMyOperator());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load your profile.");
+    }
+  }, []);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (error) {
+    return (
+      <div className="card">
+        <p className="error" role="alert">{error}</p>
+      </div>
+    );
+  }
+  if (!mine) return <div className="card">Loading…</div>;
+  if (mine.status === "PROFILE_PENDING") {
+    return <OperatorProfileForm mine={mine} onSaved={load} />;
+  }
+  if (mine.status === "DEACTIVATED") {
+    return (
+      <div className="card">
+        <h1>Account not active</h1>
+        <p className="muted">Your technician account has been deactivated. Please contact R&R.</p>
+      </div>
+    );
+  }
+  return <TechHome staff={staff} mine={mine} />;
+}
+
+export function TechHome({ staff, mine }: { staff: StaffUser; mine: MyOperator }) {
+  const firstName = staff.name.trim().split(/\s+/)[0] ?? staff.name;
+  return (
+    <section className="card" data-testid="tech-home">
+      <p className="eyebrow">Technician</p>
+      <h1>Welcome, {firstName}</h1>
+      <p className="muted">
+        No jobs yet — your job view arrives with your first assignment. When R&R
+        assigns you a job, it shows up here (and on your Google Calendar) with
+        everything you need for the day.
+      </p>
+      {mine.profile && mine.profile.qualifications.length > 0 && (
+        <p>
+          Your verified work:{" "}
+          {mine.profile.qualifications.map(tag => (
+            <span key={tag} className="tag">{qualificationLabel(tag)}</span>
+          ))}
+        </p>
+      )}
+    </section>
+  );
+}
+
+export function OperatorProfileForm({
+  mine,
+  onSaved
+}: {
+  mine: MyOperator;
+  onSaved: () => Promise<void>;
+}) {
+  const profile = mine.profile;
+  const [phone, setPhone] = useState(profile?.phone ?? "");
+  const [homeBase, setHomeBase] = useState(profile?.home_base ?? "");
+  const [serviceArea, setServiceArea] = useState(profile?.service_area ?? "");
+  const [claimed, setClaimed] = useState<string[]>(profile?.claimed_qualifications ?? []);
+  const [consent, setConsent] = useState(profile?.location_sharing_consent ?? false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await updateMyProfile({
+        phone: phone.trim(),
+        home_base: homeBase.trim(),
+        service_area: serviceArea.trim(),
+        claimed_qualifications: claimed,
+        location_sharing_consent: consent
+      });
+      setSaved(true);
+      await onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save your profile.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form className="form card" onSubmit={submit} data-testid="operator-profile-form">
+      <p className="eyebrow">Technician onboarding</p>
+      <h1>Finish your profile</h1>
+      <p className="muted">
+        Tell R&R how to reach you and what work you're qualified for. Staff
+        verify your qualifications before your first assignment.
+      </p>
+      {error && <div className="alert" role="alert">{error}</div>}
+      {saved && <div className="alert" role="status">Profile saved — R&R will verify and activate your account.</div>}
+      <label>
+        Mobile phone
+        <input type="tel" required value={phone} onChange={e => setPhone(e.target.value)} placeholder="617-555-0100" />
+      </label>
+      <label>
+        Home base
+        <input type="text" required value={homeBase} onChange={e => setHomeBase(e.target.value)} placeholder="City, ST" />
+      </label>
+      <label>
+        Service area
+        <input type="text" required value={serviceArea} onChange={e => setServiceArea(e.target.value)} placeholder="e.g. Greater Boston" />
+      </label>
+      <QualificationCheckboxes value={claimed} onChange={setClaimed} legend="Work you can do" />
+      <label className="check">
+        <input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} />{" "}
+        I agree to share my location while a job is active (required for mobile jobs).
+      </label>
+      <div className="actions">
+        <button className="primary" disabled={busy}>{busy ? "Saving…" : "Save profile"}</button>
       </div>
     </form>
   );
@@ -2092,6 +2844,20 @@ export function describeEvent(e: CaseEvent): string {
       return at
         ? `Installation scheduled for ${new Date(at).toLocaleString()}.`
         : "Installation scheduled.";
+    }
+    case "TECH_ASSIGNED": {
+      const tech = eventText(p, "technician_name");
+      const reason = eventText(p, "override_reason");
+      return tech
+        ? `Assigned to ${tech}${reason ? ` (scheduler override: ${reason})` : ""}.`
+        : "A technician was assigned.";
+    }
+    case "TECH_REASSIGNED": {
+      const tech = eventText(p, "technician_name");
+      const reason = eventText(p, "override_reason");
+      return tech
+        ? `Reassigned to ${tech}${reason ? ` (scheduler override: ${reason})` : ""}.`
+        : "The job was reassigned.";
     }
     case "TECH_DISPATCHED": {
       const tech = eventText(p, "technician_name");
@@ -3325,6 +4091,199 @@ const FULFILLMENT_STATES = [
   "CLOSED"
 ];
 
+function toLocalInput(iso: string): string {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/**
+ * Technician assignment (Slice A): pick a work window, let the scheduler
+ * propose ranked qualified+available techs, then confirm — or override
+ * with a reason, or reassign. Lives inside the Fulfillment card because
+ * assignment is a fulfillment step (parts ordered → scheduled).
+ */
+export function AssignmentPanel({
+  item,
+  onRefresh
+}: {
+  item: CaseRecord;
+  onRefresh: () => Promise<void>;
+}) {
+  const job = item.job ?? null;
+  const [startLocal, setStartLocal] = useState("");
+  const [endLocal, setEndLocal] = useState("");
+  const [proposals, setProposals] = useState<SchedulerProposal | null>(null);
+  const [activeTechs, setActiveTechs] = useState<Operator[]>([]);
+  const [overrideTech, setOverrideTech] = useState("");
+  const [overrideReason, setOverrideReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (job?.scheduled_start) setStartLocal(toLocalInput(job.scheduled_start));
+    if (job?.scheduled_end) setEndLocal(toLocalInput(job.scheduled_end));
+    // Seed once per job window, not on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job?.id]);
+
+  useEffect(() => {
+    listOperators()
+      .then(data => setActiveTechs(data.operators.filter(o => o.status === "ACTIVE")))
+      .catch(() => {
+        // The override picker is a convenience; proposals still work.
+      });
+  }, []);
+
+  const windowIso = () => ({
+    start: new Date(startLocal).toISOString(),
+    end: new Date(endLocal).toISOString()
+  });
+
+  async function findTechs() {
+    setBusy(true);
+    setError(null);
+    try {
+      const { start, end } = windowIso();
+      const result = await proposeAssignment(item.id, start, end);
+      setProposals(result.proposals);
+      await onRefresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load proposals.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doAssign(techId: string, reason?: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const window = proposals?.window ?? windowIso();
+      await assignTech(
+        item.id,
+        {
+          tech_id: techId,
+          scheduled_start: window.start,
+          scheduled_end: window.end,
+          ...(reason ? { override_reason: reason } : {})
+        },
+        job?.status === "ASSIGNED"
+      );
+      setProposals(null);
+      setOverrideReason("");
+      await onRefresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Assignment failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const formatWindow = (start: string, end: string) =>
+    `${new Date(start).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} – ${new Date(end).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+
+  return (
+    <div className="assignment-panel" data-testid="assignment-panel">
+      <h3>Technician assignment</h3>
+      {job?.status === "ASSIGNED" && job.tech_name && (
+        <p>
+          Assigned to <strong>{job.tech_name}</strong>
+          {job.scheduled_start && job.scheduled_end
+            ? ` · ${formatWindow(job.scheduled_start, job.scheduled_end)}`
+            : ""}
+        </p>
+      )}
+      {error && <p className="error" role="alert">{error}</p>}
+      <div className="row">
+        <label>
+          Start
+          <input
+            type="datetime-local"
+            aria-label="Job start"
+            value={startLocal}
+            onChange={e => setStartLocal(e.target.value)}
+          />
+        </label>
+        <label>
+          End
+          <input
+            type="datetime-local"
+            aria-label="Job end"
+            value={endLocal}
+            onChange={e => setEndLocal(e.target.value)}
+          />
+        </label>
+        <button type="button" className="secondary" disabled={busy || !startLocal || !endLocal} onClick={findTechs}>
+          Find techs
+        </button>
+      </div>
+      {proposals && (
+        <div className="proposals">
+          <p className="muted">
+            Needs: {proposals.requirement.required_tags.map(qualificationLabel).join(", ")} ·{" "}
+            {formatWindow(proposals.window.start, proposals.window.end)}
+          </p>
+          {proposals.eligible.length === 0 ? (
+            <p className="muted">No eligible techs for this window — adjust the window or use an override below.</p>
+          ) : (
+            proposals.eligible.map((candidate, index) => (
+              <div key={candidate.tech_id} className="row" data-testid="proposal-row">
+                <span>
+                  {index + 1}. <strong>{candidate.name}</strong>{" "}
+                  <span className="muted">
+                    {candidate.free_at
+                      ? `free since ${new Date(candidate.free_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+                      : "free all day"}{" "}
+                    · {candidate.jobs_that_day} job{candidate.jobs_that_day === 1 ? "" : "s"} that day
+                  </span>
+                </span>
+                <button type="button" className="primary" disabled={busy} onClick={() => doAssign(candidate.tech_id)}>
+                  {job?.status === "ASSIGNED" ? "Reassign" : "Assign"}
+                </button>
+              </div>
+            ))
+          )}
+          {proposals.excluded.length > 0 && (
+            <p className="muted">
+              Not eligible:{" "}
+              {proposals.excluded.map(e => `${e.name} (${e.reasons.join("; ")})`).join(" · ")}
+            </p>
+          )}
+        </div>
+      )}
+      <div className="row">
+        <label>
+          Override tech
+          <select value={overrideTech} onChange={e => setOverrideTech(e.target.value)} aria-label="Override tech">
+            <option value="">Choose a tech…</option>
+            {activeTechs.map(tech => (
+              <option key={tech.id} value={tech.id}>{tech.name}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Override reason
+          <input
+            type="text"
+            value={overrideReason}
+            onChange={e => setOverrideReason(e.target.value)}
+            placeholder="Why this tech, despite the scheduler?"
+          />
+        </label>
+        <button
+          type="button"
+          className="secondary"
+          disabled={busy || !overrideTech || !overrideReason.trim() || !startLocal || !endLocal}
+          onClick={() => doAssign(overrideTech, overrideReason.trim())}
+        >
+          Assign with override
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** Staff fulfillment card: walks the job from invoiced to service-complete,
  *  one action at a time. Every step lands on the customer's tracking page.
  *  Also owns the final Close case and the customer tracking link. */
@@ -3405,7 +4364,7 @@ function FulfillmentCard({
           />
         </label>
       )}
-      {!closed && nextStep?.action === "dispatch_technician" && (
+      {!closed && nextStep?.action === "dispatch_technician" && !item.job?.assigned_tech_id && (
         <label style={{ display: "block", marginBottom: 8 }}>
           Technician name (shown to the customer)
           <input
@@ -3416,6 +4375,11 @@ function FulfillmentCard({
             style={{ display: "block", marginTop: 4 }}
           />
         </label>
+      )}
+      {!closed && nextStep?.action === "dispatch_technician" && item.job?.assigned_tech_id && (
+        <p className="muted">
+          Dispatching {item.job.tech_name ?? "the assigned tech"} — the customer sees their first name.
+        </p>
       )}
       {!closed && (
         <div className="row">
@@ -3454,6 +4418,10 @@ function FulfillmentCard({
         </p>
       )}
       {trackingUrl && <CustomerLinkBox url={trackingUrl} />}
+      {!closed &&
+        ["PARTS_ORDERED", "INSTALLATION_SCHEDULED", "TECH_DISPATCHED"].includes(
+          item.current_state
+        ) && <AssignmentPanel item={item} onRefresh={onRefresh} />}
       <small>Each step updates the customer's tracking page immediately.</small>
     </section>
   );
