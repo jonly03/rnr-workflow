@@ -1,4 +1,4 @@
-import type { CaseEvent, CaseRecord, Channel, GlassType } from "./types";
+import type { CaseEvent, CaseRecord, Channel, GlassType, Invoice, InvoicePaymentStatus } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001/api/v1";
 
@@ -278,6 +278,52 @@ export function performAction(
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ action, ...extra })
   }).then(json<CaseRecord>);
+}
+
+/** One row of the staff collections board: a case's latest invoice
+ *  version plus the case context staff triage by. */
+export interface InvoiceBoardItem extends Invoice {
+  case_reference: string;
+  case_state: string;
+  channel: Channel;
+  vehicle: { year: number; make: string; model: string } | null;
+  glass_type: string | null;
+  bill_to: string | null;
+  awaiting_payment: boolean;
+}
+
+/** The collections board, ordered server-side for collections work. */
+export function listInvoices(paymentStatus?: InvoicePaymentStatus) {
+  const query = paymentStatus ? `?payment_status=${paymentStatus}` : "";
+  return fetch(`${API_BASE}/invoices${query}`, { headers: authHeaders() }).then(
+    json<InvoiceBoardItem[]>
+  );
+}
+
+/** Downloads the case's invoice PDF (client projection) as a file. */
+export async function downloadInvoicePdf(caseId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/cases/${caseId}/invoice.pdf`, {
+    headers: authHeaders()
+  });
+  if (response.status === 401) {
+    clearToken();
+    throw new UnauthorizedError();
+  }
+  if (!response.ok) {
+    throw new Error(`Could not download the invoice PDF (${response.status}).`);
+  }
+  const blob = await response.blob();
+  const filename =
+    /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") ?? "")?.[1] ??
+    "invoice.pdf";
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 export interface DecodedVehicle {
@@ -628,7 +674,12 @@ export interface PublicTrackingView {
   current_state: string;
   signed_by: string | null;
   signed_at: string | null;
-  invoice: { version: number; total_cents: number } | null;
+  invoice: {
+    version: number;
+    total_cents: number;
+    /** Summary-level payment state; null until the invoice is sent. */
+    payment: { status: string; label: string } | null;
+  } | null;
   labor_cents: number | null;
   tax_cents: number | null;
   total_cents: number | null;
@@ -637,6 +688,12 @@ export interface PublicTrackingView {
 
 export function getPublicTracking(token: string) {
   return fetch(`${API_BASE}/public/track/${token}`).then(json<PublicTrackingView>);
+}
+
+/** Direct URL of the client's own invoice file behind their tracking
+ *  link (the server 404s it until the invoice has been sent). */
+export function publicInvoicePdfUrl(token: string) {
+  return `${API_BASE}/public/track/${token}/invoice.pdf`;
 }
 
 export interface PublicIntakeConfirmation {

@@ -6,6 +6,7 @@ import {
   createTrackingLink,
   declinePublicQuote,
   decodeVin,
+  downloadInvoicePdf,
   getCase,
   getCaseEvents,
   getHealth,
@@ -15,25 +16,28 @@ import {
   getPublicTracking,
   getToken,
   listCases,
+  listInvoices,
   login,
   logout,
   ocrVinPhoto,
   performAction,
+  publicInvoicePdfUrl,
   signPublicQuote,
   startIdentification,
   submitPublicIntake,
   subscribeStaffEvents,
   UnauthorizedError,
   type DecodedVehicle,
+  type InvoiceBoardItem,
   type PublicIntakeStatus,
   type PublicQuoteView,
   type PublicTrackingView,
   type StaffEventsStatus,
   type StaffUser
 } from "./api";
-import type { CaseEvent, CaseRecord, Channel, GlassCandidate, GlassType } from "./types";
+import type { CaseEvent, CaseRecord, Channel, GlassCandidate, GlassType, Invoice, InvoicePaymentStatus } from "./types";
 
-type Screen = "queue" | "new" | "detail" | "quote";
+type Screen = "queue" | "new" | "detail" | "quote" | "invoices";
 
 const humanize = (value: string) =>
   value.toLowerCase().replaceAll("_", " ").replace(/(^|\s)\S/g, c => c.toUpperCase());
@@ -507,6 +511,25 @@ export function App() {
     );
   }
 
+  if (screen === "invoices") {
+    return (
+      <Shell
+        staff={staff}
+        onSignOut={signOut}
+        crumbs={[
+          { label: "Case queue", onClick: () => setScreen("queue") },
+          { label: "Invoices" }
+        ]}
+      >
+        <InvoiceBoard
+          onOpenCase={id => {
+            void openCase(id);
+          }}
+        />
+      </Shell>
+    );
+  }
+
   if (screen === "quote" && selected) {
     return (
       <Shell
@@ -552,6 +575,7 @@ export function App() {
         <div className="queue-layout">
           <aside className="queue-sidebar" aria-label="Case filters">
             <button type="button" className="primary sidebar-new" onClick={() => { setNewCaseOrigin({ screen: "queue" }); setScreen("new"); }}>+ New Case</button>
+            <button type="button" className="secondary sidebar-new" onClick={() => setScreen("invoices")}>Invoice board</button>
             <div className="queue-toolbar">
               <div className="toolbar-section">
                 <input
@@ -2029,6 +2053,29 @@ export function describeEvent(e: CaseEvent): string {
       const total = eventText(p, "sell_price_cents");
       return `Invoice${v ? ` v${v}` : ""} generated${qv ? ` from signed quote v${qv}` : ""}${total ? ` — total $${(Number(total) / 100).toFixed(2)}` : ""}.`;
     }
+    case "INVOICE_SENT": {
+      const via = eventText(p, "sent_via");
+      return via ? `Invoice sent to the client (${via}).` : "Invoice sent to the client.";
+    }
+    case "INVOICE_PAID": {
+      const by = eventText(p, "paid_by");
+      const method = eventText(p, "method");
+      return `Invoice paid${by ? ` by ${by}` : ""}${method ? ` (${method})` : ""}.`;
+    }
+    case "INVOICE_DISPUTED": {
+      const code = eventText(p, "reason_code");
+      return `Client disputed the invoice${code ? ` (${code})` : ""}.`;
+    }
+    case "INVOICE_DISPUTE_UPDATED":
+      return "Dispute updated.";
+    case "INVOICE_DISPUTE_RESOLVED": {
+      const outcome = eventText(p, "outcome");
+      return outcome === "RESOLVED_ADJUSTED"
+        ? "Dispute resolved — invoice adjusted and re-issued."
+        : "Dispute resolved.";
+    }
+    case "INVOICE_WRITTEN_OFF":
+      return "Invoice written off by an admin — the case may close, flagged.";
     case "PARTS_ORDERED":
       return "Parts ordered for this job.";
     case "INSTALLATION_SCHEDULED": {
@@ -2046,6 +2093,8 @@ export function describeEvent(e: CaseEvent): string {
     case "SERVICE_COMPLETED":
       return "Service completed.";
     case "CASE_CLOSED":
+      if (p.invoice_written_off === true) return "Case closed — invoice written off.";
+      if (p.auto === true) return "Case closed automatically — the invoice was paid.";
       return "Case closed.";
     default:
       return `${humanize(e.event_type)}.`;
@@ -2638,6 +2687,34 @@ function QuoteCard({
   );
 }
 
+/** Staff-facing label for an invoice's payment state (Slice D). */
+export function invoicePaymentLabel(
+  inv: Pick<Invoice, "payment_status" | "dispute_resolution" | "aging_days">
+): string {
+  switch (inv.payment_status) {
+    case "UNSENT":
+      return "Unsent";
+    case "SENT":
+      return inv.aging_days != null
+        ? `Sent — awaiting payment (${inv.aging_days}d)`
+        : "Sent — awaiting payment";
+    case "DISPUTED":
+      if (inv.dispute_resolution === "RESOLVED_WRITTEN_OFF") return "Disputed — written off";
+      if (inv.dispute_resolution === "RESOLVED_ADJUSTED") return "Disputed — adjusted";
+      return "Disputed";
+    case "PAID":
+      return "Paid";
+  }
+}
+
+const INVOICE_EVENT_LABELS: Record<string, string> = {
+  SENT: "Sent to client",
+  DISPUTE_OPENED: "Dispute opened",
+  DISPUTE_UPDATE: "Dispute update",
+  DISPUTE_RESOLVED: "Dispute resolved",
+  PAID: "Payment recorded"
+};
+
 /** Staff invoice card: generate from the signed quote, then close the case.
  *  The invoice records which quote version authorized it. */
 function InvoiceCard({
@@ -2653,6 +2730,21 @@ function InvoiceCard({
   const [error, setError] = useState<string | null>(null);
   const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
+  // Payment lifecycle forms (Slice D). One open at a time.
+  const [form, setForm] = useState<
+    null | "sent" | "paid" | "dispute" | "update" | "resolve"
+  >(null);
+  const [sentVia, setSentVia] = useState("text");
+  const [sentTo, setSentTo] = useState("");
+  const [payMethod, setPayMethod] = useState("card");
+  const [payRef, setPayRef] = useState("");
+  const [paidBy, setPaidBy] = useState("");
+  const [disputeCode, setDisputeCode] = useState("AMOUNT");
+  const [disputeReason, setDisputeReason] = useState("");
+  const [updateNote, setUpdateNote] = useState("");
+  const [resolveOutcome, setResolveOutcome] = useState("PAID");
+  const [resolveNote, setResolveNote] = useState("");
+
   const signedQuote = quote?.status === "APPROVED" && quote.signature != null;
   const relevantStates = [
     "QUOTE_APPROVED", "INVOICED", "PARTS_ORDERED", "INSTALLATION_SCHEDULED",
@@ -2660,14 +2752,27 @@ function InvoiceCard({
   ];
   if (!invoice && !relevantStates.includes(item.current_state)) return null;
 
-  async function run(action: string) {
+  async function run(action: string, extra: Record<string, unknown> = {}) {
     setBusy(true);
     setError(null);
     try {
-      await performAction(item.id, action);
+      await performAction(item.id, action, extra);
+      setForm(null);
       await onRefresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Action failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function downloadPdf() {
+    setBusy(true);
+    setError(null);
+    try {
+      await downloadInvoicePdf(item.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Download failed.");
     } finally {
       setBusy(false);
     }
@@ -2707,20 +2812,458 @@ function InvoiceCard({
             <dd><strong>{fmt(invoice.actuals.sell_price_cents)}</strong></dd>
             <dt>Status</dt>
             <dd>{closed ? "Case closed" : "Issued"}</dd>
+            <dt>Payment</dt>
+            <dd><strong>{invoicePaymentLabel(invoice)}</strong></dd>
+            {invoice.sent_at && (
+              <>
+                <dt>Sent</dt>
+                <dd>
+                  {new Date(invoice.sent_at).toLocaleString()}
+                  {invoice.sent_via ? ` via ${invoice.sent_via}` : ""}
+                  {invoice.sent_to ? ` to ${invoice.sent_to}` : ""}
+                </dd>
+              </>
+            )}
+            {invoice.paid_at && (
+              <>
+                <dt>Paid</dt>
+                <dd>
+                  {new Date(invoice.paid_at).toLocaleString()}
+                  {invoice.paid_method ? ` (${invoice.paid_method}` : ""}
+                  {invoice.paid_ref ? ` ${invoice.paid_ref}` : ""}
+                  {invoice.paid_method ? ")" : ""}
+                  {invoice.paid_by ? ` by ${invoice.paid_by}` : ""}
+                </dd>
+              </>
+            )}
+            {invoice.payment_status === "DISPUTED" && invoice.dispute_reason && (
+              <>
+                <dt>Dispute</dt>
+                <dd>{invoice.dispute_reason}</dd>
+              </>
+            )}
           </dl>
+
+          {item.awaiting_payment && (
+            <p className="alert">
+              Service is complete — this case is <strong>awaiting payment</strong> and
+              closes automatically when the invoice is paid.
+            </p>
+          )}
+          {invoice.dispute_resolution === "RESOLVED_WRITTEN_OFF" && !closed && (
+            <p className="muted">
+              This invoice was written off by an admin — the case can be closed from
+              the Fulfillment card (it will be flagged as written off).
+            </p>
+          )}
+          {invoice.dispute_resolution === "RESOLVED_ADJUSTED" &&
+            invoice.payment_status === "DISPUTED" && (
+              <p className="muted">
+                This dispute was resolved by adjusting the amount — re-invoice to issue
+                the corrected version; the new version governs payment and closing.
+              </p>
+            )}
+
+          {(item.invoice_events ?? []).length > 0 && (
+            <ul style={{ margin: "8px 0", paddingLeft: 18 }}>
+              {(item.invoice_events ?? []).map(e => (
+                <li key={e.id}>
+                  <strong>{INVOICE_EVENT_LABELS[e.kind] ?? e.kind}</strong>
+                  {e.note ? ` — ${e.note}` : ""}{" "}
+                  <span className="muted">{new Date(e.created_at).toLocaleString()}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+
           {error && <p className="error">{error}</p>}
-          {!closed && item.current_state === "INVOICED" && (
-            <div className="row">
+
+          <div className="row">
+            <button className="secondary" disabled={busy} onClick={() => void downloadPdf()}>
+              Download invoice (PDF)
+            </button>
+            {!closed && invoice.payment_status === "UNSENT" && (
+              <>
+                <button className="secondary" disabled={busy} onClick={() => setForm(form === "sent" ? null : "sent")}>
+                  Mark sent
+                </button>
+                <button className="secondary" disabled={busy} onClick={() => setForm(form === "paid" ? null : "paid")}>
+                  Mark paid
+                </button>
+                <button className="secondary" disabled={busy} onClick={() => setForm(form === "dispute" ? null : "dispute")}>
+                  Dispute
+                </button>
+              </>
+            )}
+            {!closed && invoice.payment_status === "SENT" && (
+              <>
+                <button className="secondary" disabled={busy} onClick={() => setForm(form === "paid" ? null : "paid")}>
+                  Mark paid
+                </button>
+                <button className="secondary" disabled={busy} onClick={() => setForm(form === "dispute" ? null : "dispute")}>
+                  Dispute
+                </button>
+              </>
+            )}
+            {!closed && invoice.payment_status === "DISPUTED" && !invoice.dispute_resolution && (
+              <>
+                <button className="secondary" disabled={busy} onClick={() => setForm(form === "update" ? null : "update")}>
+                  Add dispute update
+                </button>
+                <button className="secondary" disabled={busy} onClick={() => setForm(form === "resolve" ? null : "resolve")}>
+                  Resolve dispute
+                </button>
+                <button className="secondary" disabled={busy} onClick={() => setForm(form === "sent" ? null : "sent")}>
+                  Re-send invoice
+                </button>
+              </>
+            )}
+            {!closed && item.current_state === "INVOICED" && (
               <button className="secondary" disabled={busy} onClick={() => run("generate_invoice")}>
                 {busy ? "Working…" : "Re-invoice"}
               </button>
+            )}
+          </div>
+
+          {form === "sent" && (
+            <div style={{ marginTop: 10 }}>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Sent via
+                <select value={sentVia} onChange={e => setSentVia(e.target.value)} style={{ display: "block", marginTop: 4 }}>
+                  <option value="text">Text</option>
+                  <option value="email">Email</option>
+                  <option value="in_person">In person</option>
+                  <option value="mail">Mail</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Sent to
+                <input
+                  type="text"
+                  value={sentTo}
+                  onChange={e => setSentTo(e.target.value)}
+                  placeholder="Phone, email, or name"
+                  style={{ display: "block", marginTop: 4 }}
+                />
+              </label>
+              <button
+                className="primary"
+                disabled={busy}
+                onClick={() => run("mark_invoice_sent", { sent_via: sentVia, sent_to: sentTo })}
+              >
+                {busy ? "Working…" : "Record sent"}
+              </button>
             </div>
           )}
-          {!closed && (
-            <small>Closing happens in the Fulfillment card once the service is completed.</small>
+
+          {form === "paid" && (
+            <div style={{ marginTop: 10 }}>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Method
+                <select value={payMethod} onChange={e => setPayMethod(e.target.value)} style={{ display: "block", marginTop: 4 }}>
+                  <option value="card">Card</option>
+                  <option value="cash">Cash</option>
+                  <option value="check">Check</option>
+                  <option value="ach">ACH / transfer</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Reference (optional)
+                <input
+                  type="text"
+                  value={payRef}
+                  onChange={e => setPayRef(e.target.value)}
+                  placeholder="Check #, transaction id, claim #…"
+                  style={{ display: "block", marginTop: 4 }}
+                />
+              </label>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Paid by (optional)
+                <input
+                  type="text"
+                  value={paidBy}
+                  onChange={e => setPaidBy(e.target.value)}
+                  placeholder="Client name, insurer, auction house…"
+                  style={{ display: "block", marginTop: 4 }}
+                />
+              </label>
+              <button
+                className="primary"
+                disabled={busy}
+                onClick={() =>
+                  run("mark_invoice_paid", { method: payMethod, ref: payRef, paid_by: paidBy })
+                }
+              >
+                {busy ? "Working…" : "Record payment"}
+              </button>
+            </div>
           )}
-          <small>Supplier costs and margins are staff-only; never shown to customers.</small>
+
+          {form === "dispute" && (
+            <div style={{ marginTop: 10 }}>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Reason category
+                <select value={disputeCode} onChange={e => setDisputeCode(e.target.value)} style={{ display: "block", marginTop: 4 }}>
+                  <option value="AMOUNT">Amount</option>
+                  <option value="QUALITY">Quality of work</option>
+                  <option value="SCHEDULING">Scheduling</option>
+                  <option value="OTHER">Other</option>
+                </select>
+              </label>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Reason (required)
+                <input
+                  type="text"
+                  value={disputeReason}
+                  onChange={e => setDisputeReason(e.target.value)}
+                  placeholder="What is the client disputing?"
+                  style={{ display: "block", marginTop: 4 }}
+                />
+              </label>
+              <button
+                className="primary"
+                disabled={busy || !disputeReason.trim()}
+                onClick={() =>
+                  run("dispute_invoice", { reason_code: disputeCode, reason: disputeReason })
+                }
+              >
+                {busy ? "Working…" : "Open dispute"}
+              </button>
+            </div>
+          )}
+
+          {form === "update" && (
+            <div style={{ marginTop: 10 }}>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Update (appended to the dispute thread)
+                <input
+                  type="text"
+                  value={updateNote}
+                  onChange={e => setUpdateNote(e.target.value)}
+                  placeholder="e.g. Called the client; reviewing photos"
+                  style={{ display: "block", marginTop: 4 }}
+                />
+              </label>
+              <button
+                className="primary"
+                disabled={busy || !updateNote.trim()}
+                onClick={() => run("invoice_dispute_update", { note: updateNote })}
+              >
+                {busy ? "Working…" : "Add update"}
+              </button>
+            </div>
+          )}
+
+          {form === "resolve" && (
+            <div style={{ marginTop: 10 }}>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Outcome
+                <select value={resolveOutcome} onChange={e => setResolveOutcome(e.target.value)} style={{ display: "block", marginTop: 4 }}>
+                  <option value="PAID">Paid — client paid</option>
+                  <option value="ADJUSTED">Adjusted — re-issue a corrected invoice</option>
+                  <option value="WRITTEN_OFF">Written off — admin only</option>
+                </select>
+              </label>
+              {resolveOutcome === "PAID" && (
+                <>
+                  <label style={{ display: "block", marginBottom: 8 }}>
+                    Method
+                    <select value={payMethod} onChange={e => setPayMethod(e.target.value)} style={{ display: "block", marginTop: 4 }}>
+                      <option value="card">Card</option>
+                      <option value="cash">Cash</option>
+                      <option value="check">Check</option>
+                      <option value="ach">ACH / transfer</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </label>
+                  <label style={{ display: "block", marginBottom: 8 }}>
+                    Reference (optional)
+                    <input
+                      type="text"
+                      value={payRef}
+                      onChange={e => setPayRef(e.target.value)}
+                      placeholder="Check #, transaction id, claim #…"
+                      style={{ display: "block", marginTop: 4 }}
+                    />
+                  </label>
+                </>
+              )}
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Note (optional)
+                <input
+                  type="text"
+                  value={resolveNote}
+                  onChange={e => setResolveNote(e.target.value)}
+                  placeholder="How was this resolved?"
+                  style={{ display: "block", marginTop: 4 }}
+                />
+              </label>
+              <button
+                className="primary"
+                disabled={busy}
+                onClick={() =>
+                  run("resolve_invoice_dispute", {
+                    outcome: resolveOutcome,
+                    method: payMethod,
+                    ref: payRef,
+                    paid_by: paidBy,
+                    note: resolveNote
+                  })
+                }
+              >
+                {busy ? "Working…" : "Resolve dispute"}
+              </button>
+            </div>
+          )}
+
+          {!closed && (
+            <small>Closing happens in the Fulfillment card once the service is completed — and, since Slice D, once the invoice is paid.</small>
+          )}
+          <small>Supplier costs and margins are staff-only; never shown to customers. The customer PDF shows client totals only.</small>
         </>
+      )}
+    </section>
+  );
+}
+
+export const INVOICE_BOARD_GROUPS: {
+  status: InvoicePaymentStatus;
+  label: string;
+}[] = [
+  { status: "UNSENT", label: "Unsent — ready to send" },
+  { status: "SENT", label: "Awaiting payment" },
+  { status: "DISPUTED", label: "Disputed" },
+  { status: "PAID", label: "Paid" }
+];
+
+/** Groups board rows by payment state, in collections order. The API
+ *  already sorts within each group (oldest outstanding first). */
+export function groupInvoiceBoard(items: InvoiceBoardItem[]) {
+  return INVOICE_BOARD_GROUPS.map(g => ({
+    ...g,
+    items: items.filter(i => i.payment_status === g.status)
+  })).filter(g => g.items.length > 0);
+}
+
+/**
+ * Staff collections board (Slice D): every case's latest invoice,
+ * grouped by payment state with aging on what is outstanding. Click a
+ * row to open the case. Techs never see this — it is a staff surface
+ * behind the staff session, like the queue.
+ */
+export function InvoiceBoard({
+  onOpenCase
+}: {
+  onOpenCase: (caseId: string) => void;
+}) {
+  const [items, setItems] = useState<InvoiceBoardItem[]>([]);
+  const [loadingBoard, setLoadingBoard] = useState(true);
+  const [boardError, setBoardError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<"ALL" | InvoicePaymentStatus>("ALL");
+
+  const load = useCallback(async () => {
+    setLoadingBoard(true);
+    try {
+      setItems(await listInvoices());
+      setBoardError(null);
+    } catch (e) {
+      setBoardError(e instanceof Error ? e.message : "Could not load invoices.");
+    } finally {
+      setLoadingBoard(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const visible = filter === "ALL" ? items : items.filter(i => i.payment_status === filter);
+  const groups = groupInvoiceBoard(visible);
+  const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+
+  return (
+    <section data-testid="invoice-board">
+      <section className="page-head">
+        <div>
+          <p className="eyebrow">R&R Operations</p>
+          <h1>Invoices</h1>
+          <p className="muted">
+            Collections board — who owes what, for how long. A case closes when its
+            invoice is paid.
+          </p>
+        </div>
+      </section>
+
+      <div className="pills" style={{ marginBottom: 14 }}>
+        {(["ALL", "UNSENT", "SENT", "DISPUTED", "PAID"] as const).map(s => (
+          <button
+            key={s}
+            type="button"
+            className={`pill${filter === s ? " active" : ""}`}
+            onClick={() => setFilter(s)}
+          >
+            {s === "ALL"
+              ? "All"
+              : s === "SENT"
+                ? "Awaiting payment"
+                : s.charAt(0) + s.slice(1).toLowerCase()}
+          </button>
+        ))}
+        <button type="button" className="pill" onClick={() => void load()}>
+          Refresh
+        </button>
+      </div>
+
+      {boardError && <div className="alert">{boardError}</div>}
+      {loadingBoard ? (
+        <div className="card">Loading invoices…</div>
+      ) : groups.length === 0 ? (
+        <div className="card">No invoices in this state yet.</div>
+      ) : (
+        groups.map(group => (
+          <section className="card" key={group.status} style={{ marginBottom: 18 }}>
+            <h2>
+              {group.label} ({group.items.length})
+            </h2>
+            <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+              {group.items.map(item => (
+                <li key={item.id} style={{ borderTop: "1px solid #e2e8f0", padding: "8px 0" }}>
+                  <button
+                    type="button"
+                    data-testid={`board-row-${item.case_reference}`}
+                    onClick={() => onOpenCase(item.case_id)}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      padding: 0,
+                      cursor: "pointer",
+                      textAlign: "left",
+                      font: "inherit"
+                    }}
+                  >
+                    <strong>{item.case_reference}</strong>{" "}
+                    <span className="muted">
+                      {item.vehicle
+                        ? `${item.vehicle.year} ${item.vehicle.make} ${item.vehicle.model}`
+                        : ""}
+                      {item.bill_to ? ` · ${item.bill_to}` : ""}
+                    </span>
+                  </button>
+                  <div className="muted">
+                    {fmt(item.actuals.sell_price_cents)} · {invoicePaymentLabel(item)}
+                    {item.payment_status === "DISPUTED" && item.dispute_reason
+                      ? ` — ${item.dispute_reason}`
+                      : ""}
+                    {item.awaiting_payment ? " · service complete, awaiting payment" : ""}
+                    {` · case ${humanize(item.case_state)}`}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))
       )}
     </section>
   );
@@ -2893,6 +3436,12 @@ function FulfillmentCard({
             Customer tracking link
           </button>
         </div>
+      )}
+      {item.awaiting_payment && (
+        <p className="muted">
+          Service is complete — this case is <strong>awaiting payment</strong>. It closes
+          automatically when the invoice is paid (see the Invoice card).
+        </p>
       )}
       {trackingUrl && <CustomerLinkBox url={trackingUrl} />}
       <small>Each step updates the customer's tracking page immediately.</small>
@@ -3428,6 +3977,15 @@ export function PublicTrackingPage({ token }: { token: string }) {
               <><dt><strong>Total due</strong></dt><dd><strong>{fmt(view.total_cents)}</strong></dd></>
             )}
           </dl>
+        )}
+        {view.invoice?.payment && (
+          <p>
+            <strong>{view.invoice.payment.label}</strong>
+            {" · "}
+            <a href={publicInvoicePdfUrl(token)} target="_blank" rel="noreferrer">
+              Download your invoice (PDF)
+            </a>
+          </p>
         )}
         {view.signed_by && (
           <small>

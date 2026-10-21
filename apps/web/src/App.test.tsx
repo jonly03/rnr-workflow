@@ -1,7 +1,8 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App, cardOrderKey, DEFAULT_CARD_ORDER, describeEvent, filterQueueCases, isStaffActionRequired, loadCardOrder, pinQuoteAfterPricing, PublicIntakePage, scanProgressForElapsed, shouldShowOverrideWarning, sortQueueCases } from "./App";
+import { App, cardOrderKey, DEFAULT_CARD_ORDER, describeEvent, filterQueueCases, groupInvoiceBoard, InvoiceBoard, invoicePaymentLabel, isStaffActionRequired, loadCardOrder, pinQuoteAfterPricing, PublicIntakePage, scanProgressForElapsed, shouldShowOverrideWarning, sortQueueCases } from "./App";
+import type { InvoiceBoardItem } from "./api";
 import type { CaseRecord, CaseEvent } from "./types";
 
 vi.stubGlobal("fetch", vi.fn(async () => ({
@@ -586,5 +587,150 @@ describe("public intake page (QR front door)", () => {
     fireEvent.click(screen.getByRole("button", { name: /Back/i }));
     expect(screen.getByText("Step 1 of 4")).toBeInTheDocument();
     expect((screen.getByLabelText(/^VIN/) as HTMLInputElement).value).toBe(VALID_VIN);
+  });
+});
+
+describe("invoice payment labels and board grouping (Slice D)", () => {
+  const baseInvoice = {
+    payment_status: "UNSENT" as const,
+    dispute_resolution: null,
+    aging_days: null
+  };
+
+  it("labels each payment state, with aging while awaiting payment", () => {
+    expect(invoicePaymentLabel(baseInvoice)).toBe("Unsent");
+    expect(
+      invoicePaymentLabel({ ...baseInvoice, payment_status: "SENT", aging_days: 6 })
+    ).toBe("Sent — awaiting payment (6d)");
+    expect(
+      invoicePaymentLabel({ ...baseInvoice, payment_status: "SENT", aging_days: null })
+    ).toBe("Sent — awaiting payment");
+    expect(invoicePaymentLabel({ ...baseInvoice, payment_status: "DISPUTED" })).toBe("Disputed");
+    expect(
+      invoicePaymentLabel({
+        ...baseInvoice,
+        payment_status: "DISPUTED",
+        dispute_resolution: "RESOLVED_WRITTEN_OFF"
+      })
+    ).toBe("Disputed — written off");
+    expect(
+      invoicePaymentLabel({
+        ...baseInvoice,
+        payment_status: "DISPUTED",
+        dispute_resolution: "RESOLVED_ADJUSTED"
+      })
+    ).toBe("Disputed — adjusted");
+    expect(invoicePaymentLabel({ ...baseInvoice, payment_status: "PAID" })).toBe("Paid");
+  });
+
+  const makeBoardItem = (overrides: Partial<InvoiceBoardItem> = {}): InvoiceBoardItem => ({
+    id: "inv-1",
+    case_id: "case-1",
+    version: 1,
+    actuals: {
+      glass_cost_cents: 20000,
+      labor_cents: 12500,
+      profit_cents: 25000,
+      tax_cents: 1250,
+      sell_price_cents: 58750,
+      price_calculation_id: "pc-1",
+      quote_id: "q-1",
+      quote_version: 1,
+      source: "signed_quote"
+    },
+    created_at: "2026-10-20T12:00:00.000Z",
+    payment_status: "UNSENT",
+    sent_at: null,
+    sent_via: null,
+    sent_to: null,
+    paid_at: null,
+    paid_method: null,
+    paid_ref: null,
+    paid_by: null,
+    dispute_reason_code: null,
+    dispute_reason: null,
+    disputed_at: null,
+    dispute_resolution: null,
+    dispute_resolved_at: null,
+    aging_days: null,
+    closable: false,
+    case_reference: "RRA-000001",
+    case_state: "INVOICED",
+    channel: "DIRECT",
+    vehicle: { year: 2020, make: "Honda", model: "Accord" },
+    glass_type: "WINDSHIELD",
+    bill_to: "Jane Customer",
+    awaiting_payment: false,
+    ...overrides
+  });
+
+  it("groups rows in collections order and drops empty groups", () => {
+    const groups = groupInvoiceBoard([
+      makeBoardItem({ id: "p", payment_status: "PAID" }),
+      makeBoardItem({ id: "s", payment_status: "SENT" }),
+      makeBoardItem({ id: "u", payment_status: "UNSENT" })
+    ]);
+    expect(groups.map(g => g.status)).toEqual(["UNSENT", "SENT", "PAID"]);
+    expect(groups[1].items.map(i => i.id)).toEqual(["s"]);
+  });
+
+  describe("board rendering", () => {
+    afterEach(() => cleanup());
+
+    function stubBoardFetch(items: InvoiceBoardItem[]) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string) => {
+          if (String(url).includes("/invoices")) {
+            return { ok: true, status: 200, json: async () => items };
+          }
+          return { ok: true, status: 200, json: async () => [] };
+        })
+      );
+    }
+
+    it("renders groups with aging and dispute reasons, and opens cases on click", async () => {
+      const onOpenCase = vi.fn();
+      stubBoardFetch([
+        makeBoardItem({
+          id: "sent-1",
+          case_id: "case-sent",
+          case_reference: "RRA-000101",
+          payment_status: "SENT",
+          sent_at: "2026-10-14T12:00:00.000Z",
+          aging_days: 6,
+          case_state: "SERVICE_COMPLETED",
+          awaiting_payment: true
+        }),
+        makeBoardItem({
+          id: "disp-1",
+          case_id: "case-disp",
+          case_reference: "RRA-000102",
+          payment_status: "DISPUTED",
+          dispute_reason: "Total looks wrong"
+        })
+      ]);
+      render(<InvoiceBoard onOpenCase={onOpenCase} />);
+
+      expect(await screen.findByText(/Awaiting payment \(1\)/)).toBeInTheDocument();
+      expect(screen.getByText(/Disputed \(1\)/)).toBeInTheDocument();
+      expect(screen.getByText(/Sent — awaiting payment \(6d\)/)).toBeInTheDocument();
+      expect(screen.getByText(/service complete, awaiting payment/)).toBeInTheDocument();
+      expect(screen.getByText(/Total looks wrong/)).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId("board-row-RRA-000101"));
+      expect(onOpenCase).toHaveBeenCalledWith("case-sent");
+
+      // The Disputed pill narrows the board to the disputed group only.
+      fireEvent.click(screen.getByRole("button", { name: "Disputed" }));
+      expect(screen.queryByText(/Awaiting payment \(1\)/)).not.toBeInTheDocument();
+      expect(screen.getByText(/Disputed \(1\)/)).toBeInTheDocument();
+    });
+
+    it("shows the empty state when nothing is owed", async () => {
+      stubBoardFetch([]);
+      render(<InvoiceBoard onOpenCase={vi.fn()} />);
+      expect(await screen.findByText("No invoices in this state yet.")).toBeInTheDocument();
+    });
   });
 });
