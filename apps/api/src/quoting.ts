@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import { invoiceClosable } from "./payments.js";
 import type { CaseStore } from "./store.js";
-import type { CaseRecord, Quote, QuoteSnapshot } from "./types.js";
+import type { CaseRecord, Quote, QuoteSnapshot, SignatureMethod } from "./types.js";
 
 /**
  * Quote + invoice + closeout (Phase 4 slice, no order/install dependency):
@@ -72,8 +73,10 @@ export type QuotingErrorCode =
   | "INVALID_TRANSITION"
   | "NO_APPROVED_PRICE"
   | "INVALID_SIGNATURE"
+  | "VALIDATION_ERROR"
   | "QUOTE_EXPIRED"
   | "QUOTE_NOT_SIGNED"
+  | "INVOICE_NOT_PAID"
   | "NO_SIGNED_QUOTE";
 
 export class QuotingError extends Error {
@@ -208,10 +211,13 @@ export async function generateQuote(
 }
 
 export interface SignQuoteInput {
-  /** Printed name of the person signing. */
+  /** The signer's first and last name. For a typed signature this name IS
+   *  the signature; it also remains the signer name on drawn signatures. */
   name: string;
-  /** data:image/png;base64,... from the signature pad. */
-  signatureDataUrl: string;
+  /** Legacy: data:image/png;base64,... from the old signature pad. New
+   *  clients send none — the typed name is the signature. When a non-empty
+   *  data URL is supplied it is validated and stored as before (drawn). */
+  signatureDataUrl?: string;
   /** Free-text attribution, e.g. "signed on staff tablet at counter". */
   attribution: string;
 }
@@ -222,6 +228,17 @@ const MAX_SIGNATURE_BYTES = 512 * 1024;
 /** SHA-256 of the decoded signature image bytes (not of the data URL string). */
 export function hashSignatureBytes(pngBytes: Buffer): string {
   return createHash("sha256").update(pngBytes).digest("hex");
+}
+
+/** SHA-256 of the typed signature artifact: the signer's normalized name,
+ *  domain-separated so it can never collide with an image-byte hash. */
+export function hashTypedSignature(normalizedName: string): string {
+  return createHash("sha256").update(`typed-signature:${normalizedName}`, "utf8").digest("hex");
+}
+
+/** Trim and collapse internal whitespace runs to single spaces. */
+export function normalizeSignerName(name: string): string {
+  return name.trim().replace(/\s+/g, " ");
 }
 
 function decodeSignatureDataUrl(dataUrl: string): Buffer {
@@ -236,14 +253,33 @@ function decodeSignatureDataUrl(dataUrl: string): Buffer {
   return bytes;
 }
 
-function validateSignatureInput(input: SignQuoteInput): Buffer {
-  const name = input.name?.trim() ?? "";
-  if (!name) {
-    throw new QuotingError("INVALID_SIGNATURE", "Signer name is required.", 422);
+interface ValidatedSignature {
+  /** The normalized signer name (trimmed, single-spaced). */
+  name: string;
+  method: SignatureMethod;
+  signatureHash: string;
+  /** The data URL to persist ("" for typed signatures). */
+  signatureDataUrl: string;
+}
+
+function validateSignatureInput(input: SignQuoteInput): ValidatedSignature {
+  const name = normalizeSignerName(input.name ?? "");
+  // The signature field takes the client's first AND last name — one word
+  // is not a signature.
+  if (name.split(" ").filter(Boolean).length < 2) {
+    throw new QuotingError(
+      "VALIDATION_ERROR",
+      "Enter your first and last name in the signature field.",
+      422
+    );
   }
-  const dataUrl = input.signatureDataUrl ?? "";
-  if (typeof dataUrl !== "string" || !dataUrl.startsWith(SIGNATURE_DATA_URL_PREFIX)) {
-    throw new QuotingError("INVALID_SIGNATURE", "A drawn signature image is required.", 422);
+  const dataUrl = typeof input.signatureDataUrl === "string" ? input.signatureDataUrl.trim() : "";
+  if (!dataUrl) {
+    // Typed signature: the name itself is the signed artifact.
+    return { name, method: "typed", signatureHash: hashTypedSignature(name), signatureDataUrl: "" };
+  }
+  if (!dataUrl.startsWith(SIGNATURE_DATA_URL_PREFIX)) {
+    throw new QuotingError("INVALID_SIGNATURE", "Signature image is malformed.", 422);
   }
   const signatureBytes = decodeSignatureDataUrl(dataUrl);
   // A blank pad still encodes a valid PNG: require a minimum of ink so an
@@ -251,7 +287,7 @@ function validateSignatureInput(input: SignQuoteInput): Buffer {
   if (signatureBytes.length < 256) {
     throw new QuotingError("INVALID_SIGNATURE", "Signature appears to be blank.", 422);
   }
-  return signatureBytes;
+  return { name, method: "drawn", signatureHash: hashSignatureBytes(signatureBytes), signatureDataUrl: dataUrl };
 }
 
 /**
@@ -307,16 +343,17 @@ export async function signQuote(
     );
   }
 
-  const signatureBytes = validateSignatureInput(input);
+  const validated = validateSignatureInput(input);
   if (latest.signature) return latest;
 
-  const name = input.name.trim();
+  const name = validated.name;
   const signedAt = new Date().toISOString();
   const signed = await store.signQuote({
     quoteId: latest.id,
     name,
-    signatureHash: hashSignatureBytes(signatureBytes),
-    signatureDataUrl: input.signatureDataUrl,
+    signatureHash: validated.signatureHash,
+    signatureDataUrl: validated.signatureDataUrl,
+    method: validated.method,
     signedAt,
     attribution: (input.attribution ?? "").trim()
   });
@@ -330,6 +367,7 @@ export async function signQuote(
       version: signed.version,
       signer_name: name,
       signed_at: signedAt,
+      signature_method: validated.method,
       attribution: signed.signature?.attribution ?? ""
     }
   });
@@ -426,8 +464,12 @@ export async function generateInvoice(
 
 /**
  * Closes the case. Only legal from SERVICE_COMPLETED (fulfillment done)
- * when an invoice exists and the underlying quote is signed; otherwise
- * rejected. CLOSED is terminal.
+ * when an invoice exists, the underlying quote is signed, AND — the
+ * Slice D close rule (brief §3.6, superseding the 2026-10-19 rule) —
+ * the invoice is PAID (or written off by an admin, which closes with a
+ * flag). A finished job with an unpaid invoice stays open; the staff
+ * invoice board surfaces it as awaiting payment. When payment lands
+ * after completion, payments.ts auto-closes instead. CLOSED is terminal.
  */
 export async function closeCase(
   store: CaseStore,
@@ -443,6 +485,13 @@ export async function closeCase(
     throw new QuotingError(
       "NO_SIGNED_QUOTE",
       "An invoice is required before the case can be closed.",
+      409
+    );
+  }
+  if (!invoiceClosable(latestInvoice)) {
+    throw new QuotingError(
+      "INVOICE_NOT_PAID",
+      "The invoice must be paid before the case can be closed.",
       409
     );
   }
@@ -466,7 +515,11 @@ export async function closeCase(
       quote_version: latestQuote.version,
       sell_price_cents: latestInvoice.actuals.sell_price_cents,
       signed_by: latestQuote.signature.name,
-      signed_at: latestQuote.signature.signed_at
+      signed_at: latestQuote.signature.signed_at,
+      invoice_payment_status: latestInvoice.payment_status,
+      ...(latestInvoice.dispute_resolution === "RESOLVED_WRITTEN_OFF"
+        ? { invoice_written_off: true }
+        : {})
     }
   });
   const updated = await store.getCase(caseId);

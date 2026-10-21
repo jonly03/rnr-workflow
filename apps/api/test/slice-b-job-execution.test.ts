@@ -485,6 +485,19 @@ describe("Asset visibility law (Slice B, §7.3)", () => {
       .field("year", "2020")
       .field("make", "Honda")
       .field("model", "Accord")
+      .field(
+        "service_address",
+        JSON.stringify({
+          place_id: "mock:terrace-118",
+          formatted: "118 Terrace St, Boston, MA 02120",
+          street: "118 Terrace St",
+          city: "Boston",
+          state: "Massachusetts",
+          zip: "02120",
+          lat: 42.3349,
+          lon: -71.0828
+        })
+      )
       .attach("photos", Buffer.from([5, 5]), {
         filename: "crack.jpg",
         contentType: "image/jpeg"

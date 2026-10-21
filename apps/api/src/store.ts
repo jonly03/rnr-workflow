@@ -20,6 +20,10 @@ import type {
   IdentificationStatus,
   Invoice,
   InvoiceActuals,
+  InvoiceDisputeResolution,
+  InvoiceEvent,
+  InvoiceEventKind,
+  InvoicePaymentStatus,
   Job,
   JobStepEvent,
   OperatorInvite,
@@ -29,6 +33,7 @@ import type {
   QuoteSignature,
   QuoteSnapshot,
   QuoteStatus,
+  SignatureMethod,
   StaffUser,
   StaffUserRecord,
   StoreShape,
@@ -167,6 +172,7 @@ export interface SignQuoteInput {
   name: string;
   signatureHash: string;
   signatureDataUrl: string;
+  method: SignatureMethod;
   signedAt: string;
   attribution: string;
 }
@@ -253,6 +259,35 @@ export type JobPatch = Partial<
 // Re-exported so store consumers can type availability windows without a
 // second import path.
 export type { AvailabilityWindow };
+
+
+/** Partial payment-lifecycle update for one invoice version. Only the
+ *  fields present are written; the state machine lives in payments.ts —
+ *  the store just persists. */
+export interface UpdateInvoicePaymentInput {
+  payment_status?: InvoicePaymentStatus;
+  sent_at?: string | null;
+  sent_via?: string | null;
+  sent_to?: string | null;
+  paid_at?: string | null;
+  paid_method?: string | null;
+  paid_ref?: string | null;
+  paid_by?: string | null;
+  dispute_reason_code?: string | null;
+  dispute_reason?: string | null;
+  disputed_at?: string | null;
+  dispute_resolution?: InvoiceDisputeResolution | null;
+  dispute_resolved_at?: string | null;
+}
+
+export interface AppendInvoiceEventInput {
+  invoiceId: string;
+  caseId: string;
+  kind: InvoiceEventKind;
+  actor: { type: string; id: string | null };
+  note?: string | null;
+  payload?: Record<string, unknown>;
+}
 
 export interface SavePriceCalculationInput {
   caseId: string;
@@ -362,6 +397,14 @@ export interface CaseStore {
   getJob(id: string): Promise<Job | null>;
   listJobs(): Promise<Job[]>;
   updateJob(id: string, patch: JobPatch): Promise<Job>;
+  /** Every invoice in the store, newest first (staff collections board). */
+  listAllInvoices(): Promise<Invoice[]>;
+  /** Applies a payment-lifecycle patch to one invoice version. */
+  updateInvoicePayment(invoiceId: string, patch: UpdateInvoicePaymentInput): Promise<Invoice>;
+  /** Appends one entry to an invoice's payment thread (append-only). */
+  appendInvoiceEvent(input: AppendInvoiceEventInput): Promise<InvoiceEvent>;
+  /** An invoice's payment thread, oldest first. */
+  listInvoiceEvents(invoiceId: string): Promise<InvoiceEvent[]>;
   /** Appends one checklist step event to a job (Slice B, append-only). */
   appendJobStepEvent(input: AppendJobStepEventInput): Promise<JobStepEvent>;
   /** All step events for a job, oldest first. */
@@ -393,7 +436,8 @@ const emptyStore = (): StoreShape => ({
   supplier_offers: [],
   price_calculations: [],
   quotes: [],
-  invoices: []
+  invoices: [],
+  invoice_events: []
 });
 
 export class JsonCaseStore implements CaseStore {
@@ -867,7 +911,8 @@ export class JsonCaseStore implements CaseStore {
         signed_at: input.signedAt,
         attribution: input.attribution,
         signature_hash: input.signatureHash,
-        signature_data_url: input.signatureDataUrl
+        signature_data_url: input.signatureDataUrl,
+        method: input.method
       };
     }
     this.persist(next);
@@ -890,7 +935,20 @@ export class JsonCaseStore implements CaseStore {
       case_id: input.caseId,
       version: input.version,
       actuals: input.actuals,
-      created_at: now
+      created_at: now,
+      payment_status: "UNSENT",
+      sent_at: null,
+      sent_via: null,
+      sent_to: null,
+      paid_at: null,
+      paid_method: null,
+      paid_ref: null,
+      paid_by: null,
+      dispute_reason_code: null,
+      dispute_reason: null,
+      disputed_at: null,
+      dispute_resolution: null,
+      dispute_resolved_at: null
     };
     const next = structuredClone(this.data);
     next.invoices.push(record);
@@ -901,7 +959,8 @@ export class JsonCaseStore implements CaseStore {
   async listInvoices(caseId: string): Promise<Invoice[]> {
     return this.data.invoices
       .filter(i => i.case_id === caseId)
-      .sort((a, b) => a.version - b.version);
+      .sort((a, b) => a.version - b.version)
+      .map(withPaymentDefaults);
   }
 
   async getLatestInvoice(caseId: string): Promise<Invoice | null> {
@@ -973,6 +1032,42 @@ export class JsonCaseStore implements CaseStore {
     };
     const next = structuredClone(this.data);
     next.operator_invites.push(record);
+    this.persist(next);
+    return record;
+  }
+
+  async listAllInvoices(): Promise<Invoice[]> {
+    return [...this.data.invoices]
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .map(withPaymentDefaults);
+  }
+
+  async updateInvoicePayment(
+    invoiceId: string,
+    patch: UpdateInvoicePaymentInput
+  ): Promise<Invoice> {
+    const next = structuredClone(this.data);
+    const record = next.invoices.find(i => i.id === invoiceId);
+    if (!record) throw new Error("Invoice not found.");
+    Object.assign(record, patch);
+    this.persist(next);
+    return withPaymentDefaults(record);
+  }
+
+  async appendInvoiceEvent(input: AppendInvoiceEventInput): Promise<InvoiceEvent> {
+    const record: InvoiceEvent = {
+      id: randomUUID(),
+      invoice_id: input.invoiceId,
+      case_id: input.caseId,
+      kind: input.kind,
+      actor_type: input.actor.type,
+      actor_id: input.actor.id,
+      note: input.note ?? null,
+      payload: input.payload ?? {},
+      created_at: new Date().toISOString()
+    };
+    const next = structuredClone(this.data);
+    next.invoice_events.push(record);
     this.persist(next);
     return record;
   }
@@ -1118,4 +1213,33 @@ export class JsonCaseStore implements CaseStore {
     this.persist(next);
     return record;
   }
+  async listInvoiceEvents(invoiceId: string): Promise<InvoiceEvent[]> {
+    return this.data.invoice_events
+      .filter(e => e.invoice_id === invoiceId)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+}
+
+/**
+ * Store files written before Slice D have invoice rows without payment
+ * fields. Normalize on read so the payment lifecycle always sees the
+ * full shape (new invoices are UNSENT until staff act).
+ */
+function withPaymentDefaults(invoice: Invoice): Invoice {
+  return {
+    ...invoice,
+    payment_status: invoice.payment_status ?? "UNSENT",
+    sent_at: invoice.sent_at ?? null,
+    sent_via: invoice.sent_via ?? null,
+    sent_to: invoice.sent_to ?? null,
+    paid_at: invoice.paid_at ?? null,
+    paid_method: invoice.paid_method ?? null,
+    paid_ref: invoice.paid_ref ?? null,
+    paid_by: invoice.paid_by ?? null,
+    dispute_reason_code: invoice.dispute_reason_code ?? null,
+    dispute_reason: invoice.dispute_reason ?? null,
+    disputed_at: invoice.disputed_at ?? null,
+    dispute_resolution: invoice.dispute_resolution ?? null,
+    dispute_resolved_at: invoice.dispute_resolved_at ?? null
+  };
 }

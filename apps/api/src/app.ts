@@ -3,7 +3,7 @@ import cors from "cors";
 import multer from "multer";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { CaseRecord, Channel, StaffUser } from "./types.js";
+import { signatureMethodOf, type CaseRecord, type Channel, type StaffUser } from "./types.js";
 import type { CaseStore, TechProfilePatch } from "./store.js";
 import type { GlassCatalogProvider } from "./glass-catalog.js";
 import { createGlassCatalogProvider } from "./mygrant.js";
@@ -39,6 +39,7 @@ import {
   generateInvoice,
   generateQuote,
   loadQuotingConfig,
+  normalizeSignerName,
   QuotingError,
   signQuote,
   type QuotingConfig
@@ -104,6 +105,18 @@ import {
   LifecycleError
 } from "./lifecycle.js";
 import {
+  addInvoiceDisputeUpdate,
+  buildInvoiceClientView,
+  invoiceClosable,
+  invoicePaymentView,
+  InvoicePaymentError,
+  markInvoicePaid,
+  markInvoiceSent,
+  openInvoiceDispute,
+  resolveInvoiceDispute
+} from "./payments.js";
+import { renderInvoicePdf } from "./invoice-pdf.js";
+import {
   createAssetStorage,
   isByteServing,
   type AssetStorage
@@ -126,6 +139,11 @@ import {
   techJobView
 } from "./job-execution.js";
 import { createRateLimiter } from "./rate-limit.js";
+import {
+  createAddressProvider,
+  type AddressProvider,
+  type AddressSuggestion
+} from "./address.js";
 
 const createCaseSchema = z.object({
   channel: z.enum(["DIRECT", "AUCTION", "INSURANCE"]),
@@ -164,16 +182,67 @@ const loginSchema = z.object({
  * fields (channel, state, pricing) into case creation — the handler
  * below pins channel DIRECT itself.
  */
+/** Newest vehicle year a client may claim: this year or next year's models. */
+const MAX_VEHICLE_YEAR = new Date().getFullYear() + 1;
+
 const publicIntakeSchema = z.object({
-  customer_name: z.string().trim().min(1).max(120),
+  customer_name: z.string().trim().min(2).max(120),
   customer_phone: z.string().trim().min(7).max(32),
   glass_type: z.enum(["WINDSHIELD", "BACK_GLASS", "DOOR_GLASS", "QUARTER_GLASS", "VENT_GLASS"]),
+  // Legacy: the 3-card intake (2026-10-21) removed the "What happened?"
+  // free-text field, and the client no longer sends it. Still accepted
+  // (and projected for staff) so older clients in the field don't break.
   note: z.string().trim().max(1000).optional(),
   vin: z.string().trim().max(17).optional(),
-  year: z.coerce.number().int().min(1886).max(2100).optional(),
+  year: z.coerce.number().int().min(1950).max(MAX_VEHICLE_YEAR).optional(),
   make: z.string().trim().min(1).max(60).optional(),
   model: z.string().trim().min(1).max(60).optional()
 });
+
+/**
+ * The service address the customer PICKED from the suggestion list —
+ * never free text. Validated separately from the main schema because
+ * the client sends it as a JSON string inside the multipart form, and
+ * because its failure mode is its own 400 (see the intake handler).
+ */
+const serviceAddressSchema = z.object({
+  place_id: z.string().trim().min(1).max(160),
+  formatted: z.string().trim().min(1).max(400),
+  street: z.string().trim().max(200).nullable().optional(),
+  city: z.string().trim().min(1).max(120),
+  state: z.string().trim().min(2).max(80),
+  zip: z.string().trim().regex(/^\d{5}(-\d{4})?$/),
+  lat: z.number().min(-90).max(90),
+  lon: z.number().min(-180).max(180)
+});
+
+export type ServiceAddress = z.infer<typeof serviceAddressSchema>;
+
+/**
+ * Normalizes a US phone number to its 10 digits, or null when the
+ * input isn't one: punctuation/formatting is fine, an 11-digit number
+ * with a leading 1 (country code) is fine, anything else is not. The
+ * leading digit of the area code must be 2-9 (NANP rule). Mirrored by
+ * the web client's pre-check; this server check is the real gate.
+ */
+export function normalizeUsPhone(raw: string): string | null {
+  let digits = raw.replace(/\D/g, "");
+  if (digits.length === 11 && digits.startsWith("1")) digits = digits.slice(1);
+  if (digits.length !== 10) return null;
+  if (!/^[2-9]/.test(digits)) return null;
+  return digits;
+}
+
+export interface ServiceAddressView {
+  formatted: string;
+  street: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+  lat: number | null;
+  lon: number | null;
+  place_id: string | null;
+}
 
 export interface ClientIntakeView {
   source: string;
@@ -183,12 +252,32 @@ export interface ClientIntakeView {
   /** OCR reading of the client's VIN photo — a staff suggestion only. */
   vin_ocr_suggestion: string | null;
   photo_count: number;
+  /** Where the car will be serviced — the address the customer picked. */
+  service_address: ServiceAddressView | null;
   submitted_at: string;
 }
 
 /** Defensive projection of the intake event payload for staff responses. */
 function clientIntakeView(payload: Record<string, unknown>, occurredAt: string): ClientIntakeView {
   const str = (v: unknown) => (typeof v === "string" && v.length > 0 ? v : null);
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const rawAddress =
+    payload.service_address && typeof payload.service_address === "object"
+      ? (payload.service_address as Record<string, unknown>)
+      : null;
+  const service_address: ServiceAddressView | null =
+    rawAddress && str(rawAddress.formatted)
+      ? {
+          formatted: str(rawAddress.formatted) as string,
+          street: str(rawAddress.street),
+          city: str(rawAddress.city),
+          state: str(rawAddress.state),
+          zip: str(rawAddress.zip),
+          lat: num(rawAddress.lat),
+          lon: num(rawAddress.lon),
+          place_id: str(rawAddress.place_id)
+        }
+      : null;
   return {
     source: str(payload.source) ?? "CLIENT_QR",
     customer_name: str(payload.customer_name),
@@ -196,6 +285,7 @@ function clientIntakeView(payload: Record<string, unknown>, occurredAt: string):
     note: str(payload.note),
     vin_ocr_suggestion: str(payload.vin_ocr_suggestion),
     photo_count: Array.isArray(payload.photos) ? payload.photos.length : 0,
+    service_address,
     submitted_at: occurredAt
   };
 }
@@ -211,6 +301,10 @@ export interface SecurityConfig {
   intakeRateLimitMax?: number;
   /** Rate-limit window in ms. Defaults to INTAKE_RATE_LIMIT_WINDOW_MS (10 min). */
   intakeRateLimitWindowMs?: number;
+  /** Max address-suggest lookups per window/IP. Defaults to ADDRESS_SUGGEST_RATE_LIMIT_MAX (120). */
+  addressSuggestRateLimitMax?: number;
+  /** Address-suggest rate-limit window in ms. Defaults to ADDRESS_SUGGEST_RATE_LIMIT_WINDOW_MS (10 min). */
+  addressSuggestRateLimitWindowMs?: number;
 }
 
 function parseCorsOrigins(raw: string | undefined): string[] {
@@ -260,6 +354,12 @@ export interface AppDeps {
    */
   calendarProvider?: CalendarProvider;
   /**
+   * Address-suggestion provider for the intake service-address field.
+   * Defaults to the env-selected provider (ADDRESS_PROVIDER=nominatim|mock).
+   * Injectable so tests never call the live geocoder.
+   */
+  addressProvider?: AddressProvider;
+  /**
    * Asset byte storage override (tests inject the in-memory driver).
    * Defaults to env config: ASSETS_STORAGE=s3 with bucket + IAM keys
    * uses S3; anything else uses the local dev driver (Slice B §7.2).
@@ -275,6 +375,7 @@ export function createApp(
 ) {
   const glassCatalog = deps.glassCatalog ?? createGlassCatalogProvider();
   const sourcingProvider = deps.sourcingProvider ?? createSourcingProvider();
+  const addressProvider = deps.addressProvider ?? createAddressProvider();
   const pricingConfig = deps.pricingConfig ?? loadPricingConfig();
   const quotingConfig = deps.quotingConfig ?? loadQuotingConfig();
   // Google Sign-In + Calendar (Slice A §7.1): complete but inert when
@@ -355,7 +456,19 @@ export function createApp(
     const price_calculation = glass_request
       ? await store.getLatestPriceCalculation(glass_request.id)
       : null;
-    const invoice = await store.getLatestInvoice(c.id);
+    const rawInvoice = await store.getLatestInvoice(c.id);
+    const invoice = rawInvoice ? invoicePaymentView(rawInvoice) : null;
+    const invoice_events = rawInvoice
+      ? await store.listInvoiceEvents(rawInvoice.id)
+      : [];
+    // Slice D close rule surfaced plainly: a finished job whose invoice
+    // is not yet paid (or written off) is open BECAUSE it is awaiting
+    // payment — staff see why, not just a stuck SERVICE_COMPLETED.
+    const awaiting_payment = Boolean(
+      rawInvoice &&
+        c.current_state === "SERVICE_COMPLETED" &&
+        !invoiceClosable(rawInvoice)
+    );
     const quote = await store.getLatestQuote(c.id);
     const jobRecord = await store.getJobByCase(c.id);
     const job = jobRecord
@@ -377,7 +490,7 @@ export function createApp(
     const client_intake = intakeEvent
       ? clientIntakeView(intakeEvent.payload, intakeEvent.occurred_at)
       : null;
-    return { ...c, vehicle, glass_request, glass_identification, supplier_offers, price_calculation, quote, invoice, client_intake, job };
+    return { ...c, vehicle, glass_request, glass_identification, supplier_offers, price_calculation, quote, invoice, invoice_events, awaiting_payment, client_intake, job };
   };
 
   /**
@@ -1316,7 +1429,11 @@ export function createApp(
             ? "EXPIRED"
             : "AWAITING_SIGNATURE",
       signed_by: quote.signature?.name ?? null,
-      signed_at: quote.signature?.signed_at ?? null
+      signed_at: quote.signature?.signed_at ?? null,
+      // How the signature was captured, so the client page can render a
+      // typed signature as the name in a signature style. The drawn image
+      // itself never leaves the server (staff-visible only).
+      signature_method: quote.signature ? signatureMethodOf(quote.signature) : null
     };
   };
 
@@ -1344,6 +1461,22 @@ export function createApp(
     QUOTE_DECLINED: "Quote declined",
     QUOTE_EXPIRED: "Quote expired"
   };
+
+  /**
+   * Payment at summary level only (Slice D): the client learns THAT
+   * payment is due / received / under review — never amounts beyond the
+   * totals this projection already shows, and never dispute internals.
+   * An UNSENT invoice has not been sent to the client, so it projects
+   * as no payment state at all.
+   */
+  const paymentSummary = (status: string) =>
+    status === "PAID"
+      ? { status: "PAID", label: "Payment received — thank you" }
+      : status === "SENT"
+        ? { status: "DUE", label: "Payment due" }
+        : status === "DISPUTED"
+          ? { status: "REVIEW", label: "Payment under review" }
+          : null;
 
   /** Customer tracking projection: milestones + totals, from safe fields only. */
   const publicTrackingView = async (c: CaseRecord) => {
@@ -1386,8 +1519,13 @@ export function createApp(
       current_state: c.current_state,
       signed_by: quote?.signature?.name ?? null,
       signed_at: quote?.signature?.signed_at ?? null,
+      signature_method: quote?.signature ? signatureMethodOf(quote.signature) : null,
       invoice: invoice
-        ? { version: invoice.version, total_cents: invoice.actuals.sell_price_cents }
+        ? {
+            version: invoice.version,
+            total_cents: invoice.actuals.sell_price_cents,
+            payment: paymentSummary(invoice.payment_status)
+          }
         : null,
       labor_cents: totals?.labor_cents ?? null,
       tax_cents: totals?.tax_cents ?? null,
@@ -1427,9 +1565,13 @@ export function createApp(
         error: { code: "VALIDATION_ERROR", message: "name is required." }
       });
     }
-    if (typeof signatureDataUrl !== "string" || !signatureDataUrl.trim()) {
+    // The typed name IS the signature: it must be a first AND last name.
+    if (normalizeSignerName(name).split(" ").filter(Boolean).length < 2) {
       return res.status(422).json({
-        error: { code: "VALIDATION_ERROR", message: "signature_data_url is required." }
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Enter your first and last name in the signature field."
+        }
       });
     }
     const customerActor = { type: "CUSTOMER", id: null };
@@ -1439,7 +1581,12 @@ export function createApp(
         c.id,
         {
           name: name.trim(),
-          signatureDataUrl: signatureDataUrl.trim(),
+          // Legacy clients may still send a drawn signature image; it is
+          // accepted and stored, but no longer required.
+          signatureDataUrl:
+            typeof signatureDataUrl === "string" && signatureDataUrl.trim()
+              ? signatureDataUrl.trim()
+              : undefined,
           attribution: "customer signature via shared link"
         },
         customerActor
@@ -1503,6 +1650,40 @@ export function createApp(
     return res.json(await publicTrackingView(c));
   });
 
+  /** Streams the case's invoice PDF (client projection only). */
+  const sendInvoicePdf = async (
+    res: express.Response,
+    caseId: string,
+    disposition: "attachment" | "inline"
+  ): Promise<boolean> => {
+    const view = await buildInvoiceClientView(store, caseId);
+    if (!view) return false;
+    const pdf = renderInvoicePdf(view);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `${disposition}; filename="invoice-${view.reference}-v${view.invoice_version}.pdf"`
+    );
+    res.send(pdf);
+    return true;
+  };
+
+  /**
+   * The client's own invoice file, behind their tracking link. Only
+   * once the invoice has actually been sent to them (SENT / DISPUTED /
+   * PAID): an UNSENT invoice is still an internal draft, so the file
+   * 404s exactly like a bad link — its existence is not revealed.
+   */
+  app.get("/api/v1/public/track/:token/invoice.pdf", publicLimiter, async (req, res) => {
+    const grant = await verifyApprovalToken(store, String(req.params.token), "case-view");
+    if (!grant) return linkInvalid(res);
+    const c = await store.getCase(grant.caseId);
+    if (!c || c.channel !== grant.channel) return linkInvalid(res);
+    const invoice = await store.getLatestInvoice(c.id);
+    if (!invoice || invoice.payment_status === "UNSENT") return linkInvalid(res);
+    await sendInvoicePdf(res, c.id, "inline");
+  });
+
   // ---------------------------------------------------------------------
   // Public client intake (Slice A — the QR front door).
   //
@@ -1510,7 +1691,10 @@ export function createApp(
   // no staff session, no account. The case lands as a normal DIRECT case
   // flagged CLIENT_QR via a CLIENT_INTAKE_SUBMITTED event that also
   // carries the customer's name + mobile (staff need the mobile to text
-  // the quote link later) and the note/photos metadata. The submission
+  // the quote link later), the note/photos metadata, and — since the
+  // service-address branch — the structured service address the
+  // customer picked from the geocoder's suggestions (fulfillment
+  // drives to it, so free-typed addresses are rejected). The submission
   // then drives the case to its quote automatically (identification →
   // sourcing → pricing → auto-quote, the same chain staff start by hand)
   // and returns a view-only intake-status token: the confirmation page
@@ -1556,6 +1740,52 @@ export function createApp(
       }
     });
 
+  // ---------------------------------------------------------------------
+  // Address suggestions for the intake contact card. The customer types,
+  // we proxy the geocoder server-side (proper User-Agent, US-only,
+  // short in-memory cache, per-IP rate limit), and the customer MUST
+  // pick one of the returned suggestions — the intake POST then carries
+  // that structured address, so a made-up address can never be stored.
+  // Provider is env-swappable; tests and e2e always run the mock.
+  // ---------------------------------------------------------------------
+
+  const suggestLimiter = createRateLimiter({
+    windowMs:
+      securityConfig.addressSuggestRateLimitWindowMs ??
+      Number(process.env.ADDRESS_SUGGEST_RATE_LIMIT_WINDOW_MS ?? 10 * 60 * 1000),
+    max:
+      securityConfig.addressSuggestRateLimitMax ??
+      Number(process.env.ADDRESS_SUGGEST_RATE_LIMIT_MAX ?? 120)
+  });
+
+  const SUGGEST_CACHE_TTL_MS = 60 * 1000;
+  const suggestCache = new Map<string, { at: number; suggestions: AddressSuggestion[] }>();
+
+  app.get("/api/v1/public/address/suggest", suggestLimiter, async (req, res) => {
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    if (q.length < 3) {
+      return res.json({ suggestions: [] });
+    }
+    const cacheKey = q.toLowerCase().replace(/\s+/g, " ");
+    const cached = suggestCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < SUGGEST_CACHE_TTL_MS) {
+      return res.json({ suggestions: cached.suggestions });
+    }
+    try {
+      const suggestions = await addressProvider.suggest(q);
+      suggestCache.set(cacheKey, { at: Date.now(), suggestions });
+      return res.json({ suggestions });
+    } catch (err) {
+      console.error("address suggest failed:", err);
+      return res.status(502).json({
+        error: {
+          code: "ADDRESS_LOOKUP_FAILED",
+          message: "Address lookup is unavailable right now — please try again in a moment."
+        }
+      });
+    }
+  });
+
   app.post(
     "/api/v1/public/intake",
     intakeLimiter,
@@ -1583,11 +1813,44 @@ export function createApp(
       }
       const input = parsed.data;
 
-      const phoneDigits = input.customer_phone.replace(/\D/g, "");
-      if (phoneDigits.length < 7 || phoneDigits.length > 15) {
+      // Service address: REQUIRED, and it must be an address the
+      // customer picked from the suggestion list — structured fields
+      // with the provider's place id, not free text (a made-up address
+      // sends a tech to the wrong place). It arrives as a JSON string
+      // in the multipart form (or an object in a JSON body). A missing
+      // or malformed one is a 400 with the field named, so the UI can
+      // pin the error to the address field.
+      let rawAddress: unknown = raw.service_address;
+      if (typeof rawAddress === "string") {
+        try {
+          rawAddress = JSON.parse(rawAddress);
+        } catch {
+          rawAddress = undefined;
+        }
+      }
+      const parsedAddress = serviceAddressSchema.safeParse(rawAddress);
+      if (!parsedAddress.success) {
+        return res.status(400).json({
+          error: {
+            code: "VALIDATION_ERROR",
+            message:
+              "Pick the address where we'll find the car from the suggestions, so we have a real address.",
+            details: { field: "service_address" }
+          }
+        });
+      }
+      const serviceAddress: ServiceAddress = {
+        ...parsedAddress.data,
+        street: parsedAddress.data.street ?? null
+      };
+
+      // Phone: must normalize to a valid 10-digit US number (common
+      // formats and a leading 1 are fine; anything else is not a
+      // number we can text a quote to).
+      if (!normalizeUsPhone(input.customer_phone)) {
         return intakeValidationError(
           res,
-          "Enter a mobile phone number we can text your quote to.",
+          "Enter a valid 10-digit US mobile number so we can text your quote.",
           "customer_phone"
         );
       }
@@ -1640,6 +1903,17 @@ export function createApp(
       for (const f of files.photos ?? []) {
         photoMeta.push({ kind: "damage", size_bytes: f.size, content_type: f.mimetype });
       }
+      // Damage photos cap at 6 (one per glass on the car). Multer's
+      // maxCount already rejects a 7th upload before this handler runs;
+      // this explicit check keeps the rule true even if the upload
+      // wiring changes — the cap is a product rule, not a multer detail.
+      if (photoMeta.length > 6) {
+        return intakeValidationError(
+          res,
+          "Up to 6 damage photos — please remove the extras and try again.",
+          "photos"
+        );
+      }
       let vinOcrSuggestion: string | null = null;
       const vinPhoto = files.vin_photo?.[0];
       if (vinPhoto) {
@@ -1673,6 +1947,7 @@ export function createApp(
           customer_name: input.customer_name,
           customer_phone: input.customer_phone,
           note: input.note ?? null,
+          service_address: serviceAddress,
           vin_provided: vin !== null,
           vin_ocr_suggestion: vinOcrSuggestion,
           photos: photoMeta
@@ -2238,6 +2513,89 @@ export function createApp(
     });
   });
 
+  /**
+   * Staff collections board (Slice D): the latest invoice version of
+   * every case, ordered for collections work — UNSENT first (send
+   * them), then SENT oldest-first (aging), DISPUTED, then PAID.
+   * Filter with ?payment_status=UNSENT|SENT|DISPUTED|PAID. Channel
+   * scoping applies exactly as on case routes.
+   */
+  app.get("/api/v1/invoices", auth, async (req, res) => {
+    const statusFilter =
+      typeof req.query.payment_status === "string" ? req.query.payment_status : null;
+    const all = await store.listAllInvoices();
+    // listAllInvoices is newest-first, so the first row seen per case
+    // is its latest invoice version; older versions are history.
+    const latestByCase = new Map<string, (typeof all)[number]>();
+    for (const inv of all) {
+      if (!latestByCase.has(inv.case_id)) latestByCase.set(inv.case_id, inv);
+    }
+    type BoardItem = ReturnType<typeof invoicePaymentView> & {
+      case_reference: string;
+      case_state: string;
+      channel: Channel;
+      vehicle: { year: number; make: string; model: string } | null;
+      glass_type: string | null;
+      bill_to: string | null;
+      awaiting_payment: boolean;
+    };
+    const items: BoardItem[] = [];
+    for (const inv of latestByCase.values()) {
+      const c = await store.getCase(inv.case_id);
+      if (!c || !canAccessChannel(req.staff, c.channel)) continue;
+      if (statusFilter && inv.payment_status !== statusFilter) continue;
+      const [vehicle, quote] = await Promise.all([
+        store.getVehicle(c.vehicle_id),
+        store.getLatestQuote(c.id)
+      ]);
+      items.push({
+        ...invoicePaymentView(inv),
+        case_reference: c.reference,
+        case_state: c.current_state,
+        channel: c.channel,
+        vehicle: vehicle
+          ? { year: vehicle.year, make: vehicle.make, model: vehicle.model }
+          : null,
+        glass_type: quote?.snapshot.glass_type ?? null,
+        bill_to: quote?.signature?.name ?? null,
+        awaiting_payment:
+          c.current_state === "SERVICE_COMPLETED" && !invoiceClosable(inv)
+      });
+    }
+    const rank: Record<string, number> = { UNSENT: 0, SENT: 1, DISPUTED: 2, PAID: 3 };
+    const stamp = (i: (typeof items)[number]) =>
+      i.payment_status === "SENT"
+        ? (i.sent_at ?? i.created_at)
+        : i.payment_status === "DISPUTED"
+          ? (i.disputed_at ?? i.created_at)
+          : i.payment_status === "PAID"
+            ? (i.paid_at ?? i.created_at)
+            : i.created_at;
+    items.sort((a, b) => {
+      const byRank = (rank[a.payment_status] ?? 9) - (rank[b.payment_status] ?? 9);
+      if (byRank !== 0) return byRank;
+      // Oldest first while money is outstanding; newest first once paid.
+      return a.payment_status === "PAID"
+        ? stamp(b).localeCompare(stamp(a))
+        : stamp(a).localeCompare(stamp(b));
+    });
+    return res.json(items);
+  });
+
+  /** Staff download of the case's invoice file (client projection). */
+  app.get("/api/v1/cases/:caseId/invoice.pdf", async (req, res) => {
+    const c = await store.getCase(req.params.caseId);
+    if (!c || !canAccessChannel(req.staff, c.channel)) {
+      return channelNotFound(res);
+    }
+    const sent = await sendInvoicePdf(res, c.id, "attachment");
+    if (!sent) {
+      return res.status(404).json({
+        error: { code: "NO_INVOICE", message: "This case has no invoice yet." }
+      });
+    }
+  });
+
   app.post("/api/v1/cases/:caseId/actions", async (req, res) => {
     const c = await store.getCase(req.params.caseId);
     if (!c || !canAccessChannel(req.staff, c.channel)) {
@@ -2245,6 +2603,11 @@ export function createApp(
     }
 
     const staffActor = { type: "RNR_STAFF", id: req.staff?.id ?? null };
+    const paymentActor = {
+      type: "RNR_STAFF",
+      id: req.staff?.id ?? null,
+      role: req.staff?.role ?? null
+    };
     const action = String(req.body?.action ?? "");
 
     try {
@@ -2394,9 +2757,13 @@ export function createApp(
               error: { code: "VALIDATION_ERROR", message: "name is required." }
             });
           }
-          if (typeof signatureDataUrl !== "string" || !signatureDataUrl.trim()) {
+          // The typed name IS the signature: first AND last name required.
+          if (normalizeSignerName(name).split(" ").filter(Boolean).length < 2) {
             return res.status(422).json({
-              error: { code: "VALIDATION_ERROR", message: "signature_data_url is required." }
+              error: {
+                code: "VALIDATION_ERROR",
+                message: "Enter your first and last name in the signature field."
+              }
             });
           }
           await signQuote(
@@ -2404,7 +2771,11 @@ export function createApp(
             c.id,
             {
               name: name.trim(),
-              signatureDataUrl: signatureDataUrl.trim(),
+              // Legacy drawn images are still accepted, never required.
+              signatureDataUrl:
+                typeof signatureDataUrl === "string" && signatureDataUrl.trim()
+                  ? signatureDataUrl.trim()
+                  : undefined,
               attribution: typeof attribution === "string" ? attribution : ""
             },
             staffActor
@@ -2416,6 +2787,23 @@ export function createApp(
           break;
         case "generate_invoice":
           await generateInvoice(store, c.id, staffActor);
+          break;
+        // Invoice payment lifecycle (Slice D, payments.ts). All act on
+        // the case's LATEST invoice version.
+        case "mark_invoice_sent":
+          await markInvoiceSent(store, c.id, req.body ?? {}, paymentActor);
+          break;
+        case "mark_invoice_paid":
+          await markInvoicePaid(store, c.id, req.body ?? {}, paymentActor);
+          break;
+        case "dispute_invoice":
+          await openInvoiceDispute(store, c.id, req.body ?? {}, paymentActor);
+          break;
+        case "invoice_dispute_update":
+          await addInvoiceDisputeUpdate(store, c.id, req.body ?? {}, paymentActor);
+          break;
+        case "resolve_invoice_dispute":
+          await resolveInvoiceDispute(store, c.id, req.body ?? {}, paymentActor);
           break;
         case "close_case":
           await closeCase(store, c.id, staffActor);
@@ -2450,6 +2838,11 @@ export function createApp(
         });
       }
       if (error instanceof LifecycleError) {
+        return res.status(error.httpStatus).json({
+          error: { code: error.code, message: error.message }
+        });
+      }
+      if (error instanceof InvoicePaymentError) {
         return res.status(error.httpStatus).json({
           error: { code: error.code, message: error.message }
         });
