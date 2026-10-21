@@ -85,18 +85,20 @@ jobs:
           key = "ADDRESS_PROVIDER"
           value = os.environ["ADDRESS_PIN_VALUE"]
           target = os.environ["ADDRESS_PIN_TARGET"]
-          base = f"https://api.vercel.com/v9/projects/{project}/env?teamId={team}"
+          base = "https://api.vercel.com/v9/projects/" + project + "/env?teamId=" + team
           def call(method, url, body=None):
-            req = urllib.request.Request(url, method=method, data=json.dumps(body).encode() if body is not None else None, headers={{"Authorization": f"Bearer {token}", "Content-Type": "application/json"}})
+            data = json.dumps(body).encode() if body is not None else None
+            req = urllib.request.Request(url, method=method, data=data, headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
             with urllib.request.urlopen(req) as r:
               return json.loads(r.read() or b"{}")
           existing = [e for e in call("GET", base).get("envs", []) if e.get("key") == key and target in (e.get("target") or [])]
           if existing:
-            call("PATCH", f"https://api.vercel.com/v9/projects/{project}/env/{existing[0]['id']}?teamId={team}", {{"value": value}})
-            print(f"updated {key} [{preview}] -> {mock}")
+            url = "https://api.vercel.com/v9/projects/" + project + "/env/" + existing[0]["id"] + "?teamId=" + team
+            call("PATCH", url, {"value": value})
+            print("updated " + key + " [" + target + "] -> " + value)
           else:
-            call("POST", base, {{"key": key, "value": value, "type": "encrypted", "target": [target]}})
-            print(f"created {key} [{preview}] -> {mock}")
+            call("POST", base, {"key": key, "value": value, "type": "encrypted", "target": [target]})
+            print("created " + key + " [" + target + "] -> " + value)
           PYEOF
       - name: Deploy staging API
         id: api
