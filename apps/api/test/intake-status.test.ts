@@ -77,7 +77,17 @@ async function simpleIntake(f: Fixture, model = "Accord", glassType: GlassType =
       vin: VIN_17,
       year: 2020,
       make: "Honda",
-      model
+      model,
+      service_address: {
+        place_id: "mock:terrace-118",
+        formatted: "118 Terrace St, Boston, MA 02120",
+        street: "118 Terrace St",
+        city: "Boston",
+        state: "Massachusetts",
+        zip: "02120",
+        lat: 42.3349,
+        lon: -71.0828
+      }
     })
     .expect(201);
   expect(res.body.status_token).toMatch(/^rnappr_/);

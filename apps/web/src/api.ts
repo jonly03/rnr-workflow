@@ -6,6 +6,8 @@ import type {
   CaseRecord,
   Channel,
   GlassType,
+  Invoice,
+  InvoicePaymentStatus,
   JobAssignment,
   JobLocationPing,
   JobStep,
@@ -60,6 +62,19 @@ export class UnauthorizedError extends Error {
   }
 }
 
+/** An API failure with the machine-readable bits the UI needs —
+ *  notably `field`, so a form can pin the error to its input. */
+export class ApiError extends Error {
+  code?: string;
+  field?: string;
+  constructor(message: string, extras: { code?: string; field?: string } = {}) {
+    super(message);
+    this.name = "ApiError";
+    this.code = extras.code;
+    this.field = extras.field;
+  }
+}
+
 async function json<T>(response: Response): Promise<T> {
   if (response.status === 401) {
     clearToken();
@@ -67,7 +82,10 @@ async function json<T>(response: Response): Promise<T> {
   }
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(body?.error?.message ?? `Request failed: ${response.status}`);
+    throw new ApiError(body?.error?.message ?? `Request failed: ${response.status}`, {
+      code: body?.error?.code,
+      field: body?.error?.details?.field
+    });
   }
   return response.json();
 }
@@ -296,6 +314,52 @@ export function performAction(
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ action, ...extra })
   }).then(json<CaseRecord>);
+}
+
+/** One row of the staff collections board: a case's latest invoice
+ *  version plus the case context staff triage by. */
+export interface InvoiceBoardItem extends Invoice {
+  case_reference: string;
+  case_state: string;
+  channel: Channel;
+  vehicle: { year: number; make: string; model: string } | null;
+  glass_type: string | null;
+  bill_to: string | null;
+  awaiting_payment: boolean;
+}
+
+/** The collections board, ordered server-side for collections work. */
+export function listInvoices(paymentStatus?: InvoicePaymentStatus) {
+  const query = paymentStatus ? `?payment_status=${paymentStatus}` : "";
+  return fetch(`${API_BASE}/invoices${query}`, { headers: authHeaders() }).then(
+    json<InvoiceBoardItem[]>
+  );
+}
+
+/** Downloads the case's invoice PDF (client projection) as a file. */
+export async function downloadInvoicePdf(caseId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/cases/${caseId}/invoice.pdf`, {
+    headers: authHeaders()
+  });
+  if (response.status === 401) {
+    clearToken();
+    throw new UnauthorizedError();
+  }
+  if (!response.ok) {
+    throw new Error(`Could not download the invoice PDF (${response.status}).`);
+  }
+  const blob = await response.blob();
+  const filename =
+    /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") ?? "")?.[1] ??
+    "invoice.pdf";
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 export interface DecodedVehicle {
@@ -604,6 +668,9 @@ export interface PublicQuoteView {
   status: "AWAITING_SIGNATURE" | "APPROVED" | "DECLINED" | "EXPIRED";
   signed_by: string | null;
   signed_at: string | null;
+  /** "typed" signatures render as the name in a signature style; the drawn
+   *  image itself is staff-only and never part of this projection. */
+  signature_method: "typed" | "drawn" | null;
 }
 
 export function getPublicQuote(token: string) {
@@ -612,7 +679,7 @@ export function getPublicQuote(token: string) {
 
 export function signPublicQuote(
   token: string,
-  input: { name: string; signature_data_url: string }
+  input: { name: string; signature_data_url?: string }
 ) {
   return fetch(`${API_BASE}/public/quote/${token}/sign`, {
     method: "POST",
@@ -646,7 +713,13 @@ export interface PublicTrackingView {
   current_state: string;
   signed_by: string | null;
   signed_at: string | null;
-  invoice: { version: number; total_cents: number } | null;
+  signature_method: "typed" | "drawn" | null;
+  invoice: {
+    version: number;
+    total_cents: number;
+    /** Summary-level payment state; null until the invoice is sent. */
+    payment: { status: string; label: string } | null;
+  } | null;
   labor_cents: number | null;
   tax_cents: number | null;
   total_cents: number | null;
@@ -659,6 +732,12 @@ export interface PublicTrackingView {
 
 export function getPublicTracking(token: string) {
   return fetch(`${API_BASE}/public/track/${token}`).then(json<PublicTrackingView>);
+}
+
+/** Direct URL of the client's own invoice file behind their tracking
+ *  link (the server 404s it until the invoice has been sent). */
+export function publicInvoicePdfUrl(token: string) {
+  return `${API_BASE}/public/track/${token}/invoice.pdf`;
 }
 
 export interface PublicIntakeConfirmation {
@@ -678,6 +757,33 @@ export function submitPublicIntake(form: FormData) {
     method: "POST",
     body: form
   }).then(json<PublicIntakeConfirmation>);
+}
+
+/**
+ * A real address as returned by the geocoder proxy — the only kind of
+ * address the intake accepts. The customer picks one of these; the
+ * structured fields (with the provider place id) are what get stored.
+ */
+export interface AddressSuggestion {
+  place_id: string;
+  formatted: string;
+  street: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+  lat: number;
+  lon: number;
+}
+
+/**
+ * Address suggestions for the intake contact card (public, no auth).
+ * The API proxies the geocoder server-side; the UI only ever shows
+ * what comes back here.
+ */
+export function suggestAddresses(query: string) {
+  return fetch(
+    `${API_BASE}/public/address/suggest?q=${encodeURIComponent(query)}`
+  ).then(json<{ suggestions: AddressSuggestion[] }>);
 }
 
 export interface IntakeStatusStep {
