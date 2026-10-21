@@ -8,7 +8,7 @@ import { createApp } from "../src/app.js";
 import { hashPassword } from "../src/auth.js";
 import { MockGlassCatalogProvider } from "../src/glass-catalog.js";
 import { MockSourcingProvider } from "../src/sourcing.js";
-import { hashSignatureBytes } from "../src/quoting.js";
+import { hashSignatureBytes, hashTypedSignature } from "../src/quoting.js";
 import { JsonCaseStore } from "../src/store.js";
 import type { GlassType } from "../src/types.js";
 
@@ -192,6 +192,8 @@ describe("Quote sign-off (signature = approval)", () => {
     expect(quote.signature.signed_at).toBeTruthy();
     expect(quote.signature.attribution).toBe("signed on staff tablet at counter");
     expect(quote.signature.signature_data_url).toBe(dataUrl);
+    // A submitted data URL is a legacy DRAWN signature.
+    expect(quote.signature.method).toBe("drawn");
 
     // Idempotent re-sign: returns the current record, no duplicate event.
     const eventsBefore = (await getEvents(f, caseId).expect(200)).body.length;
@@ -207,6 +209,31 @@ describe("Quote sign-off (signature = approval)", () => {
     const events = await getEvents(f, caseId).expect(200);
     const types = events.body.map((e: any) => e.event_type);
     expect(types).toContain("QUOTE_SIGNED");
+  });
+
+  it("signs with a typed name only — the typed name IS the signature", async () => {
+    const f = await fixture();
+    const caseId = await approvedCase(f);
+
+    // No signature_data_url at all: the typed first + last name signs.
+    const signed = await act(f, caseId, "sign_quote", {
+      name: "  Lou   Customer ",
+      attribution: "typed signature captured in-app"
+    }).expect(200);
+    expect(signed.body.current_state).toBe("QUOTE_APPROVED");
+    const quote = signed.body.quote;
+    expect(quote.status).toBe("APPROVED");
+    // The stored name is normalized (trimmed, single-spaced).
+    expect(quote.signature.name).toBe("Lou Customer");
+    expect(quote.signature.method).toBe("typed");
+    expect(quote.signature.signature_data_url).toBe("");
+    expect(quote.signature.signature_hash).toBe(hashTypedSignature("Lou Customer"));
+    expect(quote.signature.signed_at).toBeTruthy();
+
+    const events = await getEvents(f, caseId).expect(200);
+    const signedEvent = events.body.find((e: any) => e.event_type === "QUOTE_SIGNED");
+    expect(signedEvent.payload.signer_name).toBe("Lou Customer");
+    expect(signedEvent.payload.signature_method).toBe("typed");
   });
 
   it("rejects signing an expired quote and marks it QUOTE_EXPIRED", async () => {
@@ -277,6 +304,25 @@ describe("Quote sign-off (signature = approval)", () => {
     const still = await getCase(f, caseId).expect(200);
     expect(still.body.quote.status).toBe("SENT");
     expect(still.body.current_state).toBe("QUOTE_SENT");
+  });
+
+  it("rejects typed signatures without a first AND last name", async () => {
+    const f = await fixture();
+    const caseId = await approvedCase(f);
+
+    // One word is not a signature.
+    const oneWord = await act(f, caseId, "sign_quote", { name: "Lou" }).expect(422);
+    expect(oneWord.body.error.code).toBe("VALIDATION_ERROR");
+    expect(oneWord.body.error.message).toMatch(/first and last name/);
+    // Empty / whitespace-only names are rejected the same way.
+    const blank = await act(f, caseId, "sign_quote", { name: "   " }).expect(422);
+    expect(blank.body.error.code).toBe("VALIDATION_ERROR");
+    const missing = await act(f, caseId, "sign_quote", {}).expect(422);
+    expect(missing.body.error.code).toBe("VALIDATION_ERROR");
+
+    const still = await getCase(f, caseId).expect(200);
+    expect(still.body.quote.status).toBe("SENT");
+    expect(still.body.quote.signature).toBeNull();
   });
 
   it("rejects generate_invoice unless the quote is signed", async () => {

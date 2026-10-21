@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import multer from "multer";
 import { z } from "zod";
-import type { CaseRecord, Channel, StaffUser } from "./types.js";
+import { signatureMethodOf, type CaseRecord, type Channel, type StaffUser } from "./types.js";
 import type { CaseStore } from "./store.js";
 import type { GlassCatalogProvider } from "./glass-catalog.js";
 import { createGlassCatalogProvider } from "./mygrant.js";
@@ -38,6 +38,7 @@ import {
   generateInvoice,
   generateQuote,
   loadQuotingConfig,
+  normalizeSignerName,
   QuotingError,
   signQuote,
   type QuotingConfig
@@ -506,7 +507,11 @@ export function createApp(
             ? "EXPIRED"
             : "AWAITING_SIGNATURE",
       signed_by: quote.signature?.name ?? null,
-      signed_at: quote.signature?.signed_at ?? null
+      signed_at: quote.signature?.signed_at ?? null,
+      // How the signature was captured, so the client page can render a
+      // typed signature as the name in a signature style. The drawn image
+      // itself never leaves the server (staff-visible only).
+      signature_method: quote.signature ? signatureMethodOf(quote.signature) : null
     };
   };
 
@@ -576,6 +581,7 @@ export function createApp(
       current_state: c.current_state,
       signed_by: quote?.signature?.name ?? null,
       signed_at: quote?.signature?.signed_at ?? null,
+      signature_method: quote?.signature ? signatureMethodOf(quote.signature) : null,
       invoice: invoice
         ? { version: invoice.version, total_cents: invoice.actuals.sell_price_cents }
         : null,
@@ -617,9 +623,13 @@ export function createApp(
         error: { code: "VALIDATION_ERROR", message: "name is required." }
       });
     }
-    if (typeof signatureDataUrl !== "string" || !signatureDataUrl.trim()) {
+    // The typed name IS the signature: it must be a first AND last name.
+    if (normalizeSignerName(name).split(" ").filter(Boolean).length < 2) {
       return res.status(422).json({
-        error: { code: "VALIDATION_ERROR", message: "signature_data_url is required." }
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Enter your first and last name in the signature field."
+        }
       });
     }
     const customerActor = { type: "CUSTOMER", id: null };
@@ -629,7 +639,12 @@ export function createApp(
         c.id,
         {
           name: name.trim(),
-          signatureDataUrl: signatureDataUrl.trim(),
+          // Legacy clients may still send a drawn signature image; it is
+          // accepted and stored, but no longer required.
+          signatureDataUrl:
+            typeof signatureDataUrl === "string" && signatureDataUrl.trim()
+              ? signatureDataUrl.trim()
+              : undefined,
           attribution: "customer signature via shared link"
         },
         customerActor
@@ -1355,9 +1370,13 @@ export function createApp(
               error: { code: "VALIDATION_ERROR", message: "name is required." }
             });
           }
-          if (typeof signatureDataUrl !== "string" || !signatureDataUrl.trim()) {
+          // The typed name IS the signature: first AND last name required.
+          if (normalizeSignerName(name).split(" ").filter(Boolean).length < 2) {
             return res.status(422).json({
-              error: { code: "VALIDATION_ERROR", message: "signature_data_url is required." }
+              error: {
+                code: "VALIDATION_ERROR",
+                message: "Enter your first and last name in the signature field."
+              }
             });
           }
           await signQuote(
@@ -1365,7 +1384,11 @@ export function createApp(
             c.id,
             {
               name: name.trim(),
-              signatureDataUrl: signatureDataUrl.trim(),
+              // Legacy drawn images are still accepted, never required.
+              signatureDataUrl:
+                typeof signatureDataUrl === "string" && signatureDataUrl.trim()
+                  ? signatureDataUrl.trim()
+                  : undefined,
               attribution: typeof attribution === "string" ? attribution : ""
             },
             staffActor

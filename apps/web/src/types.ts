@@ -127,8 +127,13 @@ export interface QuoteSignature {
   signed_at: string;
   attribution: string;
   signature_hash: string;
-  /** Raw signature image. Staff-visible only — never rendered in the client view. */
+  /** Raw signature image for legacy drawn signatures. Staff-visible only —
+   *  never rendered in the client view. Empty for typed signatures. */
   signature_data_url: string;
+  /** "typed" — the typed first + last name IS the signature; "drawn" — a
+   *  legacy signature-pad image. Absent on pre-typed-signature records
+   *  (all drawn). */
+  method?: "typed" | "drawn";
 }
 
 export interface Quote {

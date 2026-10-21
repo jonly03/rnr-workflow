@@ -180,18 +180,12 @@ test("Client intake → live progress → sign → staff lands on Order parts", 
   await expect(signLink).toBeVisible({ timeout: 15000 });
   await signLink.click();
 
-  // The quote page: sign it.
+  // The quote page: sign it — the typed first + last name IS the signature.
   await expect(page.getByRole("button", { name: /Sign & approve quote/ })).toBeVisible();
-  await page.getByLabel(/Printed name/).fill("Jane Customer");
-  const pad = page.getByTestId("signature-pad");
-  const box = await pad.boundingBox();
-  if (!box) throw new Error("signature pad not visible");
-  await page.mouse.move(box.x + 20, box.y + box.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(box.x + box.width / 3, box.y + box.height / 3, { steps: 8 });
-  await page.mouse.move(box.x + (2 * box.width) / 3, box.y + (2 * box.height) / 3, { steps: 8 });
-  await page.mouse.move(box.x + box.width - 20, box.y + box.height / 2, { steps: 8 });
-  await page.mouse.up();
+  await expect(page.getByText("Enter your first and last name in the signature field.")).toBeVisible();
+  await page.getByLabel(/^Signature$/).fill("Jane Customer");
+  // The live preview renders the typed name as the signature.
+  await expect(page.getByTestId("signature-preview")).toContainText("Jane Customer");
   await page.getByRole("button", { name: /Sign & approve quote/ }).click();
   await expect(
     page.getByText(/your quote is approved and your invoice has been created/)

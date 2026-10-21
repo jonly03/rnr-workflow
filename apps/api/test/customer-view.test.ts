@@ -174,6 +174,48 @@ describe("Customer view (Direct): sign link + tracking link", () => {
     expect(done.body.milestones.every((m: any) => m.done)).toBe(true);
   });
 
+  it("signs via link with a typed name only — no signature image", async () => {
+    const f = await fixture();
+    const { caseId, linkToken } = await quotedCase(f);
+
+    // One-word and blank names are not signatures: 422, and the failed
+    // attempts do NOT consume the link.
+    const oneWord = await request(f.app)
+      .post(`/api/v1/public/quote/${linkToken}/sign`)
+      .send({ name: "Jane" })
+      .expect(422);
+    expect(oneWord.body.error.code).toBe("VALIDATION_ERROR");
+    expect(oneWord.body.error.message).toMatch(/first and last name/);
+    const blank = await request(f.app)
+      .post(`/api/v1/public/quote/${linkToken}/sign`)
+      .send({ name: "   " })
+      .expect(422);
+    expect(blank.body.error.code).toBe("VALIDATION_ERROR");
+    await request(f.app).get(`/api/v1/public/quote/${linkToken}`).expect(200);
+
+    // The typed first + last name alone signs (no signature_data_url).
+    const signed = await request(f.app)
+      .post(`/api/v1/public/quote/${linkToken}/sign`)
+      .send({ name: "Jane Customer" })
+      .expect(200);
+    expect(signed.body.status).toBe("APPROVED");
+    expect(signed.body.invoice_version).toBe(1);
+    const trackingToken = signed.body.tracking_token as string;
+
+    // Staff side: a typed signature record — name, method, no image.
+    const detail = await staff(f).get(`/api/v1/cases/${caseId}`).expect(200);
+    expect(detail.body.quote.signature.name).toBe("Jane Customer");
+    expect(detail.body.quote.signature.method).toBe("typed");
+    expect(detail.body.quote.signature.signature_data_url).toBe("");
+
+    // Tracking projection: signer + method, still leak-free.
+    const track = await request(f.app).get(`/api/v1/public/track/${trackingToken}`).expect(200);
+    expect(track.body.signed_by).toBe("Jane Customer");
+    expect(track.body.signed_at).toBeTruthy();
+    expect(track.body.signature_method).toBe("typed");
+    expect(JSON.stringify(track.body)).not.toContain("signature_data_url");
+  });
+
   it("decline via link ends the quote and kills the link", async () => {
     const f = await fixture();
     const { caseId, linkToken } = await quotedCase(f);
