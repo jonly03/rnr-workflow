@@ -195,6 +195,12 @@ describe("OpsMapScreen (Slice C)", () => {
     expect(rows[2]).toHaveTextContent(/No signal yet/);
 
     // Pins: two job sites + one tech position. Job 2 contributes none.
+    // Markers are created by an effect that runs after the rows render;
+    // wait for them rather than asserting in the same tick (under CI load
+    // the effect can land a tick after findAllByTestId resolves).
+    await vi.waitFor(() => {
+      expect(leafletCalls.markers).toHaveLength(3);
+    });
     const pinCoords = leafletCalls.markers.map(m => m.latlng);
     expect(pinCoords).toContainEqual([42.3601, -71.0589]);
     expect(pinCoords).toContainEqual([42.3736, -71.1097]);
