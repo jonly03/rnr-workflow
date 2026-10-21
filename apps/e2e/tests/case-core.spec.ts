@@ -157,10 +157,17 @@ test("Client intake → live progress → sign → staff lands on Order parts", 
   await page.getByRole("radio", { name: "Windshield" }).click();
   await page.getByRole("button", { name: "Continue" }).click();
 
-  // Card 3: contact, then send. This single submission drives the case
-  // through identification → sourcing → pricing → quote on its own.
+  // Card 3: contact, then send. The service address must be PICKED
+  // from the suggestions (e2e runs the mock address provider) — free
+  // text alone never enables Send. This single submission drives the
+  // case through identification → sourcing → pricing → quote on its own.
   await page.getByLabel(/Your name/).fill("Jane Customer");
   await page.getByLabel(/Mobile phone/).fill("(617) 555-0142");
+  await expect(page.getByRole("button", { name: "Send request" })).toBeDisabled();
+  await page.getByLabel(/Service address/).fill("118 Terr");
+  await page
+    .getByRole("option", { name: /118 Terrace St, Boston, MA 02120/ })
+    .click();
   await page.getByRole("button", { name: "Send request" }).click();
 
   // Confirmation: live progress completes and hands over the sign link —
@@ -252,6 +259,10 @@ test("Staff queue updates live when a client intake lands (no refresh)", async (
   await clientPage.getByRole("button", { name: "Continue" }).click();
   await clientPage.getByLabel(/Your name/).fill("Live Arrival");
   await clientPage.getByLabel(/Mobile phone/).fill("(617) 555-0142");
+  await clientPage.getByLabel(/Service address/).fill("118 Terr");
+  await clientPage
+    .getByRole("option", { name: /118 Terrace St, Boston, MA 02120/ })
+    .click();
   await clientPage.getByRole("button", { name: "Send request" }).click();
   // The submit drives the auto-quote chain server-side; on a cold
   // staging instance that takes longer than the default 5s window.

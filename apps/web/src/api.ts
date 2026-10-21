@@ -42,6 +42,19 @@ export class UnauthorizedError extends Error {
   }
 }
 
+/** An API failure with the machine-readable bits the UI needs —
+ *  notably `field`, so a form can pin the error to its input. */
+export class ApiError extends Error {
+  code?: string;
+  field?: string;
+  constructor(message: string, extras: { code?: string; field?: string } = {}) {
+    super(message);
+    this.name = "ApiError";
+    this.code = extras.code;
+    this.field = extras.field;
+  }
+}
+
 async function json<T>(response: Response): Promise<T> {
   if (response.status === 401) {
     clearToken();
@@ -49,7 +62,10 @@ async function json<T>(response: Response): Promise<T> {
   }
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(body?.error?.message ?? `Request failed: ${response.status}`);
+    throw new ApiError(body?.error?.message ?? `Request failed: ${response.status}`, {
+      code: body?.error?.code,
+      field: body?.error?.details?.field
+    });
   }
   return response.json();
 }
@@ -656,6 +672,33 @@ export function submitPublicIntake(form: FormData) {
     method: "POST",
     body: form
   }).then(json<PublicIntakeConfirmation>);
+}
+
+/**
+ * A real address as returned by the geocoder proxy — the only kind of
+ * address the intake accepts. The customer picks one of these; the
+ * structured fields (with the provider place id) are what get stored.
+ */
+export interface AddressSuggestion {
+  place_id: string;
+  formatted: string;
+  street: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+  lat: number;
+  lon: number;
+}
+
+/**
+ * Address suggestions for the intake contact card (public, no auth).
+ * The API proxies the geocoder server-side; the UI only ever shows
+ * what comes back here.
+ */
+export function suggestAddresses(query: string) {
+  return fetch(
+    `${API_BASE}/public/address/suggest?q=${encodeURIComponent(query)}`
+  ).then(json<{ suggestions: AddressSuggestion[] }>);
 }
 
 export interface IntakeStatusStep {

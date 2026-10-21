@@ -23,7 +23,10 @@ import {
   startIdentification,
   submitPublicIntake,
   subscribeStaffEvents,
+  suggestAddresses,
+  ApiError,
   UnauthorizedError,
+  type AddressSuggestion,
   type DecodedVehicle,
   type PublicIntakeStatus,
   type PublicQuoteView,
@@ -728,6 +731,9 @@ export function App() {
                                 ? ` · ${c.client_intake.customer_phone}`
                                 : ""}
                               {c.client_intake.note ? ` — “${c.client_intake.note}”` : ""}
+                              {c.client_intake.service_address
+                                ? ` · Service at: ${c.client_intake.service_address.formatted}`
+                                : ""}
                             </p>
                           )}
                           <PricingSummary item={c} />
@@ -1591,6 +1597,9 @@ function CaseDetail({
                 : ""}
               {item.client_intake.vin_ocr_suggestion
                 ? ` · VIN photo reads: ${item.client_intake.vin_ocr_suggestion} (suggestion only)`
+                : ""}
+              {item.client_intake.service_address
+                ? ` · Service at: ${item.client_intake.service_address.formatted}`
                 : ""}
             </p>
           )}
@@ -3497,6 +3506,29 @@ function isValidVin(vin: string): boolean {
   return v[8] === (remainder === 10 ? "X" : String(remainder));
 }
 
+/**
+ * US phone pre-check — mirrors the API's normalizeUsPhone so the
+ * contact card can gate Send exactly the way the server will judge
+ * the number. The server stays the real gate; this is UX only.
+ */
+function normalizeUsPhoneClient(raw: string): string | null {
+  let digits = raw.replace(/\D/g, "");
+  if (digits.length === 11 && digits.startsWith("1")) digits = digits.slice(1);
+  if (digits.length !== 10) return null;
+  if (!/^[2-9]/.test(digits)) return null;
+  return digits;
+}
+
+/** Vehicle-year bounds for the YMM path — mirrored server-side. */
+export const INTAKE_MIN_VEHICLE_YEAR = 1950;
+
+function isValidIntakeYear(raw: string): boolean {
+  const t = raw.trim();
+  if (!/^\d{4}$/.test(t)) return false;
+  const y = Number(t);
+  return y >= INTAKE_MIN_VEHICLE_YEAR && y <= new Date().getFullYear() + 1;
+}
+
 const INTAKE_STATUS_POLL_MS = 4000;
 const INTAKE_TERMINAL_PHASES = ["approved", "declined", "expired"];
 
@@ -3613,6 +3645,10 @@ export function PublicIntakePage() {
   const [model, setModel] = useState("");
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
+  const [addressQuery, setAddressQuery] = useState("");
+  const [address, setAddress] = useState<AddressSuggestion | null>(null);
+  const [suggestions, setSuggestions] = useState<AddressSuggestion[]>([]);
+  const [addressError, setAddressError] = useState<string | null>(null);
   const [vinPhoto, setVinPhoto] = useState<File | null>(null);
   const [photos, setPhotos] = useState<IntakePhoto[]>([]);
   const [photoError, setPhotoError] = useState<string | null>(null);
@@ -3626,10 +3662,15 @@ export function PublicIntakePage() {
   } | null>(null);
 
   const vinValue = vin.trim().toUpperCase();
-  const ymmComplete = Boolean(year.trim() && make.trim() && model.trim());
+  const yearValid = isValidIntakeYear(year);
+  const ymmComplete = Boolean(yearValid && make.trim() && model.trim());
   // An entered VIN stands alone (YMM hides beside it); with no VIN, the
   // "I don't have the VIN" expander's complete YMM is the vehicle ID.
   const vehicleReady = vinValue ? isValidVin(vinValue) : showYmm && ymmComplete;
+  // Contact-card gates, mirroring the server's validation pass.
+  const nameValid = name.trim().length >= 2;
+  const phoneValid = normalizeUsPhoneClient(phone) !== null;
+  const contactReady = nameValid && phoneValid && address !== null;
   const glassLabel = INTAKE_GLASS_OPTIONS.find(o => o.id === glassType)?.label ?? "";
   const vehicleRecap = vinValue
     ? `VIN ····${vinValue.slice(-4)}`
@@ -3651,6 +3692,57 @@ export function PublicIntakePage() {
     },
     []
   );
+
+  /**
+   * Address autocomplete on the contact card: debounced suggestion
+   * lookups as the customer types. This is the ONLY network traffic
+   * allowed before Send, and only on this card — cards 1-2 fetch
+   * nothing. Typing after a pick un-picks the address: free text is
+   * never submittable, only a suggestion the customer chose.
+   */
+  useEffect(() => {
+    if (step !== 3) return;
+    if (address && addressQuery === address.formatted) {
+      setSuggestions([]);
+      return;
+    }
+    const q = addressQuery.trim();
+    if (q.length < 3) {
+      setSuggestions([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      suggestAddresses(q)
+        .then(r => {
+          if (!cancelled) setSuggestions(r.suggestions ?? []);
+        })
+        .catch(() => {
+          // A failed lookup just means no list — the customer can retry
+          // by typing; it must never break the form.
+          if (!cancelled) setSuggestions([]);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [addressQuery, address, step]);
+
+  function onAddressQueryChange(value: string) {
+    setAddressQuery(value);
+    setAddressError(null);
+    if (address && value !== address.formatted) {
+      setAddress(null);
+    }
+  }
+
+  function pickAddress(suggestion: AddressSuggestion) {
+    setAddress(suggestion);
+    setAddressQuery(suggestion.formatted);
+    setSuggestions([]);
+    setAddressError(null);
+  }
 
   /**
    * Adds damage photos on the glass card, enforcing the caps: images
@@ -3722,18 +3814,25 @@ export function PublicIntakePage() {
       setError("Add your VIN, or your vehicle's year, make and model.");
       return;
     }
-    if (!name.trim()) {
+    if (!nameValid) {
       setError("We need your name.");
       return;
     }
-    if (!phone.trim()) {
-      setError("We need a mobile number to text your quote to.");
+    if (!phoneValid) {
+      setError("Enter a valid 10-digit US mobile number so we can text your quote.");
+      return;
+    }
+    if (!address) {
+      setAddressError(
+        "Start typing your address and pick it from the list — we need a real address for the car."
+      );
       return;
     }
     const form = new FormData();
     form.append("customer_name", name.trim());
     form.append("customer_phone", phone.trim());
     form.append("glass_type", glassType);
+    form.append("service_address", JSON.stringify(address));
     if (vinValue) {
       form.append("vin", vinValue);
     } else {
@@ -3752,7 +3851,13 @@ export function PublicIntakePage() {
         statusToken: res.status_token ?? null
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong — please try again.");
+      // A field-level API error pins to its field (the service-address
+      // 400 names service_address); anything else is form-level.
+      if (err instanceof ApiError && err.field === "service_address") {
+        setAddressError(err.message);
+      } else {
+        setError(err instanceof Error ? err.message : "Something went wrong — please try again.");
+      }
     } finally {
       setBusy(false);
     }
@@ -3868,6 +3973,12 @@ export function PublicIntakePage() {
                 </label>
               </div>
             )}
+            {showYmm && !vinValue && year.trim() !== "" && !yearValid && (
+              <p className="muted">
+                Enter a 4-digit year between {INTAKE_MIN_VEHICLE_YEAR} and{" "}
+                {new Date().getFullYear() + 1}.
+              </p>
+            )}
           </>
         )}
 
@@ -3961,6 +4072,52 @@ export function PublicIntakePage() {
                 style={{ display: "block", width: "100%", marginTop: 4 }}
               />
             </label>
+            {phone.trim() !== "" && !phoneValid && (
+              <p className="muted">Enter a valid 10-digit US mobile number.</p>
+            )}
+            <label>
+              Service address
+              <input
+                type="text"
+                value={addressQuery}
+                onChange={e => onAddressQueryChange(e.target.value)}
+                placeholder="Where will the car be? Start typing the address"
+                autoComplete="street-address"
+                role="combobox"
+                aria-expanded={suggestions.length > 0}
+                aria-controls="intake-address-list"
+                style={{ display: "block", width: "100%", marginTop: 4 }}
+              />
+            </label>
+            <p className="muted">
+              This is where we'll find the car — start typing and pick your
+              address from the list so it's a real one.
+            </p>
+            {suggestions.length > 0 && (
+              <ul className="intake-address-list" id="intake-address-list" role="listbox" aria-label="Address suggestions">
+                {suggestions.map(s => (
+                  <li key={s.place_id}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected="false"
+                      className="intake-address-option"
+                      onClick={() => pickAddress(s)}
+                    >
+                      {s.formatted}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {address && (
+              <p className="intake-address-picked">✓ Service address: {address.formatted}</p>
+            )}
+            {addressError && (
+              <p className="error" role="alert">
+                {addressError}
+              </p>
+            )}
             <small>
               Sending this creates your service case with R&R Finest Auto
               Glass. We'll review it and text your quote — you approve it
@@ -3993,7 +4150,7 @@ export function PublicIntakePage() {
             <button
               type="submit"
               className="primary intake-next"
-              disabled={busy || !name.trim() || !phone.trim()}
+              disabled={busy || !contactReady}
             >
               {busy ? "Sending…" : "Send request"}
             </button>

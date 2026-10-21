@@ -383,16 +383,42 @@ describe("public intake page (QR front door)", () => {
 
   const VALID_VIN = "1HGCM82633A004352"; // ISO 3779 check digit valid
 
-  function stubIntakeFetch() {
-    const state: { url: string; body: FormData | null; calls: number } = {
+  /** The mock provider's Terrace St fixture, as the suggest endpoint returns it. */
+  const ADDRESS_FIXTURE = {
+    place_id: "mock:terrace-118",
+    formatted: "118 Terrace St, Boston, MA 02120",
+    street: "118 Terrace St",
+    city: "Boston",
+    state: "Massachusetts",
+    zip: "02120",
+    lat: 42.3349,
+    lon: -71.0828
+  };
+
+  function stubIntakeFetch(options: { failIntakeWithField?: string } = {}) {
+    const state: {
+      url: string;
+      body: FormData | null;
+      calls: number;
+      requests: { url: string; method: string }[];
+    } = {
       url: "",
       body: null,
-      calls: 0
+      calls: 0,
+      requests: []
     };
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string | URL | Request, init?: { body?: unknown; method?: string }) => {
         const u = String(url);
+        state.requests.push({ url: u, method: init?.method ?? "GET" });
+        // Address suggestions (contact card only).
+        if (u.includes("/public/address/suggest")) {
+          return {
+            ok: true,
+            json: async () => ({ suggestions: [ADDRESS_FIXTURE] })
+          };
+        }
         // Live-progress endpoints behind the confirmation's status token.
         if (u.includes("/public/intake-status/") && init?.method === "POST") {
           return {
@@ -422,6 +448,20 @@ describe("public intake page (QR front door)", () => {
         state.calls += 1;
         state.url = u;
         state.body = (init?.body as FormData) ?? null;
+        if (options.failIntakeWithField) {
+          return {
+            ok: false,
+            status: 400,
+            json: async () => ({
+              error: {
+                code: "VALIDATION_ERROR",
+                message:
+                  "Pick the address where we'll find the car from the suggestions, so we have a real address.",
+                details: { field: options.failIntakeWithField }
+              }
+            })
+          };
+        }
         return {
           ok: true,
           json: async () => ({
@@ -435,6 +475,17 @@ describe("public intake page (QR front door)", () => {
       })
     );
     return state;
+  }
+
+  /** Type an address query on the contact card and pick the Terrace St suggestion. */
+  async function pickServiceAddress() {
+    fireEvent.change(screen.getByLabelText(/service address/i), {
+      target: { value: "118 Terr" }
+    });
+    const option = await screen.findByRole("option", {
+      name: /118 Terrace St, Boston, MA 02120/
+    });
+    fireEvent.click(option);
   }
 
   function continueButton() {
@@ -499,6 +550,9 @@ describe("public intake page (QR front door)", () => {
     // Card 3 is the contact card — there is no card 4 anymore.
     expect(screen.getByText("Step 3 of 3")).toBeInTheDocument();
     expect(screen.getByText(/····4352 · Windshield/)).toBeInTheDocument();
+    // The fetch law: cards 1-2 made NO network calls at all. On the
+    // contact card, only address-suggest GETs may fire before Send.
+    expect(posted.requests).toHaveLength(0);
     const send = screen.getByRole("button", { name: "Send request" }) as HTMLButtonElement;
     expect(send.disabled).toBe(true);
     fireEvent.change(screen.getByLabelText(/your name/i), {
@@ -508,9 +562,17 @@ describe("public intake page (QR front door)", () => {
     fireEvent.change(screen.getByLabelText(/mobile phone/i), {
       target: { value: "(617) 555-0142" }
     });
+    // Name + phone alone don't open Send: a picked service address is
+    // also required.
+    expect(send.disabled).toBe(true);
+    await pickServiceAddress();
     expect(send.disabled).toBe(false);
-    // Nothing was submitted before this final card.
+    // Still nothing submitted — and every request so far was a suggest GET.
     expect(posted.calls).toBe(0);
+    expect(posted.requests.length).toBeGreaterThan(0);
+    expect(
+      posted.requests.every(r => r.url.includes("/public/address/suggest") && r.method === "GET")
+    ).toBe(true);
     fireEvent.click(send);
 
     expect(await screen.findByRole("heading", { name: /Request received/ })).toBeInTheDocument();
@@ -527,6 +589,11 @@ describe("public intake page (QR front door)", () => {
     expect(posted.body!.get("note")).toBeNull();
     expect(posted.body!.get("customer_name")).toBe("Jane Customer");
     expect(posted.body!.get("customer_phone")).toBe("(617) 555-0142");
+    // The picked service address rides as structured JSON with its
+    // provider place id — exactly what the API validates and stores.
+    expect(JSON.parse(posted.body!.get("service_address") as string)).toEqual(
+      ADDRESS_FIXTURE
+    );
     // The confirmation page completes itself: live progress polls behind
     // the status token, sees the quote ready, and hands over the sign
     // link — no staff click, no waiting for a text.
@@ -537,6 +604,84 @@ describe("public intake page (QR front door)", () => {
     expect(screen.getByText("Quote ready to sign")).toBeInTheDocument();
     // Prices come with the quote, never at intake.
     expect(document.body.textContent ?? "").not.toMatch(/\$\d/);
+  });
+
+  it("contact card gates: name ≥ 2 chars, phone must normalize to 10 US digits, address must be PICKED — free text never submits", async () => {
+    const posted = stubIntakeFetch();
+    render(<PublicIntakePage />);
+    walkToCard3();
+    const send = screen.getByRole("button", { name: "Send request" }) as HTMLButtonElement;
+
+    // A picked address + good phone, but a 1-char name: still blocked.
+    fireEvent.change(screen.getByLabelText(/your name/i), { target: { value: "J" } });
+    fireEvent.change(screen.getByLabelText(/mobile phone/i), {
+      target: { value: "(617) 555-0142" }
+    });
+    await pickServiceAddress();
+    expect(send.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText(/your name/i), {
+      target: { value: "Jane Customer" }
+    });
+    expect(send.disabled).toBe(false);
+
+    // A 7-digit number is not textable: blocked, with the hint showing.
+    fireEvent.change(screen.getByLabelText(/mobile phone/i), {
+      target: { value: "555-0142" }
+    });
+    expect(send.disabled).toBe(true);
+    expect(screen.getByText(/valid 10-digit US mobile number/)).toBeInTheDocument();
+    // +1 and punctuation are fine.
+    fireEvent.change(screen.getByLabelText(/mobile phone/i), {
+      target: { value: "+1 617 555 0142" }
+    });
+    expect(send.disabled).toBe(false);
+
+    // Typing over the picked address un-picks it: free text can't submit.
+    fireEvent.change(screen.getByLabelText(/service address/i), {
+      target: { value: "118 Terrace St, Boston, MA 02120 (trust me)" }
+    });
+    expect(send.disabled).toBe(true);
+    expect(posted.calls).toBe(0);
+    // Re-picking restores the gate.
+    const option = await screen.findByRole("option", {
+      name: /118 Terrace St, Boston, MA 02120/
+    });
+    fireEvent.click(option);
+    expect(send.disabled).toBe(false);
+    expect(screen.getByText(/✓ Service address:/)).toBeInTheDocument();
+  });
+
+  it("surfaces a server 400 for the address field under the address input, not as a form error", async () => {
+    stubIntakeFetch({ failIntakeWithField: "service_address" });
+    render(<PublicIntakePage />);
+    walkToCard3();
+    fireEvent.change(screen.getByLabelText(/your name/i), {
+      target: { value: "Jane Customer" }
+    });
+    fireEvent.change(screen.getByLabelText(/mobile phone/i), {
+      target: { value: "(617) 555-0142" }
+    });
+    await pickServiceAddress();
+    fireEvent.click(screen.getByRole("button", { name: "Send request" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/Pick the address where we'll find the car/);
+    // No confirmation — the customer stays on the form to fix it.
+    expect(screen.queryByRole("heading", { name: /Request received/ })).not.toBeInTheDocument();
+  });
+
+  it("card 1 YMM path enforces the year range (1950..next year)", () => {
+    stubIntakeFetch();
+    render(<PublicIntakePage />);
+    fireEvent.click(screen.getByRole("button", { name: /I don't have the VIN/i }));
+    fireEvent.change(screen.getByLabelText(/^Make/), { target: { value: "Honda" } });
+    fireEvent.change(screen.getByLabelText(/^Model/), { target: { value: "Accord" } });
+    fireEvent.change(screen.getByLabelText(/^Year/), { target: { value: "1800" } });
+    expect(continueButton().disabled).toBe(true);
+    expect(screen.getByText(/4-digit year between 1950/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/^Year/), { target: { value: "202" } });
+    expect(continueButton().disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText(/^Year/), { target: { value: "2020" } });
+    expect(continueButton().disabled).toBe(false);
   });
 
   it("gates card 1 on a valid VIN or the 'I don't have the VIN' expander with complete YMM", () => {
