@@ -433,3 +433,12 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .intake-dot { width: 8px; height: 8px; border-radius: 50%; background: #cbd5e1; }
 .intake-dot.active { background: #c1271b; }
 .intake-step-text { font-size: .85rem; color: #64748b; }
+/* Typed signatures: the client's typed first + last name IS the signature,
+   rendered in a script hand wherever a signature is displayed. */
+.signature-render { font-family: "Snell Roundhand", "Segoe Script", "Brush Script MT", "Apple Chancery", cursive; font-size: 2rem; line-height: 1.25; }
+.signature-render-inline { font-size: 1.15rem; }
+.signature-preview { border-bottom: 2px solid #475569; min-height: 3.2rem; display: flex; align-items: flex-end; padding: 6px 2px; margin-top: 10px; }
+.signature-preview-placeholder { color: #64748b; font-style: italic; }
+.signature-block { margin-top: 12px; }
+.signature-image { max-width: 320px; max-height: 110px; background: #fff; border-radius: 6px; padding: 4px; display: block; }
+.signature-caption { display: block; margin-top: 4px; }

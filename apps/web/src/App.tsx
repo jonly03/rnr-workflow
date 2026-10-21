@@ -2611,6 +2611,7 @@ function QuoteCard({
             <dt>Validity</dt>
             <dd>{signed ? "Signed — no expiry" : quoteSlaLabel(quote.expires_at)}</dd>
           </dl>
+          {signed && <SignatureRender signature={quote.signature!} />}
           {error && <p className="error">{error}</p>}
           {!closed && (
             <div className="row">
@@ -2909,108 +2910,104 @@ function FulfillmentCard({
   );
 }
 
-/** Finger/stylus signature pad. Pointer Events cover touch, mouse, and pen;
- *  `touch-action: none` keeps the page from scrolling mid-stroke on phones. */
-function SignaturePad({ onChange }: { onChange: (dataUrl: string | null) => void }) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const drawing = useRef(false);
+/** A typed signature is valid only as a full name: first AND last name.
+ *  Mirrors the API rule — one word is not a signature. */
+export function isValidSignatureName(name: string): boolean {
+  return name.trim().split(/\s+/).filter(Boolean).length >= 2;
+}
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    canvas.width = Math.max(1, Math.round(rect.width * dpr));
-    canvas.height = Math.max(1, Math.round(rect.height * dpr));
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.scale(dpr, dpr);
-    ctx.lineWidth = 2.5;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.strokeStyle = "#111827";
-  }, []);
-
-  const point = (e: React.PointerEvent) => {
-    const rect = canvasRef.current!.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
-  };
-
-  const emit = () => {
-    const canvas = canvasRef.current;
-    onChange(canvas ? canvas.toDataURL("image/png") : null);
-  };
-
+/** The Signature field: the client types their first and last name — the
+ *  typed name IS the digital signature (no drawing pad). A live preview
+ *  shows the name rendered as it will appear once signed, and an inline
+ *  error explains the first + last name rule until the value satisfies it. */
+export function SignatureField({
+  value,
+  onChange
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const [touched, setTouched] = useState(false);
+  const valid = isValidSignatureName(value);
+  const showError = touched && value.trim().length > 0 && !valid;
   return (
     <div>
-      <canvas
-        ref={canvasRef}
-        data-testid="signature-pad"
-        aria-label="Signature pad — sign with your finger or stylus"
-        style={{
-          width: "100%",
-          height: 180,
-          border: "2px dashed #9ca3af",
-          borderRadius: 8,
-          background: "#ffffff",
-          touchAction: "none",
-          cursor: "crosshair"
-        }}
-        onPointerDown={e => {
-          const canvas = canvasRef.current;
-          const ctx = canvas?.getContext("2d");
-          if (!canvas || !ctx) return;
-          drawing.current = true;
-          canvas.setPointerCapture(e.pointerId);
-          const p = point(e);
-          ctx.beginPath();
-          ctx.moveTo(p.x, p.y);
-          // A dot for tap-only "signatures" so they still record ink.
-          ctx.lineTo(p.x + 0.5, p.y + 0.5);
-          ctx.stroke();
-          e.preventDefault();
-        }}
-        onPointerMove={e => {
-          if (!drawing.current) return;
-          const ctx = canvasRef.current?.getContext("2d");
-          if (!ctx) return;
-          const p = point(e);
-          ctx.lineTo(p.x, p.y);
-          ctx.stroke();
-          e.preventDefault();
-        }}
-        onPointerUp={e => {
-          if (!drawing.current) return;
-          drawing.current = false;
-          try { canvasRef.current?.releasePointerCapture(e.pointerId); } catch { /* noop */ }
-          emit();
-        }}
-        onPointerCancel={() => { drawing.current = false; }}
-      />
-      <button
-        type="button"
-        className="secondary"
-        style={{ marginTop: 8 }}
-        onClick={() => {
-          const canvas = canvasRef.current;
-          const ctx = canvas?.getContext("2d");
-          if (canvas && ctx) {
-            const rect = canvas.getBoundingClientRect();
-            ctx.clearRect(0, 0, rect.width, rect.height);
-          }
-          onChange(null);
-        }}
-      >
-        Clear
-      </button>
+      <label>
+        Signature
+        <input
+          type="text"
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          onBlur={() => setTouched(true)}
+          placeholder="First and last name"
+          autoComplete="name"
+          style={{ display: "block", width: "100%", marginTop: 4 }}
+        />
+      </label>
+      <p className="muted" style={{ marginTop: 6 }}>
+        Enter your first and last name in the signature field.
+      </p>
+      <div className="signature-preview" data-testid="signature-preview">
+        {value.trim() ? (
+          <span className="signature-render">{value.trim()}</span>
+        ) : (
+          <span className="signature-preview-placeholder">Your signature will appear here</span>
+        )}
+      </div>
+      {showError && (
+        <p className="error" role="alert">
+          Please enter your first and last name — both are needed to sign.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** How a stored signature is displayed. A typed signature is the client's
+ *  full name rendered in a signature style; a legacy drawn signature is
+ *  its image (staff surfaces carry the data URL; public projections never
+ *  do, so a drawn signature without an image falls back to the plain
+ *  name). Either way it is accompanied by the signed timestamp and an
+ *  electronically-signed caption. */
+export function SignatureRender({
+  signature
+}: {
+  signature: {
+    name: string;
+    signed_at: string;
+    method?: "typed" | "drawn";
+    signature_data_url?: string;
+  };
+}) {
+  const method = signature.method ?? (signature.signature_data_url ? "drawn" : "typed");
+  return (
+    <div className="signature-block" data-testid="signature-block">
+      {method === "typed" ? (
+        <span className="signature-render" data-testid="signature-render">
+          {signature.name}
+        </span>
+      ) : signature.signature_data_url ? (
+        <img
+          className="signature-image"
+          data-testid="signature-image"
+          src={signature.signature_data_url}
+          alt={`Signature of ${signature.name}`}
+        />
+      ) : (
+        <strong>{signature.name}</strong>
+      )}
+      <small className="signature-caption">
+        Electronically signed by {signature.name} on{" "}
+        {new Date(signature.signed_at).toLocaleString()}
+      </small>
     </div>
   );
 }
 
 /** Client-facing quote: totals only (never supplier cost/margins), channel-
- *  adapted labels, a signature pad, and a typed name. Signing = approval.
- *  After signing it becomes a read-only receipt. Opened by staff on a
- *  phone/tablet and handed to the customer. */
+ *  adapted labels, and a typed signature (first + last name). Signing =
+ *  approval. After signing it becomes a read-only receipt. Opened by staff
+ *  on a phone/tablet and handed to the customer. */
 function ClientQuoteView({
   item,
   onRefresh,
@@ -3022,7 +3019,6 @@ function ClientQuoteView({
 }) {
   const quote = item.quote;
   const [name, setName] = useState("");
-  const [sigUrl, setSigUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
@@ -3033,14 +3029,13 @@ function ClientQuoteView({
     !!quote && (quote.status === "EXPIRED" || new Date(quote.expires_at).getTime() <= Date.now());
 
   async function sign() {
-    if (!quote || !sigUrl) return;
+    if (!quote || !isValidSignatureName(name)) return;
     setBusy(true);
     setError(null);
     try {
       await performAction(item.id, "sign_quote", {
         name: name.trim(),
-        signature_data_url: sigUrl,
-        attribution: "client signature captured in-app"
+        attribution: "client typed signature in-app"
       });
       await onRefresh();
     } catch (e) {
@@ -3096,10 +3091,7 @@ function ClientQuoteView({
 
       {signed ? (
         <>
-          <p className="muted">
-            ✓ Signed by <strong>{quote.signature!.name}</strong> on{" "}
-            {new Date(quote.signature!.signed_at).toLocaleString()}.
-          </p>
+          <SignatureRender signature={quote.signature!} />
           <p className="muted">Thank you — please hand the device back to our staff.</p>
           <button className="secondary" onClick={onBack}>← Back to case</button>
         </>
@@ -3113,24 +3105,12 @@ function ClientQuoteView({
         </>
       ) : (
         <>
-          <label>
-            Printed name
-            <input
-              type="text"
-              value={name}
-              onChange={e => setName(e.target.value)}
-              placeholder="Type your full name"
-              autoComplete="name"
-              style={{ display: "block", width: "100%", marginTop: 4 }}
-            />
-          </label>
-          <p className="muted" style={{ marginTop: 12 }}>Sign below with your finger or stylus:</p>
-          <SignaturePad onChange={setSigUrl} />
+          <SignatureField value={name} onChange={setName} />
           {error && <p className="error">{error}</p>}
           <div className="row" style={{ marginTop: 12 }}>
             <button
               className="primary"
-              disabled={busy || !name.trim() || !sigUrl}
+              disabled={busy || !isValidSignatureName(name)}
               onClick={sign}
             >
               {busy ? "Signing…" : `Sign ${noun}`}
@@ -3183,7 +3163,6 @@ export function PublicQuotePage({ token }: { token: string }) {
   const [view, setView] = useState<PublicQuoteView | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [name, setName] = useState("");
-  const [sigUrl, setSigUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [trackingToken, setTrackingToken] = useState<string | null>(null);
@@ -3224,13 +3203,12 @@ export function PublicQuotePage({ token }: { token: string }) {
   const trackingUrl = trackingToken ? `${window.location.origin}/track/${trackingToken}` : null;
 
   async function sign() {
-    if (!sigUrl) return;
+    if (!isValidSignatureName(name)) return;
     setBusy(true);
     setError(null);
     try {
       const res = await signPublicQuote(token, {
-        name: name.trim(),
-        signature_data_url: sigUrl
+        name: name.trim()
       });
       setTrackingToken(res.tracking_token);
     } catch (e) {
@@ -3289,10 +3267,21 @@ export function PublicQuotePage({ token }: { token: string }) {
           </>
         ) : view.status === "APPROVED" ? (
           <>
-            <p>
-              ✓ Signed by <strong>{view.signed_by}</strong> on{" "}
-              {view.signed_at ? new Date(view.signed_at).toLocaleString() : ""}.
-            </p>
+            {view.signature_method === "typed" && view.signed_by && view.signed_at ? (
+              <SignatureRender
+                signature={{
+                  name: view.signed_by,
+                  signed_at: view.signed_at,
+                  method: "typed",
+                  signature_data_url: ""
+                }}
+              />
+            ) : (
+              <p>
+                ✓ Signed by <strong>{view.signed_by}</strong> on{" "}
+                {view.signed_at ? new Date(view.signed_at).toLocaleString() : ""}.
+              </p>
+            )}
             <p className="muted">Your job is underway — R&R will keep you posted.</p>
           </>
         ) : view.status === "EXPIRED" ? (
@@ -3308,24 +3297,12 @@ export function PublicQuotePage({ token }: { token: string }) {
               <strong>{validityLabel(view.expires_at, now)}</strong> — until{" "}
               {new Date(view.expires_at).toLocaleString()}.
             </p>
-            <label>
-              Printed name
-              <input
-                type="text"
-                value={name}
-                onChange={e => setName(e.target.value)}
-                placeholder="Type your full name"
-                autoComplete="name"
-                style={{ display: "block", width: "100%", marginTop: 4 }}
-              />
-            </label>
-            <p className="muted" style={{ marginTop: 12 }}>Sign below with your finger or stylus:</p>
-            <SignaturePad onChange={setSigUrl} />
+            <SignatureField value={name} onChange={setName} />
             {error && <p className="error">{error}</p>}
             <div className="row" style={{ marginTop: 12 }}>
               <button
                 className="primary"
-                disabled={busy || !name.trim() || !sigUrl}
+                disabled={busy || !isValidSignatureName(name)}
                 onClick={sign}
               >
                 {busy ? "Signing…" : `Sign & approve ${noun}`}
@@ -3440,7 +3417,12 @@ export function PublicTrackingPage({ token }: { token: string }) {
         )}
         {view.signed_by && (
           <small>
-            Quote approved by {view.signed_by}
+            Quote approved by{" "}
+            {view.signature_method === "typed" ? (
+              <span className="signature-render signature-render-inline">{view.signed_by}</span>
+            ) : (
+              view.signed_by
+            )}
             {view.signed_at ? ` on ${new Date(view.signed_at).toLocaleString()}` : ""}.
             This page refreshes automatically.
           </small>

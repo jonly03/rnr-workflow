@@ -602,6 +602,9 @@ export interface PublicQuoteView {
   status: "AWAITING_SIGNATURE" | "APPROVED" | "DECLINED" | "EXPIRED";
   signed_by: string | null;
   signed_at: string | null;
+  /** "typed" signatures render as the name in a signature style; the drawn
+   *  image itself is staff-only and never part of this projection. */
+  signature_method: "typed" | "drawn" | null;
 }
 
 export function getPublicQuote(token: string) {
@@ -610,7 +613,7 @@ export function getPublicQuote(token: string) {
 
 export function signPublicQuote(
   token: string,
-  input: { name: string; signature_data_url: string }
+  input: { name: string; signature_data_url?: string }
 ) {
   return fetch(`${API_BASE}/public/quote/${token}/sign`, {
     method: "POST",
@@ -644,6 +647,7 @@ export interface PublicTrackingView {
   current_state: string;
   signed_by: string | null;
   signed_at: string | null;
+  signature_method: "typed" | "drawn" | null;
   invoice: { version: number; total_cents: number } | null;
   labor_cents: number | null;
   tax_cents: number | null;

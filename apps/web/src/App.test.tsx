@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App, cardOrderKey, DEFAULT_CARD_ORDER, describeEvent, filterQueueCases, isStaffActionRequired, loadCardOrder, pinQuoteAfterPricing, PublicIntakePage, scanProgressForElapsed, shouldShowOverrideWarning, sortQueueCases } from "./App";
+import { App, cardOrderKey, DEFAULT_CARD_ORDER, describeEvent, filterQueueCases, isStaffActionRequired, isValidSignatureName, loadCardOrder, pinQuoteAfterPricing, PublicIntakePage, PublicQuotePage, scanProgressForElapsed, shouldShowOverrideWarning, SignatureRender, sortQueueCases } from "./App";
 import type { CaseRecord, CaseEvent } from "./types";
 
 vi.stubGlobal("fetch", vi.fn(async () => ({
@@ -777,5 +777,164 @@ describe("public intake page (QR front door)", () => {
     fireEvent.click(screen.getByRole("button", { name: /Back/i }));
     expect(screen.getByText("Step 1 of 3")).toBeInTheDocument();
     expect((screen.getByLabelText(/^VIN/) as HTMLInputElement).value).toBe(VALID_VIN);
+  });
+});
+
+describe("typed quote signature", () => {
+  afterEach(() => cleanup());
+
+  it("requires a first AND last name", () => {
+    expect(isValidSignatureName("")).toBe(false);
+    expect(isValidSignatureName("   ")).toBe(false);
+    expect(isValidSignatureName("Jane")).toBe(false);
+    expect(isValidSignatureName(" Jane ")).toBe(false);
+    expect(isValidSignatureName("Jane Customer")).toBe(true);
+    expect(isValidSignatureName("Jane  Customer")).toBe(true);
+    expect(isValidSignatureName("Mary Jane Watson")).toBe(true);
+  });
+
+  const baseView = {
+    reference: "RRA-000042",
+    channel: "DIRECT",
+    noun: "quote",
+    vehicle: { year: 2020, make: "Honda", model: "Accord" },
+    glass_type: "WINDSHIELD",
+    labor_cents: 12500,
+    tax_cents: 1000,
+    total_cents: 40000,
+    quote_version: 1,
+    expires_at: "2099-01-01T00:00:00.000Z",
+    signed_by: null,
+    signed_at: null,
+    signature_method: null
+  };
+
+  function stubQuoteFetch(view: Record<string, unknown>) {
+    const posts: { url: string; body: string }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: { body?: unknown; method?: string }) => {
+        const u = String(url);
+        if (u.includes("/sign") && init?.method === "POST") {
+          posts.push({ url: u, body: String(init.body ?? "") });
+          return {
+            ok: true,
+            json: async () => ({
+              ok: true,
+              status: "APPROVED",
+              invoice_version: 1,
+              tracking_token: "rnappr_tracktoken"
+            })
+          };
+        }
+        return { ok: true, json: async () => view };
+      })
+    );
+    return posts;
+  }
+
+  it("signs with a typed name only — no pad, live preview, inline error", async () => {
+    const posts = stubQuoteFetch({ ...baseView, status: "AWAITING_SIGNATURE" });
+    render(<PublicQuotePage token="rnappr_testtoken" />);
+
+    // The form: one Signature field, the instruction from the pattern, and
+    // NO drawing canvas anywhere.
+    const field = (await screen.findByLabelText(/^Signature$/)) as HTMLInputElement;
+    expect(screen.getByText("Enter your first and last name in the signature field.")).toBeInTheDocument();
+    expect(document.querySelector("canvas")).toBeNull();
+    expect(screen.queryByTestId("signature-pad")).not.toBeInTheDocument();
+
+    const signButton = screen.getByRole("button", { name: /Sign & approve quote/ }) as HTMLButtonElement;
+    expect(signButton.disabled).toBe(true);
+
+    // One word: inline error after blur, button stays disabled, and the
+    // preview still renders what was typed.
+    fireEvent.change(field, { target: { value: "Jane" } });
+    fireEvent.blur(field);
+    expect(await screen.findByText(/first and last name — both are needed to sign/)).toBeInTheDocument();
+    expect(signButton.disabled).toBe(true);
+    const preview = screen.getByTestId("signature-preview");
+    expect(preview.querySelector(".signature-render")?.textContent).toBe("Jane");
+
+    // First + last name: error clears, button enables, signing posts the
+    // name with NO signature_data_url.
+    fireEvent.change(field, { target: { value: "Jane Customer" } });
+    expect(screen.queryByText(/both are needed to sign/)).not.toBeInTheDocument();
+    expect(signButton.disabled).toBe(false);
+    fireEvent.click(signButton);
+
+    expect(
+      await screen.findByText(/your quote is approved and your invoice has been created/)
+    ).toBeInTheDocument();
+    expect(posts).toHaveLength(1);
+    const body = JSON.parse(posts[0].body) as Record<string, unknown>;
+    expect(body.name).toBe("Jane Customer");
+    expect(body).not.toHaveProperty("signature_data_url");
+  });
+
+  it("renders an approved typed signature as the name in a signature style", async () => {
+    stubQuoteFetch({
+      ...baseView,
+      status: "APPROVED",
+      signed_by: "Jane Customer",
+      signed_at: "2026-10-21T14:00:00.000Z",
+      signature_method: "typed"
+    });
+    render(<PublicQuotePage token="rnappr_testtoken" />);
+
+    const rendered = await screen.findByTestId("signature-render");
+    expect(rendered.textContent).toBe("Jane Customer");
+    expect(rendered).toHaveClass("signature-render");
+    expect(screen.getByText(/Electronically signed by Jane Customer/)).toBeInTheDocument();
+    expect(screen.queryByTestId("signature-image")).not.toBeInTheDocument();
+  });
+
+  it("keeps a legacy drawn signature on the public page as plain text (image is staff-only)", async () => {
+    stubQuoteFetch({
+      ...baseView,
+      status: "APPROVED",
+      signed_by: "Jane Customer",
+      signed_at: "2026-10-21T14:00:00.000Z",
+      signature_method: "drawn"
+    });
+    render(<PublicQuotePage token="rnappr_testtoken" />);
+
+    expect(await screen.findByText(/Signed by/)).toBeInTheDocument();
+    expect(screen.queryByTestId("signature-render")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("signature-image")).not.toBeInTheDocument();
+  });
+
+  it("SignatureRender: typed records render the styled name + caption", () => {
+    render(
+      <SignatureRender
+        signature={{
+          name: "Jane Customer",
+          signed_at: "2026-10-21T14:00:00.000Z",
+          method: "typed",
+          signature_data_url: ""
+        }}
+      />
+    );
+    const rendered = screen.getByTestId("signature-render");
+    expect(rendered.textContent).toBe("Jane Customer");
+    expect(screen.getByText(/Electronically signed by Jane Customer/)).toBeInTheDocument();
+    expect(screen.queryByTestId("signature-image")).not.toBeInTheDocument();
+  });
+
+  it("SignatureRender: legacy drawn records (no method) render as their image", () => {
+    const dataUrl = "data:image/png;base64,iVBORw0KGgo=";
+    render(
+      <SignatureRender
+        signature={{
+          name: "Jane Customer",
+          signed_at: "2026-10-21T14:00:00.000Z",
+          signature_data_url: dataUrl
+        }}
+      />
+    );
+    const img = screen.getByTestId("signature-image") as HTMLImageElement;
+    expect(img.src).toBe(dataUrl);
+    expect(screen.queryByTestId("signature-render")).not.toBeInTheDocument();
+    expect(screen.getByText(/Electronically signed by Jane Customer/)).toBeInTheDocument();
   });
 });
