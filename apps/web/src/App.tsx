@@ -20,6 +20,7 @@ import {
   getMe,
   getMyJob,
   getMyOperator,
+  getOpsMap,
   getPublicIntakeStatus,
   getPublicQuote,
   getPublicTracking,
@@ -70,12 +71,17 @@ import {
   type JobStep,
   type Operator,
   type OperatorInviteView,
+  type OpsMapJob,
+  type OpsMapTech,
+  type OpsMapView,
   type ScheduleBoardEntry,
   type SchedulerProposal,
   type TechJob
 } from "./types";
+import { OpsMap, type OpsMapMarker } from "./OpsMap";
+import { useJobLocationSharing } from "./location-sharing";
 
-type Screen = "queue" | "new" | "detail" | "quote" | "operators" | "schedule";
+type Screen = "queue" | "new" | "detail" | "quote" | "operators" | "schedule" | "ops";
 
 const humanize = (value: string) =>
   value.toLowerCase().replaceAll("_", " ").replace(/(^|\s)\S/g, c => c.toUpperCase());
@@ -562,6 +568,21 @@ export function App() {
     );
   }
 
+  if (screen === "ops") {
+    return (
+      <Shell
+        staff={staff}
+        onSignOut={signOut}
+        crumbs={[
+          { label: "Case queue", onClick: () => setScreen("queue") },
+          { label: "Ops map" }
+        ]}
+      >
+        <OpsMapScreen onOpenCase={id => { void openCase(id); }} />
+      </Shell>
+    );
+  }
+
   if (screen === "new") {
     return (
       <Shell
@@ -665,6 +686,7 @@ export function App() {
             <button type="button" className="primary sidebar-new" onClick={() => { setNewCaseOrigin({ screen: "queue" }); setScreen("new"); }}>+ New Case</button>
             <div className="sidebar-nav">
               <button type="button" className="secondary" onClick={() => setScreen("schedule")}>Schedule board</button>
+              <button type="button" className="secondary" onClick={() => setScreen("ops")}>Ops map</button>
               <button type="button" className="secondary" onClick={() => setScreen("operators")}>Operators</button>
             </div>
             <div className="queue-toolbar">
@@ -1528,6 +1550,151 @@ export function ScheduleScreen({ onOpenCase }: { onOpenCase: (id: string) => voi
   );
 }
 
+/** How often the ops map re-reads positions (Slice C). Pings are not
+ *  case events, so they never ride the realtime socket — polling this
+ *  staff-only endpoint on a light interval is the refresh path. */
+const OPS_MAP_POLL_MS = 20_000;
+
+function pingAgeText(ageSeconds: number): string {
+  if (ageSeconds < 45) return "just now";
+  if (ageSeconds < 3600) return `${Math.max(1, Math.round(ageSeconds / 60))} min ago`;
+  return `${Math.round(ageSeconds / 3600)} h ago`;
+}
+
+/**
+ * Staff daily ops map (Slice C, brief §3.4): today's jobs as pins at
+ * their service addresses, each active tech's latest position, and a
+ * side list with tech / job / current checklist step / last ping age.
+ * A job without coordinates lists without a pin; a tech who hasn't
+ * reported yet reads "No signal yet" — positions are never invented.
+ */
+export function OpsMapScreen({ onOpenCase }: { onOpenCase: (id: string) => void }) {
+  const today = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+  const [date, setDate] = useState(today);
+  const [view, setView] = useState<OpsMapView | null>(null);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const data = await getOpsMap(date);
+      setView(data);
+      setError("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load the ops map.");
+    }
+  }, [date]);
+
+  useEffect(() => {
+    void load();
+    const t = setInterval(() => { void load(); }, OPS_MAP_POLL_MS);
+    return () => clearInterval(t);
+  }, [load]);
+
+  const techByJob = useMemo(
+    () => new Map((view?.techs ?? []).map(t => [t.job_id, t])),
+    [view]
+  );
+
+  const markers: OpsMapMarker[] = useMemo(() => {
+    if (!view) return [];
+    const jobMarkers: OpsMapMarker[] = view.jobs
+      .filter(j => j.service_lat !== null && j.service_lon !== null)
+      .map(j => ({
+        id: `job-${j.job_id}`,
+        kind: "job" as const,
+        lat: j.service_lat as number,
+        lon: j.service_lon as number,
+        initial: "⌂",
+        label: `${j.reference} — ${j.service_address ?? "job site"} (${j.tech_name ?? "unassigned"})`
+      }));
+    const techMarkers: OpsMapMarker[] = view.techs.map(t => ({
+      id: `tech-${t.job_id}`,
+      kind: "tech" as const,
+      lat: t.lat,
+      lon: t.lon,
+      initial: (t.tech_name ?? "T").trim().charAt(0).toUpperCase() || "T",
+      label: `${t.tech_name ?? "Technician"} — on ${t.reference}, last signal ${pingAgeText(t.age_seconds)}`
+    }));
+    return [...jobMarkers, ...techMarkers];
+  }, [view]);
+
+  const formatTime = (iso: string) =>
+    new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+  return (
+    <section data-testid="ops-map-screen">
+      <div className="page-head">
+        <div>
+          <p className="eyebrow">R&amp;R Operations</p>
+          <h1>Ops map</h1>
+          <p className="muted">
+            Today&apos;s jobs and where the techs are, live. Positions update
+            while a job is in progress — clients see summaries and an ETA,
+            never this map.
+          </p>
+        </div>
+      </div>
+      <label>
+        Day{" "}
+        <input type="date" value={date} onChange={e => setDate(e.target.value)} aria-label="Ops day" />
+      </label>
+      {error && <div className="alert" role="alert">{error}</div>}
+      {view === null && !error ? (
+        <div className="card">Loading ops map…</div>
+      ) : (
+        <div className="ops-layout">
+          <OpsMap markers={markers} />
+          <div className="card ops-list">
+            <h2>Today&apos;s jobs</h2>
+            {view && view.jobs.length === 0 && (
+              <p className="muted">No jobs scheduled for this day yet.</p>
+            )}
+            {view?.jobs.map((job: OpsMapJob) => {
+              const tech: OpsMapTech | undefined = techByJob.get(job.job_id);
+              return (
+                <div key={job.job_id} className="ops-job" data-testid="ops-job-row">
+                  <div className="row">
+                    <button type="button" className="link" onClick={() => onOpenCase(job.case_id)}>
+                      {job.reference}
+                    </button>
+                    <span>{job.glass_type ? humanize(job.glass_type) : ""}</span>
+                    <span className="muted">
+                      {job.scheduled_start ? formatTime(job.scheduled_start) : ""}
+                      {job.scheduled_end ? `–${formatTime(job.scheduled_end)}` : ""}
+                    </span>
+                  </div>
+                  <p className="muted">
+                    {job.tech_name ?? "Unassigned"}
+                    {job.job_status === "COMPLETED"
+                      ? " · Finished"
+                      : job.current_step_label
+                        ? ` · Now: ${job.current_step_label}`
+                        : ` · ${humanize(job.job_status)}`}
+                  </p>
+                  <p className="muted">
+                    {job.service_address ??
+                      (job.service_lat === null ? "No location on file for this job" : "")}
+                  </p>
+                  {job.job_status === "IN_PROGRESS" && (
+                    <p className="muted" data-testid="ops-job-signal">
+                      {tech
+                        ? `📍 Signal ${pingAgeText(tech.age_seconds)}`
+                        : "📍 No signal yet"}
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 /** Public invite landing: /invite/<credential> — the tech claims the
  *  invite by signing in with the invited Google account. */
 export function InviteAcceptPage({
@@ -1754,6 +1921,14 @@ export function TechJobDetail({
     void load();
   }, [load]);
 
+  // Slice C: share this device's position with R&R exactly while the
+  // job is in progress — starting at the first checklist tap and
+  // stopping on its own at finish (the hook keys off the job status,
+  // which flips to COMPLETED when FINISHED is recorded).
+  const jobInProgress = entry?.job.status === "IN_PROGRESS";
+  const { sharing: locationSharing, error: locationError } =
+    useJobLocationSharing(jobId, jobInProgress);
+
   if (!entry) {
     return (
       <section className="card" data-testid="tech-job-detail">
@@ -1865,6 +2040,15 @@ export function TechJobDetail({
 
       {error && (
         <p className="error" role="alert">{error}</p>
+      )}
+      {jobInProgress && (
+        <p className="location-sharing" data-testid="location-sharing-status" role="status">
+          {locationError
+            ? `📍 ${locationError}`
+            : locationSharing
+              ? "📍 Sharing your location with R&R while this job is active."
+              : "📍 Location sharing is starting…"}
+        </p>
       )}
       {finished && (
         <div className="alert" role="status">
@@ -4817,6 +5001,12 @@ export function PublicTrackingPage({ token }: { token: string }) {
         <p style={{ fontSize: 18 }}>
           <strong>{view.status}</strong>
         </p>
+        {view.eta && (
+          <p data-testid="tracking-eta" style={{ fontSize: 16 }}>
+            🚗 Your technician is on the way — <strong>estimated arrival: {view.eta.label}</strong>.
+            That&apos;s an estimate; traffic can change it.
+          </p>
+        )}
         <ol style={{ margin: "12px 0", paddingLeft: 20 }}>
           {view.milestones.map(m => (
             <li

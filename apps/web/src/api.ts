@@ -7,8 +7,10 @@ import type {
   Channel,
   GlassType,
   JobAssignment,
+  JobLocationPing,
   JobStep,
   Operator,
+  OpsMapView,
   OperatorInviteView,
   ScheduleBoardEntry,
   SchedulerProposal,
@@ -649,6 +651,10 @@ export interface PublicTrackingView {
   tax_cents: number | null;
   total_cents: number | null;
   milestones: TrackingMilestone[];
+  /** Slice C: an estimated arrival window while the tech is en route
+   *  ("about 15–25 min") — an estimate computed server-side, never
+   *  coordinates. Null whenever there is nothing honest to show. */
+  eta: { label: string; minutes_low: number; minutes_high: number } | null;
 }
 
 export function getPublicTracking(token: string) {
@@ -969,6 +975,31 @@ export function getCaseJob(caseId: string) {
   return fetch(`${API_BASE}/cases/${caseId}/job`, {
     headers: authHeaders()
   }).then(json<CaseJobView>);
+}
+
+// ---------------------------------------------------------------------
+// Live tracking (Slice C). The tech's device posts its position while
+// a job is active (the API accepts it only then, and only with the
+// tech's location-sharing consent on file); staff read the daily ops
+// map. Clients never call either — their tracker gets an ETA summary.
+// ---------------------------------------------------------------------
+
+export function postJobLocation(
+  jobId: string,
+  input: { lat: number; lon: number; accuracy_m?: number }
+) {
+  return fetch(`${API_BASE}/tech/jobs/${jobId}/location`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(input)
+  }).then(json<{ ping: JobLocationPing }>);
+}
+
+/** Staff: the daily ops map — job pins + active techs' latest positions. */
+export function getOpsMap(date: string) {
+  return fetch(`${API_BASE}/ops-map?date=${encodeURIComponent(date)}`, {
+    headers: authHeaders()
+  }).then(json<OpsMapView>);
 }
 
 export function createCase(input: CreateCaseInput) {

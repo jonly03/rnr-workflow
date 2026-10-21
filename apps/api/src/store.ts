@@ -21,6 +21,7 @@ import type {
   Invoice,
   InvoiceActuals,
   Job,
+  JobLocationPing,
   JobStepEvent,
   OperatorInvite,
   PriceCalculation,
@@ -219,6 +220,21 @@ export interface AppendJobStepEventInput {
   payload?: Record<string, unknown>;
 }
 
+export interface AppendJobLocationPingInput {
+  jobId: string;
+  caseId: string;
+  techId: string;
+  lat: number;
+  lon: number;
+  accuracyM?: number | null;
+  /**
+   * Explicit stamp for seeds/tests only. The HTTP route never sets
+   * this — it always records server time, so a client cannot backdate
+   * or future-date its own track.
+   */
+  recordedAt?: string;
+}
+
 export interface CreateCaseAssetInput {
   /** Minted by the caller: the storage key embeds the asset id, and the
    *  key must be final before any bytes land. */
@@ -366,6 +382,12 @@ export interface CaseStore {
   appendJobStepEvent(input: AppendJobStepEventInput): Promise<JobStepEvent>;
   /** All step events for a job, oldest first. */
   listJobStepEvents(jobId: string): Promise<JobStepEvent[]>;
+  /** Appends one tech location ping to a job (Slice C, append-only). */
+  appendJobLocationPing(input: AppendJobLocationPingInput): Promise<JobLocationPing>;
+  /** All location pings for a job, oldest first. */
+  listJobLocationPings(jobId: string): Promise<JobLocationPing[]>;
+  /** The newest ping per job, across all jobs (ops map + ETA reads). */
+  latestJobLocationPings(): Promise<JobLocationPing[]>;
   /** Registers one file in the case's asset registry (Slice B, §7.3). */
   createCaseAsset(input: CreateCaseAssetInput): Promise<CaseAsset>;
   getCaseAsset(id: string): Promise<CaseAsset | null>;
@@ -385,6 +407,7 @@ const emptyStore = (): StoreShape => ({
   operator_invites: [],
   jobs: [],
   job_step_events: [],
+  job_location_pings: [],
   case_assets: [],
   approval_tokens: [],
   glass_identifications: [],
@@ -1075,6 +1098,42 @@ export class JsonCaseStore implements CaseStore {
     return this.data.job_step_events
       .filter(e => e.job_id === jobId)
       .sort((a, b) => a.occurred_at.localeCompare(b.occurred_at));
+  }
+
+  async appendJobLocationPing(
+    input: AppendJobLocationPingInput
+  ): Promise<JobLocationPing> {
+    const record: JobLocationPing = {
+      id: randomUUID(),
+      job_id: input.jobId,
+      case_id: input.caseId,
+      tech_id: input.techId,
+      lat: input.lat,
+      lon: input.lon,
+      accuracy_m: input.accuracyM ?? null,
+      recorded_at: input.recordedAt ?? new Date().toISOString()
+    };
+    const next = structuredClone(this.data);
+    next.job_location_pings.push(record);
+    this.persist(next);
+    return record;
+  }
+
+  async listJobLocationPings(jobId: string): Promise<JobLocationPing[]> {
+    return (this.data.job_location_pings ?? [])
+      .filter(p => p.job_id === jobId)
+      .sort((a, b) => a.recorded_at.localeCompare(b.recorded_at));
+  }
+
+  async latestJobLocationPings(): Promise<JobLocationPing[]> {
+    const latest = new Map<string, JobLocationPing>();
+    for (const ping of this.data.job_location_pings ?? []) {
+      const prev = latest.get(ping.job_id);
+      if (!prev || ping.recorded_at >= prev.recorded_at) {
+        latest.set(ping.job_id, ping);
+      }
+    }
+    return [...latest.values()];
   }
 
   async createCaseAsset(input: CreateCaseAssetInput): Promise<CaseAsset> {

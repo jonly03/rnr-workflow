@@ -338,6 +338,26 @@ export interface JobStepEvent {
   occurred_at: string;
 }
 
+/**
+ * One position report from the assigned tech's device (Slice C, brief
+ * §3.4). Recorded ONLY while the job is IN_PROGRESS and the tech's
+ * profile carries location-sharing consent — both enforced in
+ * tracking.ts before a row exists. Staff-only data: a ping's
+ * coordinates must never reach a client-facing payload; the client
+ * tracker receives a computed ETA summary instead.
+ */
+export interface JobLocationPing {
+  id: string;
+  job_id: string;
+  case_id: string;
+  tech_id: string;
+  lat: number;
+  lon: number;
+  /** Device-reported accuracy radius in meters, when provided. */
+  accuracy_m: number | null;
+  recorded_at: string;
+}
+
 /** What a case asset holds (brief §7.3 registry). */
 export type AssetKind =
   | "INTAKE_PHOTO"
@@ -393,6 +413,7 @@ export interface StoreShape {
   operator_invites: OperatorInvite[];
   jobs: Job[];
   job_step_events: JobStepEvent[];
+  job_location_pings: JobLocationPing[];
   case_assets: CaseAsset[];
   approval_tokens: ApprovalTokenRecord[];
   glass_identifications: GlassIdentification[];

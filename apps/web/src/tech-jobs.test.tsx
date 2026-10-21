@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { JobProgressPanel, TechHome } from "./App";
+import { JobProgressPanel, TechHome, TechJobDetail } from "./App";
 import type { StaffUser } from "./api";
 import type { CaseAsset, JobStepEvent, TechJob } from "./types";
 
@@ -292,5 +292,54 @@ describe("Staff job progress panel (Slice B)", () => {
     );
     const { container } = render(<JobProgressPanel caseId="case-1" />);
     await waitFor(() => expect(container).toBeEmptyDOMElement());
+  });
+});
+
+describe("Location sharing in the tech view (Slice C)", () => {
+  it("shows the sharing indicator on an in-progress job", async () => {
+    const job = makeJob({
+      job: { ...makeJob().job, status: "IN_PROGRESS" },
+      current_step: "PICKED_UP",
+      steps: [stepEvent("PICKUP")]
+    });
+    mockFetch(url => {
+      if (url.endsWith("/tech/jobs/job-1")) return { job };
+      return {};
+    });
+    render(<TechJobDetail jobId="job-1" onBack={() => undefined} />);
+    // jsdom has no geolocation, so the indicator explains why sharing
+    // can't start — the point is the job state drives the indicator.
+    const status = await screen.findByTestId("location-sharing-status");
+    expect(status).toHaveTextContent(/location/i);
+  });
+
+  it("shows no indicator and posts nothing while the job is not yet active", async () => {
+    const job = makeJob(); // ASSIGNED — not started.
+    const fn = mockFetch(url => {
+      if (url.endsWith("/tech/jobs/job-1")) return { job };
+      return {};
+    });
+    render(<TechJobDetail jobId="job-1" onBack={() => undefined} />);
+    await screen.findByTestId("tech-job-detail");
+    expect(screen.queryByTestId("location-sharing-status")).toBeNull();
+    const locationPosts = fn.mock.calls.filter(([url, init]) =>
+      String(url).includes("/location") && init?.method === "POST"
+    );
+    expect(locationPosts).toHaveLength(0);
+  });
+
+  it("shows no indicator once the job is finished", async () => {
+    const job = makeJob({
+      job: { ...makeJob().job, status: "COMPLETED" },
+      current_step: null,
+      steps: [stepEvent("PICKUP"), stepEvent("FINISHED")]
+    });
+    mockFetch(url => {
+      if (url.endsWith("/tech/jobs/job-1")) return { job };
+      return {};
+    });
+    render(<TechJobDetail jobId="job-1" onBack={() => undefined} />);
+    await screen.findByTestId("tech-job-detail");
+    expect(screen.queryByTestId("location-sharing-status")).toBeNull();
   });
 });
