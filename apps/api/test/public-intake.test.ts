@@ -61,6 +61,18 @@ const staffGet = (f: Fixture, url: string) =>
 const intake = (f: Fixture, body: Record<string, unknown>) =>
   request(f.app).post("/api/v1/public/intake").send(body);
 
+/** A picked service address, in the mock provider's fixture shape. */
+const SERVICE_ADDRESS = {
+  place_id: "mock:terrace-118",
+  formatted: "118 Terrace St, Boston, MA 02120",
+  street: "118 Terrace St",
+  city: "Boston",
+  state: "Massachusetts",
+  zip: "02120",
+  lat: 42.3349,
+  lon: -71.0828
+};
+
 const VALID = {
   customer_name: "Jane Customer",
   customer_phone: "(617) 555-0142",
@@ -68,7 +80,8 @@ const VALID = {
   vin: VIN_17,
   year: 2020,
   make: "Honda",
-  model: "Accord"
+  model: "Accord",
+  service_address: SERVICE_ADDRESS
 };
 
 describe("Public client intake (QR front door)", () => {
@@ -103,7 +116,9 @@ describe("Public client intake (QR front door)", () => {
       customer_phone: "(617) 555-0142",
       note: "Cracked on the highway",
       vin_ocr_suggestion: null,
-      photo_count: 0
+      photo_count: 0,
+      // …and where the car will be serviced (the picked address).
+      service_address: SERVICE_ADDRESS
     });
 
     const events = await staffGet(f, `/api/v1/cases/${c.id}/events`).expect(200);
@@ -115,6 +130,44 @@ describe("Public client intake (QR front door)", () => {
     expect(submitted).toBeDefined();
     expect(submitted.payload.source).toBe("CLIENT_QR");
     expect(submitted.payload.customer_phone).toBe("(617) 555-0142");
+  });
+
+  it("accepts an intake with no note (3-card flow) and projects note as null; a legacy note is still honored", async () => {
+    const f = await fixture();
+    const res = await intake(f, VALID).expect(201);
+    const list = await staffGet(f, "/api/v1/cases").expect(200);
+    const c = list.body.find((x: { reference: string }) => x.reference === res.body.reference);
+    expect(c.client_intake.note).toBeNull();
+
+    // Backward compatibility: a client still sending the removed field
+    // (older cached page) is accepted and staff still see the note.
+    const legacy = await intake(f, { ...VALID, note: "Legacy client note" }).expect(201);
+    const list2 = await staffGet(f, "/api/v1/cases").expect(200);
+    const legacyCase = list2.body.find(
+      (x: { reference: string }) => x.reference === legacy.body.reference
+    );
+    expect(legacyCase.client_intake.note).toBe("Legacy client note");
+  });
+
+  it("accepts exactly 6 damage photos (the one-per-glass cap)", async () => {
+    const f = await fixture();
+    let req = request(f.app)
+      .post("/api/v1/public/intake")
+      .field("customer_name", "Jane Customer")
+      .field("customer_phone", "6175550142")
+      .field("glass_type", "WINDSHIELD")
+      .field("vin", VIN_17)
+      .field("year", "2020")
+      .field("make", "Honda")
+      .field("model", "Accord")
+      .field("service_address", JSON.stringify(SERVICE_ADDRESS));
+    for (let i = 0; i < 6; i++) {
+      req = req.attach("photos", TINY_PNG, `p${i}.jpg`);
+    }
+    const res = await req.expect(201);
+    const list = await staffGet(f, "/api/v1/cases").expect(200);
+    const c = list.body.find((x: { reference: string }) => x.reference === res.body.reference);
+    expect(c.client_intake.photo_count).toBe(6);
   });
 
   it("accepts a YMM-only intake (no VIN) and stores an empty VIN", async () => {
@@ -177,6 +230,66 @@ describe("Public client intake (QR front door)", () => {
     expect(list.body).toHaveLength(0);
   });
 
+  it("requires a picked service address: missing or free-text-only is a 400 naming the field, and no case is created", async () => {
+    const f = await fixture();
+    const { service_address: _sa, ...noAddress } = VALID;
+    const missing = await intake(f, noAddress).expect(400);
+    expect(missing.body.error.code).toBe("VALIDATION_ERROR");
+    expect(missing.body.error.details.field).toBe("service_address");
+
+    // A typed string is not a picked address.
+    const freeText = await intake(f, {
+      ...VALID,
+      service_address: "118 Terrace St, Boston, MA 02120"
+    }).expect(400);
+    expect(freeText.body.error.details.field).toBe("service_address");
+
+    // Missing place id / ZIP / city each fail the structured check.
+    const { place_id: _pid, ...noPlaceId } = SERVICE_ADDRESS;
+    await intake(f, { ...VALID, service_address: noPlaceId }).expect(400);
+    await intake(f, {
+      ...VALID,
+      service_address: { ...SERVICE_ADDRESS, zip: "0212" }
+    }).expect(400);
+    await intake(f, {
+      ...VALID,
+      service_address: { ...SERVICE_ADDRESS, city: "" }
+    }).expect(400);
+
+    const list = await staffGet(f, "/api/v1/cases").expect(200);
+    expect(list.body).toHaveLength(0);
+  });
+
+  it("stores the picked service address on the intake event for staff", async () => {
+    const f = await fixture();
+    const res = await intake(f, VALID).expect(201);
+    const list = await staffGet(f, "/api/v1/cases").expect(200);
+    const c = list.body.find((x: { reference: string }) => x.reference === res.body.reference);
+    const events = await staffGet(f, `/api/v1/cases/${c.id}/events`).expect(200);
+    const submitted = events.body.find(
+      (e: { event_type: string }) => e.event_type === "CLIENT_INTAKE_SUBMITTED"
+    );
+    expect(submitted.payload.service_address).toEqual(SERVICE_ADDRESS);
+  });
+
+  it("tightened field validation: 1-char name, non-10-digit phones, out-of-range YMM years are rejected", async () => {
+    const f = await fixture();
+    await intake(f, { ...VALID, customer_name: "J" }).expect(422);
+    // 7-digit local number: not a textable US mobile.
+    await intake(f, { ...VALID, customer_phone: "555-0142" }).expect(422);
+    await intake(f, { ...VALID, customer_phone: "016-555-0142" }).expect(422);
+    // Country-code and punctuation formats ARE accepted.
+    await intake(f, { ...VALID, customer_phone: "+1 (617) 555-0142" }).expect(201);
+    await intake(f, { ...VALID, customer_phone: "617.555.0142" }).expect(201);
+    // YMM path year bounds: 1950..next year.
+    const { vin: _v, ...ymm } = VALID;
+    await intake(f, { ...ymm, year: 1949 }).expect(422);
+    await intake(f, { ...ymm, year: new Date().getFullYear() + 2 }).expect(422);
+    await intake(f, { ...ymm, year: 1950 }).expect(201);
+    const list = await staffGet(f, "/api/v1/cases").expect(200);
+    expect(list.body).toHaveLength(3);
+  });
+
   it("ignores smuggled internal fields (channel, state, pricing)", async () => {
     const f = await fixture();
     const res = await intake(f, {
@@ -205,6 +318,7 @@ describe("Public client intake (QR front door)", () => {
       .field("year", "2020")
       .field("make", "Honda")
       .field("model", "Accord")
+      .field("service_address", JSON.stringify(SERVICE_ADDRESS))
       .attach("photos", TINY_PNG, "crack.jpg")
       .expect(201);
     const list = await staffGet(f, "/api/v1/cases").expect(200);
@@ -275,6 +389,7 @@ describe("Public client intake (QR front door)", () => {
       .field("year", "2020")
       .field("make", "Honda")
       .field("model", "Accord")
+      .field("service_address", JSON.stringify(SERVICE_ADDRESS))
       .attach("vin_photo", TINY_PNG, "vin.jpg")
       .expect(201);
     const untyped = await request(f.app)
@@ -285,6 +400,7 @@ describe("Public client intake (QR front door)", () => {
       .field("year", "2021")
       .field("make", "Ford")
       .field("model", "F-150")
+      .field("service_address", JSON.stringify(SERVICE_ADDRESS))
       .attach("vin_photo", TINY_PNG, "vin.jpg")
       .expect(201);
 
@@ -317,6 +433,7 @@ describe("Public client intake (QR front door)", () => {
       .field("year", "2020")
       .field("make", "Honda")
       .field("model", "Accord")
+      .field("service_address", JSON.stringify(SERVICE_ADDRESS))
       .attach("vin_photo", TINY_PNG, "vin.jpg")
       .expect(201);
     const list = await staffGet(f, "/api/v1/cases").expect(200);
