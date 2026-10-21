@@ -897,7 +897,8 @@ export class PgCaseStore implements CaseStore {
           signed_at: input.signedAt,
           attribution: input.attribution,
           signature_hash: input.signatureHash,
-          signature_data_url: input.signatureDataUrl
+          signature_data_url: input.signatureDataUrl,
+          method: input.method
         })
       ]
     );

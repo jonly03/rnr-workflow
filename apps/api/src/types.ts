@@ -254,16 +254,33 @@ export interface QuoteSnapshot {
   price_calculation_id: string;
 }
 
+/** How a quote signature was captured: "typed" — the client typed their
+ *  first and last name into the Signature field and the typed name IS the
+ *  signature; "drawn" — a legacy signature-pad image. */
+export type SignatureMethod = "typed" | "drawn";
+
 /** The client's ESIGN-style signature record on a quote (signature =
- *  approval). The raw signature image (data URL) is stored alongside,
- *  staff-visible only; clients and API consumers see the hash, name,
- *  and timestamp. */
+ *  approval). For drawn signatures the raw image (data URL) is stored
+ *  alongside, staff-visible only; clients and API consumers see the hash,
+ *  name, and timestamp. Typed signatures store no image — the name is the
+ *  signature, rendered in a signature style wherever it is displayed. */
 export interface QuoteSignature {
   name: string;
   signed_at: string;
   attribution: string;
   signature_hash: string;
+  /** Drawn-signature image (data URL). Empty string for typed signatures. */
   signature_data_url: string;
+  /** Absent on records written before typed signatures shipped — those
+   *  are all drawn (they carry a data URL). */
+  method?: SignatureMethod;
+}
+
+/** The effective capture method of a stored signature record. Records
+ *  written before the `method` field existed are drawn when they carry a
+ *  data URL, typed otherwise. */
+export function signatureMethodOf(signature: QuoteSignature): SignatureMethod {
+  return signature.method ?? (signature.signature_data_url ? "drawn" : "typed");
 }
 
 /** A persisted quote. Versions are append-only: a requote supersedes by

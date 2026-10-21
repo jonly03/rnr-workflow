@@ -26,7 +26,10 @@ import {
   startIdentification,
   submitPublicIntake,
   subscribeStaffEvents,
+  suggestAddresses,
+  ApiError,
   UnauthorizedError,
+  type AddressSuggestion,
   type DecodedVehicle,
   type InvoiceBoardItem,
   type PublicIntakeStatus,
@@ -752,6 +755,9 @@ export function App() {
                                 ? ` · ${c.client_intake.customer_phone}`
                                 : ""}
                               {c.client_intake.note ? ` — “${c.client_intake.note}”` : ""}
+                              {c.client_intake.service_address
+                                ? ` · Service at: ${c.client_intake.service_address.formatted}`
+                                : ""}
                             </p>
                           )}
                           <PricingSummary item={c} />
@@ -1615,6 +1621,9 @@ function CaseDetail({
                 : ""}
               {item.client_intake.vin_ocr_suggestion
                 ? ` · VIN photo reads: ${item.client_intake.vin_ocr_suggestion} (suggestion only)`
+                : ""}
+              {item.client_intake.service_address
+                ? ` · Service at: ${item.client_intake.service_address.formatted}`
                 : ""}
             </p>
           )}
@@ -2651,6 +2660,7 @@ function QuoteCard({
             <dt>Validity</dt>
             <dd>{signed ? "Signed — no expiry" : quoteSlaLabel(quote.expires_at)}</dd>
           </dl>
+          {signed && <SignatureRender signature={quote.signature!} />}
           {error && <p className="error">{error}</p>}
           {!closed && (
             <div className="row">
@@ -3449,108 +3459,104 @@ function FulfillmentCard({
   );
 }
 
-/** Finger/stylus signature pad. Pointer Events cover touch, mouse, and pen;
- *  `touch-action: none` keeps the page from scrolling mid-stroke on phones. */
-function SignaturePad({ onChange }: { onChange: (dataUrl: string | null) => void }) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const drawing = useRef(false);
+/** A typed signature is valid only as a full name: first AND last name.
+ *  Mirrors the API rule — one word is not a signature. */
+export function isValidSignatureName(name: string): boolean {
+  return name.trim().split(/\s+/).filter(Boolean).length >= 2;
+}
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    canvas.width = Math.max(1, Math.round(rect.width * dpr));
-    canvas.height = Math.max(1, Math.round(rect.height * dpr));
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.scale(dpr, dpr);
-    ctx.lineWidth = 2.5;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.strokeStyle = "#111827";
-  }, []);
-
-  const point = (e: React.PointerEvent) => {
-    const rect = canvasRef.current!.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
-  };
-
-  const emit = () => {
-    const canvas = canvasRef.current;
-    onChange(canvas ? canvas.toDataURL("image/png") : null);
-  };
-
+/** The Signature field: the client types their first and last name — the
+ *  typed name IS the digital signature (no drawing pad). A live preview
+ *  shows the name rendered as it will appear once signed, and an inline
+ *  error explains the first + last name rule until the value satisfies it. */
+export function SignatureField({
+  value,
+  onChange
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const [touched, setTouched] = useState(false);
+  const valid = isValidSignatureName(value);
+  const showError = touched && value.trim().length > 0 && !valid;
   return (
     <div>
-      <canvas
-        ref={canvasRef}
-        data-testid="signature-pad"
-        aria-label="Signature pad — sign with your finger or stylus"
-        style={{
-          width: "100%",
-          height: 180,
-          border: "2px dashed #9ca3af",
-          borderRadius: 8,
-          background: "#ffffff",
-          touchAction: "none",
-          cursor: "crosshair"
-        }}
-        onPointerDown={e => {
-          const canvas = canvasRef.current;
-          const ctx = canvas?.getContext("2d");
-          if (!canvas || !ctx) return;
-          drawing.current = true;
-          canvas.setPointerCapture(e.pointerId);
-          const p = point(e);
-          ctx.beginPath();
-          ctx.moveTo(p.x, p.y);
-          // A dot for tap-only "signatures" so they still record ink.
-          ctx.lineTo(p.x + 0.5, p.y + 0.5);
-          ctx.stroke();
-          e.preventDefault();
-        }}
-        onPointerMove={e => {
-          if (!drawing.current) return;
-          const ctx = canvasRef.current?.getContext("2d");
-          if (!ctx) return;
-          const p = point(e);
-          ctx.lineTo(p.x, p.y);
-          ctx.stroke();
-          e.preventDefault();
-        }}
-        onPointerUp={e => {
-          if (!drawing.current) return;
-          drawing.current = false;
-          try { canvasRef.current?.releasePointerCapture(e.pointerId); } catch { /* noop */ }
-          emit();
-        }}
-        onPointerCancel={() => { drawing.current = false; }}
-      />
-      <button
-        type="button"
-        className="secondary"
-        style={{ marginTop: 8 }}
-        onClick={() => {
-          const canvas = canvasRef.current;
-          const ctx = canvas?.getContext("2d");
-          if (canvas && ctx) {
-            const rect = canvas.getBoundingClientRect();
-            ctx.clearRect(0, 0, rect.width, rect.height);
-          }
-          onChange(null);
-        }}
-      >
-        Clear
-      </button>
+      <label>
+        Signature
+        <input
+          type="text"
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          onBlur={() => setTouched(true)}
+          placeholder="First and last name"
+          autoComplete="name"
+          style={{ display: "block", width: "100%", marginTop: 4 }}
+        />
+      </label>
+      <p className="muted" style={{ marginTop: 6 }}>
+        Enter your first and last name in the signature field.
+      </p>
+      <div className="signature-preview" data-testid="signature-preview">
+        {value.trim() ? (
+          <span className="signature-render">{value.trim()}</span>
+        ) : (
+          <span className="signature-preview-placeholder">Your signature will appear here</span>
+        )}
+      </div>
+      {showError && (
+        <p className="error" role="alert">
+          Please enter your first and last name — both are needed to sign.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** How a stored signature is displayed. A typed signature is the client's
+ *  full name rendered in a signature style; a legacy drawn signature is
+ *  its image (staff surfaces carry the data URL; public projections never
+ *  do, so a drawn signature without an image falls back to the plain
+ *  name). Either way it is accompanied by the signed timestamp and an
+ *  electronically-signed caption. */
+export function SignatureRender({
+  signature
+}: {
+  signature: {
+    name: string;
+    signed_at: string;
+    method?: "typed" | "drawn";
+    signature_data_url?: string;
+  };
+}) {
+  const method = signature.method ?? (signature.signature_data_url ? "drawn" : "typed");
+  return (
+    <div className="signature-block" data-testid="signature-block">
+      {method === "typed" ? (
+        <span className="signature-render" data-testid="signature-render">
+          {signature.name}
+        </span>
+      ) : signature.signature_data_url ? (
+        <img
+          className="signature-image"
+          data-testid="signature-image"
+          src={signature.signature_data_url}
+          alt={`Signature of ${signature.name}`}
+        />
+      ) : (
+        <strong>{signature.name}</strong>
+      )}
+      <small className="signature-caption">
+        Electronically signed by {signature.name} on{" "}
+        {new Date(signature.signed_at).toLocaleString()}
+      </small>
     </div>
   );
 }
 
 /** Client-facing quote: totals only (never supplier cost/margins), channel-
- *  adapted labels, a signature pad, and a typed name. Signing = approval.
- *  After signing it becomes a read-only receipt. Opened by staff on a
- *  phone/tablet and handed to the customer. */
+ *  adapted labels, and a typed signature (first + last name). Signing =
+ *  approval. After signing it becomes a read-only receipt. Opened by staff
+ *  on a phone/tablet and handed to the customer. */
 function ClientQuoteView({
   item,
   onRefresh,
@@ -3562,7 +3568,6 @@ function ClientQuoteView({
 }) {
   const quote = item.quote;
   const [name, setName] = useState("");
-  const [sigUrl, setSigUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
@@ -3573,14 +3578,13 @@ function ClientQuoteView({
     !!quote && (quote.status === "EXPIRED" || new Date(quote.expires_at).getTime() <= Date.now());
 
   async function sign() {
-    if (!quote || !sigUrl) return;
+    if (!quote || !isValidSignatureName(name)) return;
     setBusy(true);
     setError(null);
     try {
       await performAction(item.id, "sign_quote", {
         name: name.trim(),
-        signature_data_url: sigUrl,
-        attribution: "client signature captured in-app"
+        attribution: "client typed signature in-app"
       });
       await onRefresh();
     } catch (e) {
@@ -3636,10 +3640,7 @@ function ClientQuoteView({
 
       {signed ? (
         <>
-          <p className="muted">
-            ✓ Signed by <strong>{quote.signature!.name}</strong> on{" "}
-            {new Date(quote.signature!.signed_at).toLocaleString()}.
-          </p>
+          <SignatureRender signature={quote.signature!} />
           <p className="muted">Thank you — please hand the device back to our staff.</p>
           <button className="secondary" onClick={onBack}>← Back to case</button>
         </>
@@ -3653,24 +3654,12 @@ function ClientQuoteView({
         </>
       ) : (
         <>
-          <label>
-            Printed name
-            <input
-              type="text"
-              value={name}
-              onChange={e => setName(e.target.value)}
-              placeholder="Type your full name"
-              autoComplete="name"
-              style={{ display: "block", width: "100%", marginTop: 4 }}
-            />
-          </label>
-          <p className="muted" style={{ marginTop: 12 }}>Sign below with your finger or stylus:</p>
-          <SignaturePad onChange={setSigUrl} />
+          <SignatureField value={name} onChange={setName} />
           {error && <p className="error">{error}</p>}
           <div className="row" style={{ marginTop: 12 }}>
             <button
               className="primary"
-              disabled={busy || !name.trim() || !sigUrl}
+              disabled={busy || !isValidSignatureName(name)}
               onClick={sign}
             >
               {busy ? "Signing…" : `Sign ${noun}`}
@@ -3723,7 +3712,6 @@ export function PublicQuotePage({ token }: { token: string }) {
   const [view, setView] = useState<PublicQuoteView | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [name, setName] = useState("");
-  const [sigUrl, setSigUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [trackingToken, setTrackingToken] = useState<string | null>(null);
@@ -3764,13 +3752,12 @@ export function PublicQuotePage({ token }: { token: string }) {
   const trackingUrl = trackingToken ? `${window.location.origin}/track/${trackingToken}` : null;
 
   async function sign() {
-    if (!sigUrl) return;
+    if (!isValidSignatureName(name)) return;
     setBusy(true);
     setError(null);
     try {
       const res = await signPublicQuote(token, {
-        name: name.trim(),
-        signature_data_url: sigUrl
+        name: name.trim()
       });
       setTrackingToken(res.tracking_token);
     } catch (e) {
@@ -3829,10 +3816,21 @@ export function PublicQuotePage({ token }: { token: string }) {
           </>
         ) : view.status === "APPROVED" ? (
           <>
-            <p>
-              ✓ Signed by <strong>{view.signed_by}</strong> on{" "}
-              {view.signed_at ? new Date(view.signed_at).toLocaleString() : ""}.
-            </p>
+            {view.signature_method === "typed" && view.signed_by && view.signed_at ? (
+              <SignatureRender
+                signature={{
+                  name: view.signed_by,
+                  signed_at: view.signed_at,
+                  method: "typed",
+                  signature_data_url: ""
+                }}
+              />
+            ) : (
+              <p>
+                ✓ Signed by <strong>{view.signed_by}</strong> on{" "}
+                {view.signed_at ? new Date(view.signed_at).toLocaleString() : ""}.
+              </p>
+            )}
             <p className="muted">Your job is underway — R&R will keep you posted.</p>
           </>
         ) : view.status === "EXPIRED" ? (
@@ -3848,24 +3846,12 @@ export function PublicQuotePage({ token }: { token: string }) {
               <strong>{validityLabel(view.expires_at, now)}</strong> — until{" "}
               {new Date(view.expires_at).toLocaleString()}.
             </p>
-            <label>
-              Printed name
-              <input
-                type="text"
-                value={name}
-                onChange={e => setName(e.target.value)}
-                placeholder="Type your full name"
-                autoComplete="name"
-                style={{ display: "block", width: "100%", marginTop: 4 }}
-              />
-            </label>
-            <p className="muted" style={{ marginTop: 12 }}>Sign below with your finger or stylus:</p>
-            <SignaturePad onChange={setSigUrl} />
+            <SignatureField value={name} onChange={setName} />
             {error && <p className="error">{error}</p>}
             <div className="row" style={{ marginTop: 12 }}>
               <button
                 className="primary"
-                disabled={busy || !name.trim() || !sigUrl}
+                disabled={busy || !isValidSignatureName(name)}
                 onClick={sign}
               >
                 {busy ? "Signing…" : `Sign & approve ${noun}`}
@@ -3989,7 +3975,12 @@ export function PublicTrackingPage({ token }: { token: string }) {
         )}
         {view.signed_by && (
           <small>
-            Quote approved by {view.signed_by}
+            Quote approved by{" "}
+            {view.signature_method === "typed" ? (
+              <span className="signature-render signature-render-inline">{view.signed_by}</span>
+            ) : (
+              view.signed_by
+            )}
             {view.signed_at ? ` on ${new Date(view.signed_at).toLocaleString()}` : ""}.
             This page refreshes automatically.
           </small>
@@ -4006,6 +3997,30 @@ const INTAKE_GLASS_OPTIONS: { id: GlassType; label: string }[] = [
   { id: "QUARTER_GLASS", label: "Quarter glass" },
   { id: "VENT_GLASS", label: "Vent glass" }
 ];
+
+/**
+ * Damage-photo caps for the intake glass card (Nelly, 2026-10-21): at
+ * most one photo per glass on the car, images only, and the same 10 MB
+ * per-file ceiling the API enforces with multer. The client blocks
+ * overflow here; the API rejects it again server-side — the client rule
+ * is UX, the server rule is the real gate.
+ */
+export const INTAKE_MAX_DAMAGE_PHOTOS = 6;
+export const INTAKE_MAX_PHOTO_BYTES = 10 * 1024 * 1024;
+
+interface IntakePhoto {
+  file: File;
+  /** Object-URL preview, or null where previews are unavailable. */
+  url: string | null;
+}
+
+function makePhotoPreviewUrl(file: File): string | null {
+  try {
+    return URL.createObjectURL(file);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * ISO 3779 VIN check — mirrors apps/api/src/vin-validation.ts so card 1
@@ -4029,6 +4044,29 @@ function isValidVin(vin: string): boolean {
   }
   const remainder = sum % 11;
   return v[8] === (remainder === 10 ? "X" : String(remainder));
+}
+
+/**
+ * US phone pre-check — mirrors the API's normalizeUsPhone so the
+ * contact card can gate Send exactly the way the server will judge
+ * the number. The server stays the real gate; this is UX only.
+ */
+function normalizeUsPhoneClient(raw: string): string | null {
+  let digits = raw.replace(/\D/g, "");
+  if (digits.length === 11 && digits.startsWith("1")) digits = digits.slice(1);
+  if (digits.length !== 10) return null;
+  if (!/^[2-9]/.test(digits)) return null;
+  return digits;
+}
+
+/** Vehicle-year bounds for the YMM path — mirrored server-side. */
+export const INTAKE_MIN_VEHICLE_YEAR = 1950;
+
+function isValidIntakeYear(raw: string): boolean {
+  const t = raw.trim();
+  if (!/^\d{4}$/.test(t)) return false;
+  const y = Number(t);
+  return y >= INTAKE_MIN_VEHICLE_YEAR && y <= new Date().getFullYear() + 1;
 }
 
 const INTAKE_STATUS_POLL_MS = 4000;
@@ -4131,11 +4169,15 @@ function IntakeLiveStatus({ statusToken }: { statusToken: string }) {
  * first, contact last — and a single POST /public/intake from the final
  * card creates a DIRECT case flagged CLIENT_QR. The customer gets a case
  * reference plus one promise: we'll text a quote link to their mobile.
+ *
+ * Three cards (Nelly, 2026-10-21 — supersedes the original four): (1)
+ * vehicle, (2) glass + optional damage photos, (3) contact. The old
+ * "What happened?" card is gone entirely — its free-text field was
+ * removed by product decision, not moved.
  */
 export function PublicIntakePage() {
   const [step, setStep] = useState(1);
   const [glassType, setGlassType] = useState<GlassType | "">("");
-  const [note, setNote] = useState("");
   const [vin, setVin] = useState("");
   const [showYmm, setShowYmm] = useState(false);
   const [year, setYear] = useState("");
@@ -4143,8 +4185,14 @@ export function PublicIntakePage() {
   const [model, setModel] = useState("");
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
+  const [addressQuery, setAddressQuery] = useState("");
+  const [address, setAddress] = useState<AddressSuggestion | null>(null);
+  const [suggestions, setSuggestions] = useState<AddressSuggestion[]>([]);
+  const [addressError, setAddressError] = useState<string | null>(null);
   const [vinPhoto, setVinPhoto] = useState<File | null>(null);
-  const [photos, setPhotos] = useState<File[]>([]);
+  const [photos, setPhotos] = useState<IntakePhoto[]>([]);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const photosRef = useRef<IntakePhoto[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<{
@@ -4154,10 +4202,15 @@ export function PublicIntakePage() {
   } | null>(null);
 
   const vinValue = vin.trim().toUpperCase();
-  const ymmComplete = Boolean(year.trim() && make.trim() && model.trim());
+  const yearValid = isValidIntakeYear(year);
+  const ymmComplete = Boolean(yearValid && make.trim() && model.trim());
   // An entered VIN stands alone (YMM hides beside it); with no VIN, the
   // "I don't have the VIN" expander's complete YMM is the vehicle ID.
   const vehicleReady = vinValue ? isValidVin(vinValue) : showYmm && ymmComplete;
+  // Contact-card gates, mirroring the server's validation pass.
+  const nameValid = name.trim().length >= 2;
+  const phoneValid = normalizeUsPhoneClient(phone) !== null;
+  const contactReady = nameValid && phoneValid && address !== null;
   const glassLabel = INTAKE_GLASS_OPTIONS.find(o => o.id === glassType)?.label ?? "";
   const vehicleRecap = vinValue
     ? `VIN ····${vinValue.slice(-4)}`
@@ -4166,6 +4219,113 @@ export function PublicIntakePage() {
       : "";
   const recap = [vehicleRecap, glassLabel].filter(Boolean).join(" · ");
 
+  // Revoke preview object URLs when the page goes away (removePhoto
+  // revokes its own as it goes).
+  useEffect(() => {
+    photosRef.current = photos;
+  }, [photos]);
+  useEffect(
+    () => () => {
+      for (const p of photosRef.current) {
+        if (p.url) URL.revokeObjectURL(p.url);
+      }
+    },
+    []
+  );
+
+  /**
+   * Address autocomplete on the contact card: debounced suggestion
+   * lookups as the customer types. This is the ONLY network traffic
+   * allowed before Send, and only on this card — cards 1-2 fetch
+   * nothing. Typing after a pick un-picks the address: free text is
+   * never submittable, only a suggestion the customer chose.
+   */
+  useEffect(() => {
+    if (step !== 3) return;
+    if (address && addressQuery === address.formatted) {
+      setSuggestions([]);
+      return;
+    }
+    const q = addressQuery.trim();
+    if (q.length < 3) {
+      setSuggestions([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      suggestAddresses(q)
+        .then(r => {
+          if (!cancelled) setSuggestions(r.suggestions ?? []);
+        })
+        .catch(() => {
+          // A failed lookup just means no list — the customer can retry
+          // by typing; it must never break the form.
+          if (!cancelled) setSuggestions([]);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [addressQuery, address, step]);
+
+  function onAddressQueryChange(value: string) {
+    setAddressQuery(value);
+    setAddressError(null);
+    if (address && value !== address.formatted) {
+      setAddress(null);
+    }
+  }
+
+  function pickAddress(suggestion: AddressSuggestion) {
+    setAddress(suggestion);
+    setAddressQuery(suggestion.formatted);
+    setSuggestions([]);
+    setAddressError(null);
+  }
+
+  /**
+   * Adds damage photos on the glass card, enforcing the caps: images
+   * only, ≤10 MB each, at most INTAKE_MAX_DAMAGE_PHOTOS total. Anything
+   * refused is named in a plain-language message — never silently dropped.
+   */
+  function addPhotos(list: FileList | File[]) {
+    const problems: string[] = [];
+    const valid: File[] = [];
+    for (const f of Array.from(list)) {
+      if (!f.type.startsWith("image/")) {
+        problems.push(`“${f.name}” isn't an image.`);
+      } else if (f.size > INTAKE_MAX_PHOTO_BYTES) {
+        problems.push(`“${f.name}” is larger than 10 MB.`);
+      } else {
+        valid.push(f);
+      }
+    }
+    const room = Math.max(INTAKE_MAX_DAMAGE_PHOTOS - photos.length, 0);
+    const toAdd = valid.slice(0, room);
+    if (valid.length > toAdd.length) {
+      problems.push(
+        `Up to ${INTAKE_MAX_DAMAGE_PHOTOS} photos — ${valid.length - toAdd.length} extra weren't added.`
+      );
+    }
+    if (toAdd.length > 0) {
+      setPhotos(prev => [
+        ...prev,
+        ...toAdd.map(file => ({ file, url: makePhotoPreviewUrl(file) }))
+      ]);
+    }
+    setPhotoError(problems.length > 0 ? problems.join(" ") : null);
+  }
+
+  function removePhoto(index: number) {
+    setPhotos(prev => {
+      const target = prev[index];
+      if (target?.url) URL.revokeObjectURL(target.url);
+      return prev.filter((_, i) => i !== index);
+    });
+    setPhotoError(null);
+  }
+
   function goBack() {
     setError(null);
     setStep(s => Math.max(1, s - 1));
@@ -4173,17 +4333,16 @@ export function PublicIntakePage() {
 
   function goNext() {
     setError(null);
-    setStep(s => Math.min(4, s + 1));
+    setStep(s => Math.min(3, s + 1));
   }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
-    // Cards 1-3 never submit: Enter/advance just moves to the next card
-    // when that card's gate is met. The one API call fires from card 4.
-    if (step < 4) {
+    // Cards 1-2 never submit: Enter/advance just moves to the next card
+    // when that card's gate is met. The one API call fires from card 3.
+    if (step < 3) {
       if (step === 1 && vehicleReady) goNext();
       if (step === 2 && glassType) goNext();
-      if (step === 3) goNext();
       return;
     }
     setError(null);
@@ -4195,19 +4354,25 @@ export function PublicIntakePage() {
       setError("Add your VIN, or your vehicle's year, make and model.");
       return;
     }
-    if (!name.trim()) {
+    if (!nameValid) {
       setError("We need your name.");
       return;
     }
-    if (!phone.trim()) {
-      setError("We need a mobile number to text your quote to.");
+    if (!phoneValid) {
+      setError("Enter a valid 10-digit US mobile number so we can text your quote.");
+      return;
+    }
+    if (!address) {
+      setAddressError(
+        "Start typing your address and pick it from the list — we need a real address for the car."
+      );
       return;
     }
     const form = new FormData();
     form.append("customer_name", name.trim());
     form.append("customer_phone", phone.trim());
     form.append("glass_type", glassType);
-    if (note.trim()) form.append("note", note.trim());
+    form.append("service_address", JSON.stringify(address));
     if (vinValue) {
       form.append("vin", vinValue);
     } else {
@@ -4216,7 +4381,7 @@ export function PublicIntakePage() {
       if (model.trim()) form.append("model", model.trim());
     }
     if (vinPhoto) form.append("vin_photo", vinPhoto);
-    for (const p of photos) form.append("photos", p);
+    for (const p of photos) form.append("photos", p.file);
     setBusy(true);
     try {
       const res = await submitPublicIntake(form);
@@ -4226,7 +4391,13 @@ export function PublicIntakePage() {
         statusToken: res.status_token ?? null
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong — please try again.");
+      // A field-level API error pins to its field (the service-address
+      // 400 names service_address); anything else is form-level.
+      if (err instanceof ApiError && err.field === "service_address") {
+        setAddressError(err.message);
+      } else {
+        setError(err instanceof Error ? err.message : "Something went wrong — please try again.");
+      }
     } finally {
       setBusy(false);
     }
@@ -4342,6 +4513,12 @@ export function PublicIntakePage() {
                 </label>
               </div>
             )}
+            {showYmm && !vinValue && year.trim() !== "" && !yearValid && (
+              <p className="muted">
+                Enter a 4-digit year between {INTAKE_MIN_VEHICLE_YEAR} and{" "}
+                {new Date().getFullYear() + 1}.
+              </p>
+            )}
           </>
         )}
 
@@ -4362,35 +4539,54 @@ export function PublicIntakePage() {
                 </button>
               ))}
             </div>
-          </>
-        )}
-
-        {step === 3 && (
-          <>
-            <h2>What happened? (optional)</h2>
-            <textarea
-              aria-label="What happened? (optional)"
-              value={note}
-              onChange={e => setNote(e.target.value)}
-              placeholder="e.g. Rock hit the windshield on the highway — crack is spreading"
-              rows={3}
-              style={{ display: "block", width: "100%", marginTop: 4 }}
-            />
             <label>
-              Damage photos (optional, up to 6)
+              Damage photos (optional, up to {INTAKE_MAX_DAMAGE_PHOTOS}) —{" "}
+              <span data-testid="intake-photo-count">
+                {photos.length}/{INTAKE_MAX_DAMAGE_PHOTOS} added
+              </span>
               <input
                 type="file"
                 accept="image/*"
                 multiple
-                onChange={e => setPhotos(Array.from(e.target.files ?? []).slice(0, 6))}
+                onChange={e => {
+                  addPhotos(e.target.files ?? []);
+                  // Reset so picking the same file again re-fires change.
+                  e.target.value = "";
+                }}
                 style={{ display: "block", marginTop: 4 }}
               />
             </label>
-            <p className="muted">Photos help us identify the right glass before we quote.</p>
+            {photoError && (
+              <p className="error" role="alert">
+                {photoError}
+              </p>
+            )}
+            {photos.length > 0 && (
+              <ul className="intake-photo-list">
+                {photos.map((p, i) => (
+                  <li key={`${p.file.name}-${i}`} className="intake-photo-item">
+                    {p.url && <img src={p.url} alt="" className="intake-photo-thumb" />}
+                    <span className="intake-photo-name">{p.file.name}</span>
+                    <button
+                      type="button"
+                      className="intake-photo-remove"
+                      aria-label={`Remove photo ${p.file.name}`}
+                      onClick={() => removePhoto(i)}
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="muted">
+              Photos help us identify the right glass before we quote — one
+              per broken glass is plenty.
+            </p>
           </>
         )}
 
-        {step === 4 && (
+        {step === 3 && (
           <>
             <h2>How do we reach you?</h2>
             {recap && <p className="intake-recap">{recap}</p>}
@@ -4416,6 +4612,52 @@ export function PublicIntakePage() {
                 style={{ display: "block", width: "100%", marginTop: 4 }}
               />
             </label>
+            {phone.trim() !== "" && !phoneValid && (
+              <p className="muted">Enter a valid 10-digit US mobile number.</p>
+            )}
+            <label>
+              Service address
+              <input
+                type="text"
+                value={addressQuery}
+                onChange={e => onAddressQueryChange(e.target.value)}
+                placeholder="Where will the car be? Start typing the address"
+                autoComplete="street-address"
+                role="combobox"
+                aria-expanded={suggestions.length > 0}
+                aria-controls="intake-address-list"
+                style={{ display: "block", width: "100%", marginTop: 4 }}
+              />
+            </label>
+            <p className="muted">
+              This is where we'll find the car — start typing and pick your
+              address from the list so it's a real one.
+            </p>
+            {suggestions.length > 0 && (
+              <ul className="intake-address-list" id="intake-address-list" role="listbox" aria-label="Address suggestions">
+                {suggestions.map(s => (
+                  <li key={s.place_id}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected="false"
+                      className="intake-address-option"
+                      onClick={() => pickAddress(s)}
+                    >
+                      {s.formatted}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {address && (
+              <p className="intake-address-picked">✓ Service address: {address.formatted}</p>
+            )}
+            {addressError && (
+              <p className="error" role="alert">
+                {addressError}
+              </p>
+            )}
             <small>
               Sending this creates your service case with R&R Finest Auto
               Glass. We'll review it and text your quote — you approve it
@@ -4445,15 +4687,10 @@ export function PublicIntakePage() {
             </button>
           )}
           {step === 3 && (
-            <button type="button" className="primary intake-next" onClick={goNext}>
-              {note.trim() || photos.length > 0 ? "Continue" : "Skip"}
-            </button>
-          )}
-          {step === 4 && (
             <button
               type="submit"
               className="primary intake-next"
-              disabled={busy || !name.trim() || !phone.trim()}
+              disabled={busy || !contactReady}
             >
               {busy ? "Sending…" : "Send request"}
             </button>
@@ -4462,11 +4699,11 @@ export function PublicIntakePage() {
 
         <div className="intake-steps">
           <div className="intake-dots" aria-hidden="true">
-            {[1, 2, 3, 4].map(n => (
+            {[1, 2, 3].map(n => (
               <span key={n} className={"intake-dot" + (n === step ? " active" : "")} />
             ))}
           </div>
-          <span className="intake-step-text">Step {step} of 4</span>
+          <span className="intake-step-text">Step {step} of 3</span>
         </div>
       </form>
     </div>

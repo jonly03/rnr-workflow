@@ -25,6 +25,7 @@ import type {
   QuoteSignature,
   QuoteSnapshot,
   QuoteStatus,
+  SignatureMethod,
   StaffUser,
   StaffUserRecord,
   StoreShape,
@@ -161,6 +162,7 @@ export interface SignQuoteInput {
   name: string;
   signatureHash: string;
   signatureDataUrl: string;
+  method: SignatureMethod;
   signedAt: string;
   attribution: string;
 }
@@ -785,7 +787,8 @@ export class JsonCaseStore implements CaseStore {
         signed_at: input.signedAt,
         attribution: input.attribution,
         signature_hash: input.signatureHash,
-        signature_data_url: input.signatureDataUrl
+        signature_data_url: input.signatureDataUrl,
+        method: input.method
       };
     }
     this.persist(next);

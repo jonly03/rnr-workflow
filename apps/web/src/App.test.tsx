@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App, cardOrderKey, DEFAULT_CARD_ORDER, describeEvent, filterQueueCases, groupInvoiceBoard, InvoiceBoard, invoicePaymentLabel, isStaffActionRequired, loadCardOrder, pinQuoteAfterPricing, PublicIntakePage, scanProgressForElapsed, shouldShowOverrideWarning, sortQueueCases } from "./App";
+import { App, cardOrderKey, DEFAULT_CARD_ORDER, describeEvent, filterQueueCases, groupInvoiceBoard, InvoiceBoard, invoicePaymentLabel, isStaffActionRequired, isValidSignatureName, loadCardOrder, pinQuoteAfterPricing, PublicIntakePage, PublicQuotePage, scanProgressForElapsed, shouldShowOverrideWarning, SignatureRender, sortQueueCases } from "./App";
 import type { InvoiceBoardItem } from "./api";
 import type { CaseRecord, CaseEvent } from "./types";
 
@@ -384,16 +384,42 @@ describe("public intake page (QR front door)", () => {
 
   const VALID_VIN = "1HGCM82633A004352"; // ISO 3779 check digit valid
 
-  function stubIntakeFetch() {
-    const state: { url: string; body: FormData | null; calls: number } = {
+  /** The mock provider's Terrace St fixture, as the suggest endpoint returns it. */
+  const ADDRESS_FIXTURE = {
+    place_id: "mock:terrace-118",
+    formatted: "118 Terrace St, Boston, MA 02120",
+    street: "118 Terrace St",
+    city: "Boston",
+    state: "Massachusetts",
+    zip: "02120",
+    lat: 42.3349,
+    lon: -71.0828
+  };
+
+  function stubIntakeFetch(options: { failIntakeWithField?: string } = {}) {
+    const state: {
+      url: string;
+      body: FormData | null;
+      calls: number;
+      requests: { url: string; method: string }[];
+    } = {
       url: "",
       body: null,
-      calls: 0
+      calls: 0,
+      requests: []
     };
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string | URL | Request, init?: { body?: unknown; method?: string }) => {
         const u = String(url);
+        state.requests.push({ url: u, method: init?.method ?? "GET" });
+        // Address suggestions (contact card only).
+        if (u.includes("/public/address/suggest")) {
+          return {
+            ok: true,
+            json: async () => ({ suggestions: [ADDRESS_FIXTURE] })
+          };
+        }
         // Live-progress endpoints behind the confirmation's status token.
         if (u.includes("/public/intake-status/") && init?.method === "POST") {
           return {
@@ -423,6 +449,20 @@ describe("public intake page (QR front door)", () => {
         state.calls += 1;
         state.url = u;
         state.body = (init?.body as FormData) ?? null;
+        if (options.failIntakeWithField) {
+          return {
+            ok: false,
+            status: 400,
+            json: async () => ({
+              error: {
+                code: "VALIDATION_ERROR",
+                message:
+                  "Pick the address where we'll find the car from the suggestions, so we have a real address.",
+                details: { field: options.failIntakeWithField }
+              }
+            })
+          };
+        }
         return {
           ok: true,
           json: async () => ({
@@ -438,11 +478,22 @@ describe("public intake page (QR front door)", () => {
     return state;
   }
 
+  /** Type an address query on the contact card and pick the Terrace St suggestion. */
+  async function pickServiceAddress() {
+    fireEvent.change(screen.getByLabelText(/service address/i), {
+      target: { value: "118 Terr" }
+    });
+    const option = await screen.findByRole("option", {
+      name: /118 Terrace St, Boston, MA 02120/
+    });
+    fireEvent.click(option);
+  }
+
   function continueButton() {
     return screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement;
   }
 
-  /** Walk card 1 (valid VIN) and card 2 (Windshield) to land on card 3. */
+  /** Walk card 1 (valid VIN) and card 2 (Windshield) to land on card 3 (contact). */
   function walkToCard3() {
     fireEvent.change(screen.getByLabelText(/^VIN/), {
       target: { value: VALID_VIN }
@@ -452,7 +503,7 @@ describe("public intake page (QR front door)", () => {
     fireEvent.click(continueButton());
   }
 
-  it("walks the 4 cards in order and submits the same payload shape as the one-page form — no prices anywhere", async () => {
+  it("walks the 3 cards in order and submits the same payload shape as the one-page form — no prices anywhere", async () => {
     const posted = stubIntakeFetch();
     render(<PublicIntakePage />);
 
@@ -460,7 +511,7 @@ describe("public intake page (QR front door)", () => {
     expect(
       screen.getByRole("heading", { name: "How can we service your auto glass?" })
     ).toBeInTheDocument();
-    expect(screen.getByText("Step 1 of 4")).toBeInTheDocument();
+    expect(screen.getByText("Step 1 of 3")).toBeInTheDocument();
     expect(screen.queryByRole("radio", { name: "Windshield" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/^Year/)).not.toBeInTheDocument();
     expect(screen.getByLabelText(/scan vin/i)).toBeInTheDocument();
@@ -479,22 +530,30 @@ describe("public intake page (QR front door)", () => {
     fireEvent.click(continueButton());
 
     // Card 2: headline is card-1 only; picking a glass enables Continue.
-    expect(screen.getByText("Step 2 of 4")).toBeInTheDocument();
+    // The damage-photo upload lives here now (it moved off the removed
+    // "What happened?" card) — and that card's free-text field is gone
+    // entirely, not relocated.
+    expect(screen.getByText("Step 2 of 3")).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "How can we service your auto glass?" })
     ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/what happened/i)).not.toBeInTheDocument();
     expect(continueButton().disabled).toBe(true);
     fireEvent.click(screen.getByRole("radio", { name: "Windshield" }));
     expect(continueButton().disabled).toBe(false);
+    const damagePhoto = new File(["crack-bytes"], "crack.jpg", { type: "image/jpeg" });
+    fireEvent.change(screen.getByLabelText(/damage photos/i), {
+      target: { files: [damagePhoto] }
+    });
+    expect(screen.getByTestId("intake-photo-count")).toHaveTextContent("1/6 added");
     fireEvent.click(continueButton());
 
-    // Card 3 is skippable untouched.
-    expect(screen.getByText("Step 3 of 4")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Skip" }));
-
-    // Card 4: recap line, and Send stays blocked until name + mobile.
-    expect(screen.getByText("Step 4 of 4")).toBeInTheDocument();
+    // Card 3 is the contact card — there is no card 4 anymore.
+    expect(screen.getByText("Step 3 of 3")).toBeInTheDocument();
     expect(screen.getByText(/····4352 · Windshield/)).toBeInTheDocument();
+    // The fetch law: cards 1-2 made NO network calls at all. On the
+    // contact card, only address-suggest GETs may fire before Send.
+    expect(posted.requests).toHaveLength(0);
     const send = screen.getByRole("button", { name: "Send request" }) as HTMLButtonElement;
     expect(send.disabled).toBe(true);
     fireEvent.change(screen.getByLabelText(/your name/i), {
@@ -504,9 +563,17 @@ describe("public intake page (QR front door)", () => {
     fireEvent.change(screen.getByLabelText(/mobile phone/i), {
       target: { value: "(617) 555-0142" }
     });
+    // Name + phone alone don't open Send: a picked service address is
+    // also required.
+    expect(send.disabled).toBe(true);
+    await pickServiceAddress();
     expect(send.disabled).toBe(false);
-    // Nothing was submitted before this final card.
+    // Still nothing submitted — and every request so far was a suggest GET.
     expect(posted.calls).toBe(0);
+    expect(posted.requests.length).toBeGreaterThan(0);
+    expect(
+      posted.requests.every(r => r.url.includes("/public/address/suggest") && r.method === "GET")
+    ).toBe(true);
     fireEvent.click(send);
 
     expect(await screen.findByRole("heading", { name: /Request received/ })).toBeInTheDocument();
@@ -517,8 +584,17 @@ describe("public intake page (QR front door)", () => {
     expect(posted.body!.get("glass_type")).toBe("WINDSHIELD");
     expect(posted.body!.get("vin")).toBe(VALID_VIN);
     expect(posted.body!.get("vin_photo")).toBe(vinPhoto);
+    // The damage photo picked up on card 2 rides along; the removed
+    // "What happened?" note field is never sent.
+    expect(posted.body!.getAll("photos")).toEqual([damagePhoto]);
+    expect(posted.body!.get("note")).toBeNull();
     expect(posted.body!.get("customer_name")).toBe("Jane Customer");
     expect(posted.body!.get("customer_phone")).toBe("(617) 555-0142");
+    // The picked service address rides as structured JSON with its
+    // provider place id — exactly what the API validates and stores.
+    expect(JSON.parse(posted.body!.get("service_address") as string)).toEqual(
+      ADDRESS_FIXTURE
+    );
     // The confirmation page completes itself: live progress polls behind
     // the status token, sees the quote ready, and hands over the sign
     // link — no staff click, no waiting for a text.
@@ -529,6 +605,84 @@ describe("public intake page (QR front door)", () => {
     expect(screen.getByText("Quote ready to sign")).toBeInTheDocument();
     // Prices come with the quote, never at intake.
     expect(document.body.textContent ?? "").not.toMatch(/\$\d/);
+  });
+
+  it("contact card gates: name ≥ 2 chars, phone must normalize to 10 US digits, address must be PICKED — free text never submits", async () => {
+    const posted = stubIntakeFetch();
+    render(<PublicIntakePage />);
+    walkToCard3();
+    const send = screen.getByRole("button", { name: "Send request" }) as HTMLButtonElement;
+
+    // A picked address + good phone, but a 1-char name: still blocked.
+    fireEvent.change(screen.getByLabelText(/your name/i), { target: { value: "J" } });
+    fireEvent.change(screen.getByLabelText(/mobile phone/i), {
+      target: { value: "(617) 555-0142" }
+    });
+    await pickServiceAddress();
+    expect(send.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText(/your name/i), {
+      target: { value: "Jane Customer" }
+    });
+    expect(send.disabled).toBe(false);
+
+    // A 7-digit number is not textable: blocked, with the hint showing.
+    fireEvent.change(screen.getByLabelText(/mobile phone/i), {
+      target: { value: "555-0142" }
+    });
+    expect(send.disabled).toBe(true);
+    expect(screen.getByText(/valid 10-digit US mobile number/)).toBeInTheDocument();
+    // +1 and punctuation are fine.
+    fireEvent.change(screen.getByLabelText(/mobile phone/i), {
+      target: { value: "+1 617 555 0142" }
+    });
+    expect(send.disabled).toBe(false);
+
+    // Typing over the picked address un-picks it: free text can't submit.
+    fireEvent.change(screen.getByLabelText(/service address/i), {
+      target: { value: "118 Terrace St, Boston, MA 02120 (trust me)" }
+    });
+    expect(send.disabled).toBe(true);
+    expect(posted.calls).toBe(0);
+    // Re-picking restores the gate.
+    const option = await screen.findByRole("option", {
+      name: /118 Terrace St, Boston, MA 02120/
+    });
+    fireEvent.click(option);
+    expect(send.disabled).toBe(false);
+    expect(screen.getByText(/✓ Service address:/)).toBeInTheDocument();
+  });
+
+  it("surfaces a server 400 for the address field under the address input, not as a form error", async () => {
+    stubIntakeFetch({ failIntakeWithField: "service_address" });
+    render(<PublicIntakePage />);
+    walkToCard3();
+    fireEvent.change(screen.getByLabelText(/your name/i), {
+      target: { value: "Jane Customer" }
+    });
+    fireEvent.change(screen.getByLabelText(/mobile phone/i), {
+      target: { value: "(617) 555-0142" }
+    });
+    await pickServiceAddress();
+    fireEvent.click(screen.getByRole("button", { name: "Send request" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/Pick the address where we'll find the car/);
+    // No confirmation — the customer stays on the form to fix it.
+    expect(screen.queryByRole("heading", { name: /Request received/ })).not.toBeInTheDocument();
+  });
+
+  it("card 1 YMM path enforces the year range (1950..next year)", () => {
+    stubIntakeFetch();
+    render(<PublicIntakePage />);
+    fireEvent.click(screen.getByRole("button", { name: /I don't have the VIN/i }));
+    fireEvent.change(screen.getByLabelText(/^Make/), { target: { value: "Honda" } });
+    fireEvent.change(screen.getByLabelText(/^Model/), { target: { value: "Accord" } });
+    fireEvent.change(screen.getByLabelText(/^Year/), { target: { value: "1800" } });
+    expect(continueButton().disabled).toBe(true);
+    expect(screen.getByText(/4-digit year between 1950/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/^Year/), { target: { value: "202" } });
+    expect(continueButton().disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText(/^Year/), { target: { value: "2020" } });
+    expect(continueButton().disabled).toBe(false);
   });
 
   it("gates card 1 on a valid VIN or the 'I don't have the VIN' expander with complete YMM", () => {
@@ -560,19 +714,56 @@ describe("public intake page (QR front door)", () => {
     expect(continueButton().disabled).toBe(false);
   });
 
-  it("card 3 reads Skip while empty and Continue once anything is added, and always advances", () => {
+  it("damage photos on card 2: live count, per-photo remove, 6-photo cap, image-only and 10 MB rules", () => {
     stubIntakeFetch();
     render(<PublicIntakePage />);
-    walkToCard3();
-    expect(screen.getByText("Step 3 of 4")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Skip" })).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText(/what happened/i), {
-      target: { value: "Rock chip on the highway" }
+    // Land on card 2.
+    fireEvent.change(screen.getByLabelText(/^VIN/), {
+      target: { value: VALID_VIN }
     });
-    expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    expect(screen.getByText("Step 4 of 4")).toBeInTheDocument();
-    // The note rides along in the recap-free payload path: recap shows vehicle + glass.
+    fireEvent.click(continueButton());
+    expect(screen.getByText("Step 2 of 3")).toBeInTheDocument();
+    const photoInput = () => screen.getByLabelText(/damage photos/i);
+    const img = (name: string, size = 8) =>
+      new File([new Uint8Array(size)], name, { type: "image/jpeg" });
+
+    expect(screen.getByTestId("intake-photo-count")).toHaveTextContent("0/6 added");
+    fireEvent.change(photoInput(), {
+      target: { files: [img("a.jpg"), img("b.jpg"), img("c.jpg")] }
+    });
+    expect(screen.getByTestId("intake-photo-count")).toHaveTextContent("3/6 added");
+    expect(screen.getByText("b.jpg")).toBeInTheDocument();
+
+    // Per-photo remove.
+    fireEvent.click(screen.getByRole("button", { name: "Remove photo b.jpg" }));
+    expect(screen.getByTestId("intake-photo-count")).toHaveTextContent("2/6 added");
+    expect(screen.queryByText("b.jpg")).not.toBeInTheDocument();
+
+    // The cap is hard: offering 5 more when 2 are present adds only 4
+    // and says so — the 7th photo never lands.
+    fireEvent.change(photoInput(), {
+      target: { files: [img("d.jpg"), img("e.jpg"), img("f.jpg"), img("g.jpg"), img("h.jpg")] }
+    });
+    expect(screen.getByTestId("intake-photo-count")).toHaveTextContent("6/6 added");
+    expect(screen.queryByText("h.jpg")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/Up to 6 photos/);
+
+    // Non-images and oversized files are refused by name.
+    fireEvent.click(screen.getByRole("button", { name: "Remove photo a.jpg" }));
+    fireEvent.change(photoInput(), {
+      target: { files: [new File(["x"], "notes.txt", { type: "text/plain" })] }
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(/notes\.txt.*isn't an image/);
+    fireEvent.change(photoInput(), {
+      target: { files: [img("huge.jpg", 10 * 1024 * 1024 + 1)] }
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(/huge\.jpg.*larger than 10 MB/);
+    expect(screen.getByTestId("intake-photo-count")).toHaveTextContent("5/6 added");
+
+    // Photos never gate the card: with a glass picked, Continue works.
+    fireEvent.click(screen.getByRole("radio", { name: "Windshield" }));
+    fireEvent.click(continueButton());
+    expect(screen.getByText("Step 3 of 3")).toBeInTheDocument();
     expect(screen.getByText(/····4352 · Windshield/)).toBeInTheDocument();
   });
 
@@ -583,9 +774,9 @@ describe("public intake page (QR front door)", () => {
       target: { value: VALID_VIN }
     });
     fireEvent.click(continueButton());
-    expect(screen.getByText("Step 2 of 4")).toBeInTheDocument();
+    expect(screen.getByText("Step 2 of 3")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Back/i }));
-    expect(screen.getByText("Step 1 of 4")).toBeInTheDocument();
+    expect(screen.getByText("Step 1 of 3")).toBeInTheDocument();
     expect((screen.getByLabelText(/^VIN/) as HTMLInputElement).value).toBe(VALID_VIN);
   });
 });
@@ -732,5 +923,164 @@ describe("invoice payment labels and board grouping (Slice D)", () => {
       render(<InvoiceBoard onOpenCase={vi.fn()} />);
       expect(await screen.findByText("No invoices in this state yet.")).toBeInTheDocument();
     });
+  });
+});
+
+describe("typed quote signature", () => {
+  afterEach(() => cleanup());
+
+  it("requires a first AND last name", () => {
+    expect(isValidSignatureName("")).toBe(false);
+    expect(isValidSignatureName("   ")).toBe(false);
+    expect(isValidSignatureName("Jane")).toBe(false);
+    expect(isValidSignatureName(" Jane ")).toBe(false);
+    expect(isValidSignatureName("Jane Customer")).toBe(true);
+    expect(isValidSignatureName("Jane  Customer")).toBe(true);
+    expect(isValidSignatureName("Mary Jane Watson")).toBe(true);
+  });
+
+  const baseView = {
+    reference: "RRA-000042",
+    channel: "DIRECT",
+    noun: "quote",
+    vehicle: { year: 2020, make: "Honda", model: "Accord" },
+    glass_type: "WINDSHIELD",
+    labor_cents: 12500,
+    tax_cents: 1000,
+    total_cents: 40000,
+    quote_version: 1,
+    expires_at: "2099-01-01T00:00:00.000Z",
+    signed_by: null,
+    signed_at: null,
+    signature_method: null
+  };
+
+  function stubQuoteFetch(view: Record<string, unknown>) {
+    const posts: { url: string; body: string }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: { body?: unknown; method?: string }) => {
+        const u = String(url);
+        if (u.includes("/sign") && init?.method === "POST") {
+          posts.push({ url: u, body: String(init.body ?? "") });
+          return {
+            ok: true,
+            json: async () => ({
+              ok: true,
+              status: "APPROVED",
+              invoice_version: 1,
+              tracking_token: "rnappr_tracktoken"
+            })
+          };
+        }
+        return { ok: true, json: async () => view };
+      })
+    );
+    return posts;
+  }
+
+  it("signs with a typed name only — no pad, live preview, inline error", async () => {
+    const posts = stubQuoteFetch({ ...baseView, status: "AWAITING_SIGNATURE" });
+    render(<PublicQuotePage token="rnappr_testtoken" />);
+
+    // The form: one Signature field, the instruction from the pattern, and
+    // NO drawing canvas anywhere.
+    const field = (await screen.findByLabelText(/^Signature$/)) as HTMLInputElement;
+    expect(screen.getByText("Enter your first and last name in the signature field.")).toBeInTheDocument();
+    expect(document.querySelector("canvas")).toBeNull();
+    expect(screen.queryByTestId("signature-pad")).not.toBeInTheDocument();
+
+    const signButton = screen.getByRole("button", { name: /Sign & approve quote/ }) as HTMLButtonElement;
+    expect(signButton.disabled).toBe(true);
+
+    // One word: inline error after blur, button stays disabled, and the
+    // preview still renders what was typed.
+    fireEvent.change(field, { target: { value: "Jane" } });
+    fireEvent.blur(field);
+    expect(await screen.findByText(/first and last name — both are needed to sign/)).toBeInTheDocument();
+    expect(signButton.disabled).toBe(true);
+    const preview = screen.getByTestId("signature-preview");
+    expect(preview.querySelector(".signature-render")?.textContent).toBe("Jane");
+
+    // First + last name: error clears, button enables, signing posts the
+    // name with NO signature_data_url.
+    fireEvent.change(field, { target: { value: "Jane Customer" } });
+    expect(screen.queryByText(/both are needed to sign/)).not.toBeInTheDocument();
+    expect(signButton.disabled).toBe(false);
+    fireEvent.click(signButton);
+
+    expect(
+      await screen.findByText(/your quote is approved and your invoice has been created/)
+    ).toBeInTheDocument();
+    expect(posts).toHaveLength(1);
+    const body = JSON.parse(posts[0].body) as Record<string, unknown>;
+    expect(body.name).toBe("Jane Customer");
+    expect(body).not.toHaveProperty("signature_data_url");
+  });
+
+  it("renders an approved typed signature as the name in a signature style", async () => {
+    stubQuoteFetch({
+      ...baseView,
+      status: "APPROVED",
+      signed_by: "Jane Customer",
+      signed_at: "2026-10-21T14:00:00.000Z",
+      signature_method: "typed"
+    });
+    render(<PublicQuotePage token="rnappr_testtoken" />);
+
+    const rendered = await screen.findByTestId("signature-render");
+    expect(rendered.textContent).toBe("Jane Customer");
+    expect(rendered).toHaveClass("signature-render");
+    expect(screen.getByText(/Electronically signed by Jane Customer/)).toBeInTheDocument();
+    expect(screen.queryByTestId("signature-image")).not.toBeInTheDocument();
+  });
+
+  it("keeps a legacy drawn signature on the public page as plain text (image is staff-only)", async () => {
+    stubQuoteFetch({
+      ...baseView,
+      status: "APPROVED",
+      signed_by: "Jane Customer",
+      signed_at: "2026-10-21T14:00:00.000Z",
+      signature_method: "drawn"
+    });
+    render(<PublicQuotePage token="rnappr_testtoken" />);
+
+    expect(await screen.findByText(/Signed by/)).toBeInTheDocument();
+    expect(screen.queryByTestId("signature-render")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("signature-image")).not.toBeInTheDocument();
+  });
+
+  it("SignatureRender: typed records render the styled name + caption", () => {
+    render(
+      <SignatureRender
+        signature={{
+          name: "Jane Customer",
+          signed_at: "2026-10-21T14:00:00.000Z",
+          method: "typed",
+          signature_data_url: ""
+        }}
+      />
+    );
+    const rendered = screen.getByTestId("signature-render");
+    expect(rendered.textContent).toBe("Jane Customer");
+    expect(screen.getByText(/Electronically signed by Jane Customer/)).toBeInTheDocument();
+    expect(screen.queryByTestId("signature-image")).not.toBeInTheDocument();
+  });
+
+  it("SignatureRender: legacy drawn records (no method) render as their image", () => {
+    const dataUrl = "data:image/png;base64,iVBORw0KGgo=";
+    render(
+      <SignatureRender
+        signature={{
+          name: "Jane Customer",
+          signed_at: "2026-10-21T14:00:00.000Z",
+          signature_data_url: dataUrl
+        }}
+      />
+    );
+    const img = screen.getByTestId("signature-image") as HTMLImageElement;
+    expect(img.src).toBe(dataUrl);
+    expect(screen.queryByTestId("signature-render")).not.toBeInTheDocument();
+    expect(screen.getByText(/Electronically signed by Jane Customer/)).toBeInTheDocument();
   });
 });

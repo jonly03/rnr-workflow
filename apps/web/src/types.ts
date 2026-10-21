@@ -74,6 +74,19 @@ export interface PriceCalculation {
   created_at: string;
 }
 
+/** The service address a customer picked from the geocoder's
+ *  suggestions at intake — where the car will be serviced. */
+export interface ServiceAddress {
+  formatted: string;
+  street: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+  lat: number | null;
+  lon: number | null;
+  place_id: string | null;
+}
+
 /** Staff-only projection of a client self-service intake (QR front door).
  *  Present when the customer created the case themselves; null for
  *  staff-created cases. Customer contact lives here so staff can text
@@ -85,6 +98,7 @@ export interface ClientIntake {
   note: string | null;
   vin_ocr_suggestion: string | null;
   photo_count: number;
+  service_address: ServiceAddress | null;
   submitted_at: string;
 }
 
@@ -131,8 +145,13 @@ export interface QuoteSignature {
   signed_at: string;
   attribution: string;
   signature_hash: string;
-  /** Raw signature image. Staff-visible only — never rendered in the client view. */
+  /** Raw signature image for legacy drawn signatures. Staff-visible only —
+   *  never rendered in the client view. Empty for typed signatures. */
   signature_data_url: string;
+  /** "typed" — the typed first + last name IS the signature; "drawn" — a
+   *  legacy signature-pad image. Absent on pre-typed-signature records
+   *  (all drawn). */
+  method?: "typed" | "drawn";
 }
 
 export interface Quote {
