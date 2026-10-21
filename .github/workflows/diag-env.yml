@@ -1,0 +1,41 @@
+name: diag-env (throwaway)
+on: workflow_dispatch
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      API_PROJECT_ID: ${{ vars.VERCEL_API_PROJECT_ID }}
+      VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install --global vercel@latest
+      - name: Inspect API project preview env
+        working-directory: apps/api
+        env:
+          VERCEL_PROJECT_ID: ${{ env.API_PROJECT_ID }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          vercel pull --yes --environment=preview --token="$VERCEL_TOKEN"
+          echo '--- vercel env ls preview:'
+          vercel env ls preview --token="$VERCEL_TOKEN" || true
+          echo '--- keys in .vercel/.env.preview.local:'
+          grep -o '^[A-Za-z_][A-Za-z0-9_]*' .vercel/.env.preview.local | sort || true
+          echo '--- ADDRESS_PROVIDER in pulled env file (not a secret):'
+          grep '^ADDRESS_PROVIDER=' .vercel/.env.preview.local || echo 'ABSENT from pulled env file'
+      - name: Probe live staging API through the web alias
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo '--- health:'
+          curl -s -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" 'https://rnr-case-staging-zero-to100-edu.vercel.app/api/v1/health'
+          echo
+          echo '--- suggest q=118 Terr:'
+          curl -s -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" 'https://rnr-case-staging-zero-to100-edu.vercel.app/api/v1/public/address/suggest?q=118%20Terr'
+          echo
