@@ -1,4 +1,16 @@
-import type { CaseEvent, CaseRecord, Channel, GlassType } from "./types";
+import type {
+  AvailabilityWindow,
+  CaseEvent,
+  CaseRecord,
+  Channel,
+  GlassType,
+  JobAssignment,
+  Operator,
+  OperatorInviteView,
+  ScheduleBoardEntry,
+  SchedulerProposal,
+  TechProfile
+} from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001/api/v1";
 
@@ -690,6 +702,170 @@ export function createIntakeQuoteLink(statusToken: string) {
   return fetch(`${API_BASE}/public/intake-status/${statusToken}/quote-link`, {
     method: "POST"
   }).then(json<{ path: string; expires_at: string }>);
+}
+
+// ---------------------------------------------------------------------
+// Operators + scheduling (Slice A). All staff-authenticated; the API
+// enforces the role law (admin/owner manage, staff schedule, techs see
+// only /operators/me).
+// ---------------------------------------------------------------------
+
+/** Whether Google Sign-In is configured on this deployment. The sign-in
+ *  button/invite flows render only when this reports enabled. */
+export async function getGoogleConfig(): Promise<{ enabled: boolean }> {
+  try {
+    const response = await fetch(`${API_BASE}/auth/google/config`);
+    if (!response.ok) return { enabled: false };
+    return (await response.json()) as { enabled: boolean };
+  } catch {
+    return { enabled: false };
+  }
+}
+
+/** Absolute URL that starts the Google flow (optionally accepting an invite). */
+export function googleStartUrl(inviteCredential?: string): string {
+  const base = `${API_BASE}/auth/google/start`;
+  return inviteCredential
+    ? `${base}?invite=${encodeURIComponent(inviteCredential)}`
+    : base;
+}
+
+export interface OperatorsResponse {
+  operators: Operator[];
+  invites: OperatorInviteView[];
+}
+
+export function listOperators() {
+  return fetch(`${API_BASE}/operators`, { headers: authHeaders() }).then(
+    json<OperatorsResponse>
+  );
+}
+
+export function inviteOperator(email: string) {
+  return fetch(`${API_BASE}/operators/invites`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ email })
+  }).then(json<{ invite: OperatorInviteView; invite_path: string; credential: string }>);
+}
+
+export function revokeInvite(inviteId: string) {
+  return fetch(`${API_BASE}/operators/invites/${inviteId}`, {
+    method: "DELETE",
+    headers: authHeaders()
+  }).then(json<{ ok: boolean }>);
+}
+
+export function verifyOperator(
+  userId: string,
+  input: { qualifications?: string[]; availability?: AvailabilityWindow[] }
+) {
+  return fetch(`${API_BASE}/operators/${userId}/verify`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(input)
+  }).then(json<{ operator: Operator }>);
+}
+
+export function deactivateOperator(userId: string) {
+  return fetch(`${API_BASE}/operators/${userId}/deactivate`, {
+    method: "POST",
+    headers: authHeaders()
+  }).then(json<{ operator: Operator }>);
+}
+
+export function reactivateOperator(userId: string) {
+  return fetch(`${API_BASE}/operators/${userId}/reactivate`, {
+    method: "POST",
+    headers: authHeaders()
+  }).then(json<{ operator: Operator }>);
+}
+
+export function updateOperatorProfile(
+  userId: string,
+  patch: {
+    phone?: string | null;
+    home_base?: string | null;
+    service_area?: string | null;
+    qualifications?: string[];
+    availability?: AvailabilityWindow[];
+    live_status?: "AVAILABLE" | "OFF";
+  }
+) {
+  return fetch(`${API_BASE}/operators/${userId}/profile`, {
+    method: "PUT",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(patch)
+  }).then(json<{ operator: Operator }>);
+}
+
+export interface MyOperator {
+  staff: StaffUser;
+  status: string;
+  profile: TechProfile | null;
+}
+
+export function getMyOperator() {
+  return fetch(`${API_BASE}/operators/me`, { headers: authHeaders() }).then(
+    json<MyOperator>
+  );
+}
+
+export function updateMyProfile(input: {
+  phone: string;
+  home_base: string;
+  service_area: string;
+  claimed_qualifications: string[];
+  location_sharing_consent: boolean;
+}) {
+  return fetch(`${API_BASE}/operators/me/profile`, {
+    method: "PUT",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(input)
+  }).then(json<MyOperator>);
+}
+
+export interface AssignmentResponse {
+  job: (JobAssignment & { tech_name: string | null }) | null;
+  requirement: SchedulerProposal["requirement"];
+  proposals: SchedulerProposal | null;
+}
+
+export function getAssignment(caseId: string) {
+  return fetch(`${API_BASE}/cases/${caseId}/assignment`, {
+    headers: authHeaders()
+  }).then(json<AssignmentResponse>);
+}
+
+export function proposeAssignment(caseId: string, startIso: string, endIso: string) {
+  return fetch(`${API_BASE}/cases/${caseId}/assignment/propose`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ scheduled_start: startIso, scheduled_end: endIso })
+  }).then(json<{ job: JobAssignment; proposals: SchedulerProposal }>);
+}
+
+export function assignTech(
+  caseId: string,
+  input: {
+    tech_id: string;
+    scheduled_start: string;
+    scheduled_end: string;
+    override_reason?: string;
+  },
+  reassign = false
+) {
+  return fetch(`${API_BASE}/cases/${caseId}/assignment${reassign ? "/reassign" : ""}`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(input)
+  }).then(json<{ job: JobAssignment; case: CaseRecord }>);
+}
+
+export function getSchedule(date: string) {
+  return fetch(`${API_BASE}/schedule?date=${encodeURIComponent(date)}`, {
+    headers: authHeaders()
+  }).then(json<{ date: string; entries: ScheduleBoardEntry[] }>);
 }
 
 export function createCase(input: CreateCaseInput) {

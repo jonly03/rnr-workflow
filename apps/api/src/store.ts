@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
   ApprovalTokenRecord,
+  AvailabilityWindow,
   CaseEvent,
   CaseEventNotification,
   CaseRecord,
@@ -15,6 +16,8 @@ import type {
   IdentificationStatus,
   Invoice,
   InvoiceActuals,
+  Job,
+  OperatorInvite,
   PriceCalculation,
   PriceStatus,
   Quote,
@@ -26,6 +29,7 @@ import type {
   StoreShape,
   SupplierOffer,
   SupplierType,
+  TechProfile,
   Vehicle,
   VinLookupRecord
 } from "./types.js";
@@ -49,7 +53,8 @@ export interface CreateStaffUserInput {
   email: string;
   name: string;
   role: string;
-  passwordHash: string;
+  /** Null for Google-only accounts (techs): no local password exists. */
+  passwordHash: string | null;
   channels?: Channel[];
 }
 
@@ -167,6 +172,56 @@ export interface SaveInvoiceInput {
   actuals: InvoiceActuals;
 }
 
+export interface CreateTechProfileInput {
+  userId: string;
+  googleSub?: string | null;
+  googleRefreshCredential?: string | null;
+}
+
+export type TechProfilePatch = Partial<
+  Pick<
+    TechProfile,
+    | "status"
+    | "phone"
+    | "home_base"
+    | "service_area"
+    | "claimed_qualifications"
+    | "qualifications"
+    | "availability"
+    | "live_status"
+    | "location_sharing_consent"
+    | "google_sub"
+    | "google_refresh_credential"
+  >
+>;
+
+export interface CreateOperatorInviteInput {
+  email: string;
+  credentialHash: string;
+  invitedBy: string | null;
+  expiresAt: string;
+}
+
+export interface CreateJobInput {
+  caseId: string;
+}
+
+export type JobPatch = Partial<
+  Pick<
+    Job,
+    | "status"
+    | "assignment_mode"
+    | "assigned_tech_id"
+    | "scheduled_start"
+    | "scheduled_end"
+    | "calendar_event_id"
+  >
+>;
+
+// Re-exported so store consumers can type availability windows without a
+// second import path.
+export type { AvailabilityWindow };
+
 export interface SavePriceCalculationInput {
   caseId: string;
   glassRequestId: string;
@@ -254,6 +309,27 @@ export interface CaseStore {
   /** All invoice versions for a case, oldest first. */
   listInvoices(caseId: string): Promise<Invoice[]>;
   getLatestInvoice(caseId: string): Promise<Invoice | null>;
+  /** All operator accounts (staff/admin/owner/tech), oldest first. */
+  listStaffUsers(): Promise<StaffUserRecord[]>;
+  getStaffById(id: string): Promise<StaffUserRecord | null>;
+  /** Creates the tech profile for a freshly onboarded tech user. */
+  createTechProfile(input: CreateTechProfileInput): Promise<TechProfile>;
+  getTechProfile(userId: string): Promise<TechProfile | null>;
+  listTechProfiles(): Promise<TechProfile[]>;
+  updateTechProfile(userId: string, patch: TechProfilePatch): Promise<TechProfile>;
+  createOperatorInvite(input: CreateOperatorInviteInput): Promise<OperatorInvite>;
+  findOperatorInviteByHash(credentialHash: string): Promise<OperatorInvite | null>;
+  /** The newest unconsumed invite for an email, if one is still open. */
+  findOpenOperatorInviteByEmail(email: string): Promise<OperatorInvite | null>;
+  listOperatorInvites(): Promise<OperatorInvite[]>;
+  consumeOperatorInvite(id: string): Promise<void>;
+  deleteOperatorInvite(id: string): Promise<void>;
+  /** Creates the (single, v1) job for a case. Throws if one exists. */
+  createJob(input: CreateJobInput): Promise<Job>;
+  getJobByCase(caseId: string): Promise<Job | null>;
+  getJob(id: string): Promise<Job | null>;
+  listJobs(): Promise<Job[]>;
+  updateJob(id: string, patch: JobPatch): Promise<Job>;
 }
 
 const emptyStore = (): StoreShape => ({
@@ -263,6 +339,9 @@ const emptyStore = (): StoreShape => ({
   events: [],
   idempotency: {},
   staff_users: [],
+  tech_profiles: [],
+  operator_invites: [],
+  jobs: [],
   approval_tokens: [],
   glass_identifications: [],
   vin_lookups: [],
@@ -784,5 +863,150 @@ export class JsonCaseStore implements CaseStore {
   async getLatestInvoice(caseId: string): Promise<Invoice | null> {
     const matches = await this.listInvoices(caseId);
     return matches.length ? matches[matches.length - 1] : null;
+  }
+
+  async listStaffUsers(): Promise<StaffUserRecord[]> {
+    return [...this.data.staff_users].sort((a, b) =>
+      a.created_at.localeCompare(b.created_at)
+    );
+  }
+
+  async getStaffById(id: string): Promise<StaffUserRecord | null> {
+    return this.data.staff_users.find(u => u.id === id) ?? null;
+  }
+
+  async createTechProfile(input: CreateTechProfileInput): Promise<TechProfile> {
+    const now = new Date().toISOString();
+    const record: TechProfile = {
+      user_id: input.userId,
+      status: "PROFILE_PENDING",
+      phone: null,
+      home_base: null,
+      service_area: null,
+      claimed_qualifications: [],
+      qualifications: [],
+      availability: [],
+      live_status: "AVAILABLE",
+      location_sharing_consent: false,
+      google_sub: input.googleSub ?? null,
+      google_refresh_credential: input.googleRefreshCredential ?? null,
+      created_at: now,
+      updated_at: now
+    };
+    const next = structuredClone(this.data);
+    next.tech_profiles.push(record);
+    this.persist(next);
+    return record;
+  }
+
+  async getTechProfile(userId: string): Promise<TechProfile | null> {
+    return this.data.tech_profiles.find(p => p.user_id === userId) ?? null;
+  }
+
+  async listTechProfiles(): Promise<TechProfile[]> {
+    return [...this.data.tech_profiles];
+  }
+
+  async updateTechProfile(userId: string, patch: TechProfilePatch): Promise<TechProfile> {
+    const next = structuredClone(this.data);
+    const record = next.tech_profiles.find(p => p.user_id === userId);
+    if (!record) throw new Error("Tech profile not found.");
+    Object.assign(record, patch);
+    record.updated_at = new Date().toISOString();
+    this.persist(next);
+    return record;
+  }
+
+  async createOperatorInvite(input: CreateOperatorInviteInput): Promise<OperatorInvite> {
+    const record: OperatorInvite = {
+      id: randomUUID(),
+      email: input.email.trim().toLowerCase(),
+      credential_hash: input.credentialHash,
+      invited_by: input.invitedBy,
+      expires_at: input.expiresAt,
+      consumed_at: null,
+      created_at: new Date().toISOString()
+    };
+    const next = structuredClone(this.data);
+    next.operator_invites.push(record);
+    this.persist(next);
+    return record;
+  }
+
+  async findOperatorInviteByHash(credentialHash: string): Promise<OperatorInvite | null> {
+    return this.data.operator_invites.find(i => i.credential_hash === credentialHash) ?? null;
+  }
+
+  async findOpenOperatorInviteByEmail(email: string): Promise<OperatorInvite | null> {
+    const normalized = email.trim().toLowerCase();
+    const open = this.data.operator_invites.filter(
+      i => i.email === normalized && !i.consumed_at
+    );
+    return open.length ? open[open.length - 1] : null;
+  }
+
+  async listOperatorInvites(): Promise<OperatorInvite[]> {
+    return [...this.data.operator_invites].sort((a, b) =>
+      a.created_at.localeCompare(b.created_at)
+    );
+  }
+
+  async consumeOperatorInvite(id: string): Promise<void> {
+    const next = structuredClone(this.data);
+    const record = next.operator_invites.find(i => i.id === id);
+    if (!record || record.consumed_at) return;
+    record.consumed_at = new Date().toISOString();
+    this.persist(next);
+  }
+
+  async deleteOperatorInvite(id: string): Promise<void> {
+    const next = structuredClone(this.data);
+    next.operator_invites = next.operator_invites.filter(i => i.id !== id);
+    this.persist(next);
+  }
+
+  async createJob(input: CreateJobInput): Promise<Job> {
+    if (this.data.jobs.some(j => j.case_id === input.caseId)) {
+      throw new Error("A job already exists for this case.");
+    }
+    const now = new Date().toISOString();
+    const record: Job = {
+      id: randomUUID(),
+      case_id: input.caseId,
+      status: "UNASSIGNED",
+      assignment_mode: "DIRECT",
+      assigned_tech_id: null,
+      scheduled_start: null,
+      scheduled_end: null,
+      calendar_event_id: null,
+      created_at: now,
+      updated_at: now
+    };
+    const next = structuredClone(this.data);
+    next.jobs.push(record);
+    this.persist(next);
+    return record;
+  }
+
+  async getJobByCase(caseId: string): Promise<Job | null> {
+    return this.data.jobs.find(j => j.case_id === caseId) ?? null;
+  }
+
+  async getJob(id: string): Promise<Job | null> {
+    return this.data.jobs.find(j => j.id === id) ?? null;
+  }
+
+  async listJobs(): Promise<Job[]> {
+    return [...this.data.jobs];
+  }
+
+  async updateJob(id: string, patch: JobPatch): Promise<Job> {
+    const next = structuredClone(this.data);
+    const record = next.jobs.find(j => j.id === id);
+    if (!record) throw new Error("Job not found.");
+    Object.assign(record, patch);
+    record.updated_at = new Date().toISOString();
+    this.persist(next);
+    return record;
   }
 }

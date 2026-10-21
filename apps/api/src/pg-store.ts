@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type pg from "pg";
 import type {
   ApprovalTokenRecord,
+  AvailabilityWindow,
   CaseEvent,
   CaseEventNotification,
   CaseRecord,
@@ -10,6 +11,8 @@ import type {
   GlassRequest,
   Invoice,
   InvoiceActuals,
+  Job,
+  OperatorInvite,
   PriceCalculation,
   Quote,
   QuoteSnapshot,
@@ -17,6 +20,7 @@ import type {
   StaffUser,
   StaffUserRecord,
   SupplierOffer,
+  TechProfile,
   Vehicle,
   VinLookupRecord
 } from "./types.js";
@@ -25,7 +29,11 @@ import type {
   CaseStore,
   CreateApprovalTokenInput,
   CreateCaseStoreInput,
+  CreateJobInput,
+  CreateOperatorInviteInput,
   CreateStaffUserInput,
+  CreateTechProfileInput,
+  JobPatch,
   ReserveVinLookupSpendInput,
   ReserveVinLookupSpendResult,
   SaveGlassIdentificationInput,
@@ -35,6 +43,7 @@ import type {
   SaveSupplierOfferInput,
   SaveVinLookupInput,
   SignQuoteInput,
+  TechProfilePatch,
   VinLookupGlassResult
 } from "./store.js";
 import type { GlassType } from "./types.js";
@@ -220,6 +229,52 @@ function quoteRow(row: any): Quote {
     status: row.status as QuoteStatus,
     signature: row.signature == null ? null : parseJson(row.signature, null),
     created_at: iso(row.created_at)
+  };
+}
+
+function techProfileRow(row: any): TechProfile {
+  return {
+    user_id: row.user_id,
+    status: row.status,
+    phone: row.phone ?? null,
+    home_base: row.home_base ?? null,
+    service_area: row.service_area ?? null,
+    claimed_qualifications: parseJson<string[]>(row.claimed_qualifications, []),
+    qualifications: parseJson<string[]>(row.qualifications, []),
+    availability: parseJson<AvailabilityWindow[]>(row.availability, []),
+    live_status: row.live_status === "OFF" ? "OFF" : "AVAILABLE",
+    location_sharing_consent: Boolean(row.location_sharing_consent),
+    google_sub: row.google_sub ?? null,
+    google_refresh_credential: row.google_refresh_credential ?? null,
+    created_at: iso(row.created_at),
+    updated_at: iso(row.updated_at)
+  };
+}
+
+function operatorInviteRow(row: any): OperatorInvite {
+  return {
+    id: row.id,
+    email: row.email,
+    credential_hash: row.credential_hash,
+    invited_by: row.invited_by ?? null,
+    expires_at: iso(row.expires_at),
+    consumed_at: row.consumed_at ? iso(row.consumed_at) : null,
+    created_at: iso(row.created_at)
+  };
+}
+
+function jobRow(row: any): Job {
+  return {
+    id: row.id,
+    case_id: row.case_id,
+    status: row.status,
+    assignment_mode: row.assignment_mode === "OFFERED" ? "OFFERED" : "DIRECT",
+    assigned_tech_id: row.assigned_tech_id ?? null,
+    scheduled_start: row.scheduled_start ? iso(row.scheduled_start) : null,
+    scheduled_end: row.scheduled_end ? iso(row.scheduled_end) : null,
+    calendar_event_id: row.calendar_event_id ?? null,
+    created_at: iso(row.created_at),
+    updated_at: iso(row.updated_at)
   };
 }
 
@@ -918,5 +973,189 @@ export class PgCaseStore implements CaseStore {
       [caseId]
     );
     return result.rowCount ? invoiceRow(result.rows[0]) : null;
+  }
+
+  async listStaffUsers(): Promise<StaffUserRecord[]> {
+    const result = await this.pool.query(
+      "select * from staff_users order by created_at asc"
+    );
+    return result.rows.map(staffRow);
+  }
+
+  async getStaffById(id: string): Promise<StaffUserRecord | null> {
+    const result = await this.pool.query("select * from staff_users where id = $1", [id]);
+    return result.rowCount ? staffRow(result.rows[0]) : null;
+  }
+
+  async createTechProfile(input: CreateTechProfileInput): Promise<TechProfile> {
+    const now = new Date().toISOString();
+    await this.pool.query(
+      `insert into tech_profiles(user_id, status, google_sub, google_refresh_credential, created_at, updated_at)
+       values ($1, 'PROFILE_PENDING', $2, $3, $4, $4)`,
+      [input.userId, input.googleSub ?? null, input.googleRefreshCredential ?? null, now]
+    );
+    const created = await this.getTechProfile(input.userId);
+    if (!created) throw new Error("Tech profile could not be reloaded after create.");
+    return created;
+  }
+
+  async getTechProfile(userId: string): Promise<TechProfile | null> {
+    const result = await this.pool.query(
+      "select * from tech_profiles where user_id = $1",
+      [userId]
+    );
+    return result.rowCount ? techProfileRow(result.rows[0]) : null;
+  }
+
+  async listTechProfiles(): Promise<TechProfile[]> {
+    const result = await this.pool.query("select * from tech_profiles");
+    return result.rows.map(techProfileRow);
+  }
+
+  async updateTechProfile(userId: string, patch: TechProfilePatch): Promise<TechProfile> {
+    const columns: Record<string, string> = {
+      status: "status",
+      phone: "phone",
+      home_base: "home_base",
+      service_area: "service_area",
+      claimed_qualifications: "claimed_qualifications",
+      qualifications: "qualifications",
+      availability: "availability",
+      live_status: "live_status",
+      location_sharing_consent: "location_sharing_consent",
+      google_sub: "google_sub",
+      google_refresh_credential: "google_refresh_credential"
+    };
+    const jsonColumns = new Set(["claimed_qualifications", "qualifications", "availability"]);
+    const sets: string[] = [];
+    const values: unknown[] = [];
+    for (const [key, value] of Object.entries(patch)) {
+      const column = columns[key];
+      if (!column || value === undefined) continue;
+      values.push(jsonColumns.has(key) ? JSON.stringify(value) : value);
+      sets.push(`${column} = $${values.length}${jsonColumns.has(key) ? "::jsonb" : ""}`);
+    }
+    values.push(new Date().toISOString());
+    sets.push(`updated_at = $${values.length}`);
+    values.push(userId);
+    const result = await this.pool.query(
+      `update tech_profiles set ${sets.join(", ")} where user_id = $${values.length} returning *`,
+      values
+    );
+    if (!result.rowCount) throw new Error("Tech profile not found.");
+    return techProfileRow(result.rows[0]);
+  }
+
+  async createOperatorInvite(input: CreateOperatorInviteInput): Promise<OperatorInvite> {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    await this.pool.query(
+      `insert into operator_invites(id, email, credential_hash, invited_by, expires_at, consumed_at, created_at)
+       values ($1,$2,$3,$4,$5,null,$6)`,
+      [
+        id,
+        input.email.trim().toLowerCase(),
+        input.credentialHash,
+        input.invitedBy,
+        input.expiresAt,
+        now
+      ]
+    );
+    const result = await this.pool.query("select * from operator_invites where id = $1", [id]);
+    return operatorInviteRow(result.rows[0]);
+  }
+
+  async findOperatorInviteByHash(credentialHash: string): Promise<OperatorInvite | null> {
+    const result = await this.pool.query(
+      "select * from operator_invites where credential_hash = $1",
+      [credentialHash]
+    );
+    return result.rowCount ? operatorInviteRow(result.rows[0]) : null;
+  }
+
+  async findOpenOperatorInviteByEmail(email: string): Promise<OperatorInvite | null> {
+    const result = await this.pool.query(
+      `select * from operator_invites
+       where email = $1 and consumed_at is null
+       order by created_at desc limit 1`,
+      [email.trim().toLowerCase()]
+    );
+    return result.rowCount ? operatorInviteRow(result.rows[0]) : null;
+  }
+
+  async listOperatorInvites(): Promise<OperatorInvite[]> {
+    const result = await this.pool.query(
+      "select * from operator_invites order by created_at asc"
+    );
+    return result.rows.map(operatorInviteRow);
+  }
+
+  async consumeOperatorInvite(id: string): Promise<void> {
+    await this.pool.query(
+      `update operator_invites set consumed_at = now()
+       where id = $1 and consumed_at is null`,
+      [id]
+    );
+  }
+
+  async deleteOperatorInvite(id: string): Promise<void> {
+    await this.pool.query("delete from operator_invites where id = $1", [id]);
+  }
+
+  async createJob(input: CreateJobInput): Promise<Job> {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    await this.pool.query(
+      `insert into jobs(id, case_id, status, assignment_mode, assigned_tech_id,
+        scheduled_start, scheduled_end, calendar_event_id, created_at, updated_at)
+       values ($1,$2,'UNASSIGNED','DIRECT',null,null,null,null,$3,$3)`,
+      [id, input.caseId, now]
+    );
+    const created = await this.getJob(id);
+    if (!created) throw new Error("Job could not be reloaded after create.");
+    return created;
+  }
+
+  async getJobByCase(caseId: string): Promise<Job | null> {
+    const result = await this.pool.query("select * from jobs where case_id = $1", [caseId]);
+    return result.rowCount ? jobRow(result.rows[0]) : null;
+  }
+
+  async getJob(id: string): Promise<Job | null> {
+    const result = await this.pool.query("select * from jobs where id = $1", [id]);
+    return result.rowCount ? jobRow(result.rows[0]) : null;
+  }
+
+  async listJobs(): Promise<Job[]> {
+    const result = await this.pool.query("select * from jobs");
+    return result.rows.map(jobRow);
+  }
+
+  async updateJob(id: string, patch: JobPatch): Promise<Job> {
+    const columns: Record<string, string> = {
+      status: "status",
+      assignment_mode: "assignment_mode",
+      assigned_tech_id: "assigned_tech_id",
+      scheduled_start: "scheduled_start",
+      scheduled_end: "scheduled_end",
+      calendar_event_id: "calendar_event_id"
+    };
+    const sets: string[] = [];
+    const values: unknown[] = [];
+    for (const [key, value] of Object.entries(patch)) {
+      const column = columns[key];
+      if (!column || value === undefined) continue;
+      values.push(value);
+      sets.push(`${column} = $${values.length}`);
+    }
+    values.push(new Date().toISOString());
+    sets.push(`updated_at = $${values.length}`);
+    values.push(id);
+    const result = await this.pool.query(
+      `update jobs set ${sets.join(", ")} where id = $${values.length} returning *`,
+      values
+    );
+    if (!result.rowCount) throw new Error("Job not found.");
+    return jobRow(result.rows[0]);
   }
 }

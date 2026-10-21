@@ -6,9 +6,7 @@ import {
 } from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 import type { CaseStore } from "./store.js";
-import type { Channel, StaffUser } from "./types.js";
-
-const CHANNELS: Channel[] = ["DIRECT", "AUCTION", "INSURANCE"];
+import type { StaffUser } from "./types.js";
 
 declare global {
   namespace Express {
@@ -133,8 +131,17 @@ export function verifyToken(
 
 // --- Express middleware ---
 
-export function requireAuth(config: AuthConfig) {
-  return (req: Request, res: Response, next: NextFunction) => {
+/**
+ * Auth gate for every staff route. Beyond the JWT signature/expiry, the
+ * account is re-read from the store on each request so operator
+ * lifecycle changes take effect immediately: a deleted account's token
+ * dies at once, and a DEACTIVATED tech's token stops working the moment
+ * staff deactivate them (brief §7.1 — deactivation blocks sign-in).
+ * The staff object is built from the stored record, not the token, so
+ * role/channel changes apply without waiting for a re-login.
+ */
+export function requireAuth(store: CaseStore, config: AuthConfig) {
+  return async (req: Request, res: Response, next: NextFunction) => {
     const header = req.header("Authorization") ?? "";
     const match = /^Bearer (.+)$/.exec(header.trim());
     if (!match) {
@@ -151,17 +158,49 @@ export function requireAuth(config: AuthConfig) {
         }
       });
     }
+    const record = await store.getStaffById(payload.sub).catch(() => null);
+    if (!record) {
+      return res.status(401).json({
+        error: {
+          code: "UNAUTHORIZED",
+          message: "This session is no longer valid. Please sign in again."
+        }
+      });
+    }
+    if (record.role === "tech") {
+      const profile = await store.getTechProfile(record.id).catch(() => null);
+      if (!profile || profile.status === "DEACTIVATED") {
+        return res.status(401).json({
+          error: {
+            code: "ACCOUNT_INACTIVE",
+            message: "This account is not active. Please contact R&R."
+          }
+        });
+      }
+    }
     req.staff = {
-      id: payload.sub,
-      email: payload.email,
-      name: payload.name,
-      role: payload.role,
-      created_at: "",
-      ...(Array.isArray(payload.channels) &&
-      payload.channels.every(c => CHANNELS.includes(c as Channel))
-        ? { channels: payload.channels as Channel[] }
-        : {})
+      id: record.id,
+      email: record.email,
+      name: record.name,
+      role: record.role,
+      created_at: record.created_at,
+      ...(record.channels ? { channels: record.channels } : {})
     };
+    return next();
+  };
+}
+
+/** Role gate, applied after requireAuth. */
+export function requireRole(...roles: string[]) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (!req.staff || !roles.includes(req.staff.role)) {
+      return res.status(403).json({
+        error: {
+          code: "FORBIDDEN",
+          message: "Your role does not allow this action."
+        }
+      });
+    }
     return next();
   };
 }
