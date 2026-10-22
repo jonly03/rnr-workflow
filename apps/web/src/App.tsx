@@ -5824,7 +5824,12 @@ export function PublicIntakePage() {
   // Contact-card gates, mirroring the server's validation pass.
   const nameValid = name.trim().length >= 2;
   const phoneValid = normalizeUsPhoneClient(phone) !== null;
-  const contactReady = nameValid && phoneValid && address !== null;
+  // Demo relaxation (2026-10-22): a typed address opens Send too —
+  // a pick from the suggestion list is no longer required (no live
+  // address provider is configured yet). Restore `address !== null`
+  // when the picked-only rule returns.
+  const addressReady = address !== null || addressQuery.trim().length > 0;
+  const contactReady = nameValid && phoneValid && addressReady;
   const glassLabel = INTAKE_GLASS_OPTIONS.find(o => o.id === glassType)?.label ?? "";
   const vehicleRecap = vinValue
     ? `VIN ····${vinValue.slice(-4)}`
@@ -5976,9 +5981,9 @@ export function PublicIntakePage() {
       setError("Enter a valid 10-digit US mobile number so we can text your quote.");
       return;
     }
-    if (!address) {
+    if (!address && !addressQuery.trim()) {
       setAddressError(
-        "Start typing your address and pick it from the list — we need a real address for the car."
+        "Tell us where we'll find the car — type the address, or pick it from the list."
       );
       return;
     }
@@ -5986,7 +5991,9 @@ export function PublicIntakePage() {
     form.append("customer_name", name.trim());
     form.append("customer_phone", phone.trim());
     form.append("glass_type", glassType);
-    form.append("service_address", JSON.stringify(address));
+    // A picked suggestion rides with its structured fields; free text
+    // rides as the typed address alone (demo relaxation, 2026-10-22).
+    form.append("service_address", JSON.stringify(address ?? { formatted: addressQuery.trim() }));
     if (vinValue) {
       form.append("vin", vinValue);
     } else {
@@ -6244,8 +6251,8 @@ export function PublicIntakePage() {
               />
             </label>
             <p className="muted">
-              This is where we'll find the car — start typing and pick your
-              address from the list so it's a real one.
+              This is where we'll find the car — start typing and pick
+              your address from the list, or just type it in full.
             </p>
             {suggestions.length > 0 && (
               <ul className="intake-address-list" id="intake-address-list" role="listbox" aria-label="Address suggestions">

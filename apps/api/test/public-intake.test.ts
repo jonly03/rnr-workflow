@@ -230,23 +230,24 @@ describe("Public client intake (QR front door)", () => {
     expect(list.body).toHaveLength(0);
   });
 
-  it("requires a picked service address: missing or free-text-only is a 400 naming the field, and no case is created", async () => {
+  it("service address: a missing one is a 400 naming the field; free text is accepted (demo relaxation 2026-10-22)", async () => {
     const f = await fixture();
     const { service_address: _sa, ...noAddress } = VALID;
     const missing = await intake(f, noAddress).expect(400);
     expect(missing.body.error.code).toBe("VALIDATION_ERROR");
     expect(missing.body.error.details.field).toBe("service_address");
 
-    // A typed string is not a picked address.
-    const freeText = await intake(f, {
+    // Free text is accepted while no live address provider is
+    // configured: a plain typed string, and an object carrying only
+    // the formatted address (no place id), both create the case.
+    await intake(f, {
       ...VALID,
       service_address: "118 Terrace St, Boston, MA 02120"
-    }).expect(400);
-    expect(freeText.body.error.details.field).toBe("service_address");
-
-    // Missing place id / ZIP / city each fail the structured check.
+    }).expect(201);
     const { place_id: _pid, ...noPlaceId } = SERVICE_ADDRESS;
-    await intake(f, { ...VALID, service_address: noPlaceId }).expect(400);
+    await intake(f, { ...VALID, service_address: noPlaceId }).expect(201);
+
+    // Structured fields that ARE supplied are still validated.
     await intake(f, {
       ...VALID,
       service_address: { ...SERVICE_ADDRESS, zip: "0212" }
@@ -257,7 +258,7 @@ describe("Public client intake (QR front door)", () => {
     }).expect(400);
 
     const list = await staffGet(f, "/api/v1/cases").expect(200);
-    expect(list.body).toHaveLength(0);
+    expect(list.body).toHaveLength(2);
   });
 
   it("stores the picked service address on the intake event for staff", async () => {

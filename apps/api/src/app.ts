@@ -206,20 +206,26 @@ const publicIntakeSchema = z.object({
 });
 
 /**
- * The service address the customer PICKED from the suggestion list —
- * never free text. Validated separately from the main schema because
- * the client sends it as a JSON string inside the multipart form, and
- * because its failure mode is its own 400 (see the intake handler).
+ * The service address where the car will be serviced. A PICKED
+ * suggestion carries the full structured shape (place id, city, zip,
+ * coordinates); free text carries only `formatted`. Free text is
+ * accepted under the DEMO RELAXATION (2026-10-22, Nelly): no live
+ * address provider is configured yet, so requiring a pick made real
+ * addresses unsubmittable. Restore the picked-only rule (make the
+ * structured fields required again) once a provider is live.
+ * Validated separately from the main schema because the client sends
+ * it as a JSON string inside the multipart form, and because its
+ * failure mode is its own 400 (see the intake handler).
  */
 const serviceAddressSchema = z.object({
-  place_id: z.string().trim().min(1).max(160),
+  place_id: z.string().trim().min(1).max(160).optional(),
   formatted: z.string().trim().min(1).max(400),
   street: z.string().trim().max(200).nullable().optional(),
-  city: z.string().trim().min(1).max(120),
-  state: z.string().trim().min(2).max(80),
-  zip: z.string().trim().regex(/^\d{5}(-\d{4})?$/),
-  lat: z.number().min(-90).max(90),
-  lon: z.number().min(-180).max(180)
+  city: z.string().trim().min(1).max(120).optional(),
+  state: z.string().trim().min(2).max(80).optional(),
+  zip: z.string().trim().regex(/^\d{5}(-\d{4})?$/).optional(),
+  lat: z.number().min(-90).max(90).optional(),
+  lon: z.number().min(-180).max(180).optional()
 });
 
 export type ServiceAddress = z.infer<typeof serviceAddressSchema>;
@@ -1893,19 +1899,21 @@ export function createApp(
       }
       const input = parsed.data;
 
-      // Service address: REQUIRED, and it must be an address the
-      // customer picked from the suggestion list — structured fields
-      // with the provider's place id, not free text (a made-up address
-      // sends a tech to the wrong place). It arrives as a JSON string
-      // in the multipart form (or an object in a JSON body). A missing
-      // or malformed one is a 400 with the field named, so the UI can
-      // pin the error to the address field.
+      // Service address: REQUIRED, but free text is accepted (demo
+      // relaxation, 2026-10-22 — see serviceAddressSchema). A picked
+      // suggestion arrives as a JSON string in the multipart form (or
+      // an object in a JSON body); a plain non-JSON string is the
+      // typed address itself. A missing or empty one is a 400 with
+      // the field named, so the UI can pin the error to the field.
       let rawAddress: unknown = raw.service_address;
       if (typeof rawAddress === "string") {
         try {
           rawAddress = JSON.parse(rawAddress);
         } catch {
-          rawAddress = undefined;
+          // Not JSON at all — the string itself is the typed address.
+        }
+        if (typeof rawAddress === "string") {
+          rawAddress = rawAddress.trim() ? { formatted: rawAddress.trim() } : undefined;
         }
       }
       const parsedAddress = serviceAddressSchema.safeParse(rawAddress);
@@ -1914,7 +1922,7 @@ export function createApp(
           error: {
             code: "VALIDATION_ERROR",
             message:
-              "Pick the address where we'll find the car from the suggestions, so we have a real address.",
+              "Tell us where we'll find the car — type your address, or pick it from the suggestions.",
             details: { field: "service_address" }
           }
         });

@@ -457,7 +457,7 @@ describe("public intake page (QR front door)", () => {
               error: {
                 code: "VALIDATION_ERROR",
                 message:
-                  "Pick the address where we'll find the car from the suggestions, so we have a real address.",
+                  "Tell us where we'll find the car — type your address, or pick it from the suggestions.",
                 details: { field: options.failIntakeWithField }
               }
             })
@@ -563,8 +563,8 @@ describe("public intake page (QR front door)", () => {
     fireEvent.change(screen.getByLabelText(/mobile phone/i), {
       target: { value: "(617) 555-0142" }
     });
-    // Name + phone alone don't open Send: a picked service address is
-    // also required.
+    // Name + phone alone don't open Send: an address (typed or
+    // picked) is also required.
     expect(send.disabled).toBe(true);
     await pickServiceAddress();
     expect(send.disabled).toBe(false);
@@ -607,7 +607,7 @@ describe("public intake page (QR front door)", () => {
     expect(document.body.textContent ?? "").not.toMatch(/\$\d/);
   });
 
-  it("contact card gates: name ≥ 2 chars, phone must normalize to 10 US digits, address must be PICKED — free text never submits", async () => {
+  it("contact card gates: name ≥ 2 chars, phone must normalize to 10 US digits, address required — typed free text submits (demo relaxation)", async () => {
     const posted = stubIntakeFetch();
     render(<PublicIntakePage />);
     walkToCard3();
@@ -637,19 +637,19 @@ describe("public intake page (QR front door)", () => {
     });
     expect(send.disabled).toBe(false);
 
-    // Typing over the picked address un-picks it: free text can't submit.
+    // Typing over the picked address un-picks it, but free text still
+    // submits under the demo relaxation: Send stays open, and the
+    // posted address is the typed text alone (no place id).
     fireEvent.change(screen.getByLabelText(/service address/i), {
       target: { value: "118 Terrace St, Boston, MA 02120 (trust me)" }
     });
-    expect(send.disabled).toBe(true);
-    expect(posted.calls).toBe(0);
-    // Re-picking restores the gate.
-    const option = await screen.findByRole("option", {
-      name: /118 Terrace St, Boston, MA 02120/
-    });
-    fireEvent.click(option);
     expect(send.disabled).toBe(false);
-    expect(screen.getByText(/✓ Service address:/)).toBeInTheDocument();
+    fireEvent.click(send);
+    expect(await screen.findByRole("heading", { name: /Request received/ })).toBeInTheDocument();
+    expect(posted.calls).toBe(1);
+    expect(JSON.parse(posted.body!.get("service_address") as string)).toEqual({
+      formatted: "118 Terrace St, Boston, MA 02120 (trust me)"
+    });
   });
 
   it("surfaces a server 400 for the address field under the address input, not as a form error", async () => {
@@ -665,7 +665,7 @@ describe("public intake page (QR front door)", () => {
     await pickServiceAddress();
     fireEvent.click(screen.getByRole("button", { name: "Send request" }));
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(/Pick the address where we'll find the car/);
+    expect(alert).toHaveTextContent(/Tell us where we'll find the car/);
     // No confirmation — the customer stays on the form to fix it.
     expect(screen.queryByRole("heading", { name: /Request received/ })).not.toBeInTheDocument();
   });
