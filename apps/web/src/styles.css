@@ -413,6 +413,25 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .intake-scan-name { margin-left: 10px; font-size: .85rem; color: #64748b; }
 .intake-toggle { display: inline-block; margin-top: 14px; background: none; border: none; padding: 0; color: #c1271b; text-decoration: underline; cursor: pointer; font-size: .95rem; }
 .intake-ymm { margin-top: 12px; }
+/* Door-sticker VIN scan (VinStickerScan): graphics + camera panel on
+   intake card 1, styled after the approved prototype's dark steps. */
+.vin-scan-entry { margin-top: 14px; }
+.vin-scan-panel { margin-top: 14px; border: 1px solid #263646; border-radius: 12px; padding: 14px; background: #0f1419; color: #e8edf2; }
+.vin-scan-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.vin-scan-close { background: none; border: none; padding: 0; color: #9fb0c1; text-decoration: underline; cursor: pointer; font-size: .9rem; }
+.vin-scan-steps { display: grid; gap: 10px; margin: 12px 0 4px; }
+.vin-scan-step { background: #131c26; border: 1px solid #263646; border-radius: 12px; padding: 10px 12px; }
+.vin-scan-step h3 { margin: 0 0 6px; font-size: 15px; }
+.vin-scan-step p { margin: 6px 0 0; font-size: 13px; color: #9fb0c1; line-height: 1.45; }
+.vin-scan-step p b { color: #e8edf2; }
+.vin-scan-step svg { width: 100%; height: auto; display: block; }
+.vin-scan-video { width: 100%; border-radius: 12px; background: #000; margin-top: 12px; }
+.vin-scan-hint { font-size: 13px; color: #ffd479; margin: 8px 0 0; }
+.vin-scan-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
+.vin-scan-photo { cursor: pointer; }
+.vin-scan-status { font-size: 14px; color: #9fb0c1; margin: 10px 0 0; line-height: 1.45; }
+.vin-scan-candidate { margin-top: 12px; padding: 0.75rem 1rem; }
+.vin-scan-fine { color: #9fb0c1; font-size: 12px; margin: 12px 0 0; }
 .intake-recap { background: #172033; color: #f8fafc; border: 1px solid #334155; border-left: 3px solid #c1271b; border-radius: 8px; padding: 8px 12px; font-weight: 600; }
 .intake-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 20px; }
 .intake-back { background: none; border: none; color: #64748b; font-size: 1rem; cursor: pointer; padding: 8px 4px; }
