@@ -17,9 +17,21 @@ const TEST_SECRET = ["slice-b", "test", "secret"].join("-");
 const MONDAY_WINDOW: AvailabilityWindow[] = [
   { day_of_week: 1, start: "08:00", end: "17:00" }
 ];
-// Monday 2026-10-26, 10:00–12:00 America/New_York (EDT, UTC-4).
-const JOB_START = "2026-10-26T14:00:00.000Z";
-const JOB_END = "2026-10-26T16:00:00.000Z";
+// The fixture Monday (see JOB_START below), daytime shop hours.
+// The fixture job is always scheduled on the NEXT Monday, 14:00-16:00
+// UTC. It was a fixed 2026-10-26 until that date passed: listTechJobs
+// only shows assigned jobs scheduled today or later (by design), so
+// the listing test started failing on 2026-10-27 with an empty list.
+function nextMondayAt14Utc(): Date {
+  const d = new Date();
+  d.setUTCHours(14, 0, 0, 0);
+  const add = ((8 - d.getUTCDay()) % 7) || 7;
+  d.setUTCDate(d.getUTCDate() + add);
+  return d;
+}
+const JOB_MONDAY = nextMondayAt14Utc();
+const JOB_START = JOB_MONDAY.toISOString();
+const JOB_END = new Date(JOB_MONDAY.getTime() + 2 * 3_600_000).toISOString();
 
 async function fixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rnr-slice-b-"));
