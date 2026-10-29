@@ -89,6 +89,8 @@ import {
 } from "./types";
 import { OpsMap, type OpsMapMarker } from "./OpsMap";
 import { useJobLocationSharing } from "./location-sharing";
+import { VinStickerScanner } from "./VinStickerScan";
+import { isValidVin } from "./vin-scan";
 
 type Screen = "queue" | "new" | "detail" | "quote" | "operators" | "schedule" | "invoices" | "ops";
 
@@ -5636,29 +5638,9 @@ function makePhotoPreviewUrl(file: File): string | null {
   }
 }
 
-/**
- * ISO 3779 VIN check — mirrors apps/api/src/vin-validation.ts so card 1
- * can gate its Continue button exactly the way the server gates the VIN.
- * The server stays the real gate; this is a UX pre-check only.
- */
-const VIN_TRANSLITERATION: Record<string, number> = {
-  A: 1, B: 2, C: 3, D: 4, E: 5, F: 6, G: 7, H: 8,
-  J: 1, K: 2, L: 3, M: 4, N: 5, P: 7, R: 9,
-  S: 2, T: 3, U: 4, V: 5, W: 6, X: 7, Y: 8, Z: 9
-};
-const VIN_POSITION_WEIGHTS = [8, 7, 6, 5, 4, 3, 2, 10, 0, 9, 8, 7, 6, 5, 4, 3, 2];
-
-function isValidVin(vin: string): boolean {
-  const v = vin.trim().toUpperCase();
-  if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(v)) return false;
-  let sum = 0;
-  for (let i = 0; i < 17; i++) {
-    const c = v[i];
-    sum += (c >= "0" && c <= "9" ? Number(c) : VIN_TRANSLITERATION[c]) * VIN_POSITION_WEIGHTS[i];
-  }
-  const remainder = sum % 11;
-  return v[8] === (remainder === 10 ? "X" : String(remainder));
-}
+// The ISO 3779 VIN check (isValidVin) lives in ./vin-scan with the
+// sticker decoding that also depends on it — one implementation,
+// shared by the typed-VIN gate below and the door-sticker scan.
 
 /**
  * US phone pre-check — mirrors the API's normalizeUsPhone so the
@@ -6109,6 +6091,7 @@ export function PublicIntakePage() {
             {vinValue && !isValidVin(vinValue) && (
               <p className="muted">A VIN is 17 characters — letters and numbers, no I, O or Q.</p>
             )}
+            <VinStickerScanner onUseVin={v => setVin(v)} />
             <label className="intake-scan">
               <span className="intake-scan-btn">📷 Scan VIN (optional)</span>
               <input
