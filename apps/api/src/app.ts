@@ -4,6 +4,11 @@ import multer from "multer";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { signatureMethodOf, type CaseRecord, type Channel, type StaffUser } from "./types.js";
+import {
+  decodeNagsPartNumber,
+  expandGlassDescription,
+  distinguishingFeatures
+} from "./nags.js";
 import type { CaseStore, TechProfilePatch } from "./store.js";
 import type { GlassCatalogProvider } from "./glass-catalog.js";
 import { createGlassCatalogProvider } from "./mygrant.js";
@@ -1081,6 +1086,36 @@ export function createApp(
     const visibleJobIds = new Set(jobs.map(j => j.job_id));
     const techs = view.techs.filter(t => visibleJobIds.has(t.job_id));
     return res.json({ date: view.date, jobs, techs });
+  });
+
+  // ---------------------------------------------------------------------
+  // Reference: NAGS decoder + catalog-description glossary (2026-10-29).
+  // Turns part-number suffix codes and MyGrant shorthand into plain
+  // language for the YMM filtering game; pure lookups, no store access.
+  // ---------------------------------------------------------------------
+  app.post("/api/v1/reference/nags/decode", auth, staffRoles, (req, res) => {
+    const part = typeof req.body?.part === "string" ? req.body.part : "";
+    const decode = decodeNagsPartNumber(part);
+    if (!decode) {
+      return res.status(400).json({
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "That doesn't parse as a NAGS part number.",
+          details: { field: "part" }
+        }
+      });
+    }
+    return res.json({ decode });
+  });
+
+  app.post("/api/v1/reference/glass-descriptions/expand", auth, staffRoles, (req, res) => {
+    const list: string[] = Array.isArray(req.body?.descriptions)
+      ? req.body.descriptions.filter((d: unknown) => typeof d === "string").slice(0, 50)
+      : [];
+    return res.json({
+      results: list.map(expandGlassDescription),
+      distinguishing: distinguishingFeatures(list)
+    });
   });
 
   // ---------------------------------------------------------------------
