@@ -5673,6 +5673,27 @@ function normalizeUsPhoneClient(raw: string): string | null {
   return digits;
 }
 
+/**
+ * Why a phone entry fails the pre-check, in plain words the customer
+ * can act on (a bare "invalid number" doesn't tell them they dropped
+ * a digit). Null when the number is fine.
+ */
+function intakePhoneProblem(raw: string): string | null {
+  if (normalizeUsPhoneClient(raw) !== null) return null;
+  let digits = raw.replace(/\D/g, "");
+  if (digits.length === 11 && digits.startsWith("1")) digits = digits.slice(1);
+  if (digits.length > 0 && digits.length < 10) {
+    return `Enter a valid 10-digit US mobile number — this one has ${digits.length} digits.`;
+  }
+  if (digits.length > 10) {
+    return "Enter a valid 10-digit US mobile number — this one has too many digits.";
+  }
+  if (digits.length === 10) {
+    return "Enter a valid 10-digit US mobile number — US area codes don't start with 0 or 1.";
+  }
+  return "Enter a valid 10-digit US mobile number.";
+}
+
 /** Vehicle-year bounds for the YMM path — mirrored server-side. */
 export const INTAKE_MIN_VEHICLE_YEAR = 1950;
 
@@ -5830,6 +5851,15 @@ export function PublicIntakePage() {
   // when the picked-only rule returns.
   const addressReady = address !== null || addressQuery.trim().length > 0;
   const contactReady = nameValid && phoneValid && addressReady;
+  // What still blocks Send, in plain words. The button used to sit
+  // silently disabled when a gate failed (a 9-digit phone reads as a
+  // full number to the person typing it) — in front of a customer
+  // that looks like a broken form. Name the missing pieces instead.
+  const contactMissing = [
+    !nameValid && "your name",
+    !phoneValid && "a valid 10-digit mobile number",
+    !addressReady && "the service address"
+  ].filter(Boolean) as string[];
   const glassLabel = INTAKE_GLASS_OPTIONS.find(o => o.id === glassType)?.label ?? "";
   const vehicleRecap = vinValue
     ? `VIN ····${vinValue.slice(-4)}`
@@ -6222,6 +6252,9 @@ export function PublicIntakePage() {
                 style={{ display: "block", width: "100%", marginTop: 4 }}
               />
             </label>
+            {name.trim().length > 0 && !nameValid && (
+              <p className="error">Please enter your full name.</p>
+            )}
             <label>
               Mobile phone
               <input
@@ -6234,7 +6267,7 @@ export function PublicIntakePage() {
               />
             </label>
             {phone.trim() !== "" && !phoneValid && (
-              <p className="muted">Enter a valid 10-digit US mobile number.</p>
+              <p className="error">{intakePhoneProblem(phone)}</p>
             )}
             <label>
               Service address
@@ -6287,6 +6320,11 @@ export function PublicIntakePage() {
           </>
         )}
 
+        {step === 3 && !contactReady && (
+          <p className="muted intake-missing">
+            Still needed: {contactMissing.join(" · ")}
+          </p>
+        )}
         {error && <p className="error">{error}</p>}
 
         <div className="intake-nav">

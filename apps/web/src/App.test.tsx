@@ -613,8 +613,16 @@ describe("public intake page (QR front door)", () => {
     walkToCard3();
     const send = screen.getByRole("button", { name: "Send request" }) as HTMLButtonElement;
 
-    // A picked address + good phone, but a 1-char name: still blocked.
+    // The disabled button says why: with nothing filled, all three
+    // missing pieces are named.
+    expect(screen.getByText(/Still needed:/)).toHaveTextContent(
+      "your name · a valid 10-digit mobile number · the service address"
+    );
+
+    // A picked address + good phone, but a 1-char name: still blocked,
+    // and the name field itself says so underneath.
     fireEvent.change(screen.getByLabelText(/your name/i), { target: { value: "J" } });
+    expect(screen.getByText("Please enter your full name.")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/mobile phone/i), {
       target: { value: "(617) 555-0142" }
     });
@@ -624,13 +632,22 @@ describe("public intake page (QR front door)", () => {
       target: { value: "Jane Customer" }
     });
     expect(send.disabled).toBe(false);
+    expect(screen.queryByText("Please enter your full name.")).not.toBeInTheDocument();
+    // Everything provided: the Still-needed line is gone.
+    expect(screen.queryByText(/Still needed:/)).not.toBeInTheDocument();
 
-    // A 7-digit number is not textable: blocked, with the hint showing.
+    // A 7-digit number is not textable: blocked, and the phone field's
+    // own error names the problem precisely (digit count included).
     fireEvent.change(screen.getByLabelText(/mobile phone/i), {
       target: { value: "555-0142" }
     });
+    expect(screen.getByText(/this one has 7 digits/)).toBeInTheDocument();
     expect(send.disabled).toBe(true);
     expect(screen.getByText(/valid 10-digit US mobile number/)).toBeInTheDocument();
+    // ...and the reason line names the phone as the blocker.
+    expect(screen.getByText(/Still needed:/)).toHaveTextContent(
+      "a valid 10-digit mobile number"
+    );
     // +1 and punctuation are fine.
     fireEvent.change(screen.getByLabelText(/mobile phone/i), {
       target: { value: "+1 617 555 0142" }
