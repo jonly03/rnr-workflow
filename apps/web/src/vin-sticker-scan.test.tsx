@@ -44,6 +44,26 @@ describe("extractVinFromStickerText", () => {
 describe("public intake door-sticker scan (card 1)", () => {
   afterEach(() => cleanup());
 
+  afterEach(() => {
+    // Undo any camera stubs a test installed.
+    vi.restoreAllMocks();
+    Object.defineProperty(window.navigator, "mediaDevices", {
+      value: undefined,
+      configurable: true
+    });
+  });
+
+  function stubCamera(playImpl: () => Promise<void>) {
+    const trackStop = vi.fn();
+    const stream = { getTracks: () => [{ stop: trackStop }] };
+    Object.defineProperty(window.navigator, "mediaDevices", {
+      value: { getUserMedia: vi.fn(async () => stream) },
+      configurable: true
+    });
+    vi.spyOn(window.HTMLMediaElement.prototype, "play").mockImplementation(playImpl);
+    return { trackStop };
+  }
+
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
@@ -151,6 +171,40 @@ describe("public intake door-sticker scan (card 1)", () => {
     scanPhoto();
     expect(await screen.findByText(/No barcode or QR code found/)).toBeInTheDocument();
     expect(vinInput().value).toBe("");
+  });
+
+  it("a camera preview that refuses to play says so instead of scanning forever", async () => {
+    // The 2026-10-30 field failure: on iOS the preview never
+    // started and the swallowed play() rejection left the panel on
+    // "Scanning…" with no way forward. Now the refusal surfaces.
+    const { trackStop } = stubCamera(() =>
+      Promise.reject(new Error("NotAllowedError"))
+    );
+    render(<PublicIntakePage />);
+    openScanner();
+    fireEvent.click(screen.getByRole("button", { name: /start camera scan/i }));
+    expect(
+      await screen.findByText(/camera preview couldn't start/i)
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Scanning…/)).not.toBeInTheDocument();
+    // The stream was torn down and the start button is back.
+    expect(trackStop).toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", { name: /start camera scan/i })
+    ).toBeInTheDocument();
+  });
+
+  it("stopping the camera clears the Scanning status", async () => {
+    stubCamera(() => Promise.resolve());
+    render(<PublicIntakePage />);
+    openScanner();
+    fireEvent.click(screen.getByRole("button", { name: /start camera scan/i }));
+    expect(await screen.findByText(/Scanning…/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /stop camera/i }));
+    expect(screen.queryByText(/Scanning…/)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /start camera scan/i })
+    ).toBeInTheDocument();
   });
 
   it("without a camera the panel points at the photo option instead of dying", async () => {
