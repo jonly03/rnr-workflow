@@ -5806,7 +5806,6 @@ export function PublicIntakePage() {
   const [address, setAddress] = useState<AddressSuggestion | null>(null);
   const [suggestions, setSuggestions] = useState<AddressSuggestion[]>([]);
   const [addressError, setAddressError] = useState<string | null>(null);
-  const [vinPhoto, setVinPhoto] = useState<File | null>(null);
   const [photos, setPhotos] = useState<IntakePhoto[]>([]);
   const [photoError, setPhotoError] = useState<string | null>(null);
   const photosRef = useRef<IntakePhoto[]>([]);
@@ -6013,7 +6012,6 @@ export function PublicIntakePage() {
       if (make.trim()) form.append("make", make.trim());
       if (model.trim()) form.append("model", model.trim());
     }
-    if (vinPhoto) form.append("vin_photo", vinPhoto);
     for (const p of photos) form.append("photos", p.file);
     setBusy(true);
     try {
@@ -6092,16 +6090,6 @@ export function PublicIntakePage() {
               <p className="muted">A VIN is 17 characters — letters and numbers, no I, O or Q.</p>
             )}
             <VinStickerScanner onUseVin={v => setVin(v)} />
-            <label className="intake-scan">
-              <span className="intake-scan-btn">📷 Scan VIN (optional)</span>
-              <input
-                type="file"
-                accept="image/*"
-                hidden
-                onChange={e => setVinPhoto(e.target.files?.[0] ?? null)}
-              />
-              {vinPhoto && <span className="intake-scan-name">{vinPhoto.name}</span>}
-            </label>
             {!vinValue && (
               <button
                 type="button"
