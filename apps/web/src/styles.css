@@ -411,6 +411,11 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .intake-scan-btn { display: inline-block; border: 1.5px solid #94a3b8; border-radius: 10px; padding: 9px 16px; font-weight: 600; color: #334155; background: #f8fafc; }
 .intake-toggle { display: inline-block; margin-top: 14px; background: none; border: none; padding: 0; color: #c1271b; text-decoration: underline; cursor: pointer; font-size: .95rem; }
 .intake-ymm { margin-top: 12px; }
+/* Card 1 VIN tabs: Scan is the main path, Type the peer tab (the
+   Log in / Sign up pattern) — a segmented pill, active tab filled. */
+.vin-tabs { display: flex; gap: 6px; background: #17171f; border: 1px solid #2a2a38; border-radius: 999px; padding: 4px; margin: 10px 0 14px; }
+.vin-tab { flex: 1; border: 0; background: transparent; color: #b9b9c7; border-radius: 999px; padding: 9px 10px; font-weight: 600; cursor: pointer; }
+.vin-tab.active { background: #4f46e5; color: #fff; }
 /* Door-sticker VIN scan (VinStickerScan): graphics + camera panel on
    intake card 1, styled after the approved prototype's dark steps. */
 .vin-scan-entry { margin-top: 14px; }

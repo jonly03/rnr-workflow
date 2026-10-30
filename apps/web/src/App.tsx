@@ -5792,8 +5792,24 @@ function IntakeLiveStatus({ statusToken }: { statusToken: string }) {
  * "What happened?" card is gone entirely — its free-text field was
  * removed by product decision, not moved.
  */
+/**
+ * Which VIN path card 1 opens on. Phones start on Scan — the
+ * customer is usually standing at the car, and a scanned VIN can't
+ * be mistyped. Desktops start on Type — the VIN there is normally
+ * being copied from an email or a registration photo. The tabs are
+ * true peers (the Log in / Sign up pattern): one tap switches,
+ * and the typed VIN lives in page state, so switching loses nothing.
+ */
+function defaultVinTab(): "scan" | "type" {
+  if (typeof window === "undefined") return "type";
+  const coarse = window.matchMedia?.("(pointer: coarse)")?.matches ?? false;
+  const hasCamera = !!navigator.mediaDevices?.getUserMedia;
+  return coarse && hasCamera ? "scan" : "type";
+}
+
 export function PublicIntakePage() {
   const [step, setStep] = useState(1);
+  const [vinTab, setVinTab] = useState<"scan" | "type">(() => defaultVinTab());
   const [glassType, setGlassType] = useState<GlassType | "">("");
   const [vin, setVin] = useState("");
   const [showYmm, setShowYmm] = useState(false);
@@ -6073,23 +6089,57 @@ export function PublicIntakePage() {
         {step === 1 && (
           <>
             <h2>Your vehicle</h2>
-            <label>
-              VIN
-              <input
-                className="intake-vin"
-                type="text"
-                value={vin}
-                onChange={e => setVin(e.target.value.toUpperCase())}
-                placeholder="17 characters — on the dash by the windshield, or your registration"
-                autoComplete="off"
-                style={{ display: "block", width: "100%", marginTop: 4 }}
-              />
-            </label>
-            <p className="muted">Your VIN is the fastest way to get your glass right.</p>
-            {vinValue && !isValidVin(vinValue) && (
-              <p className="muted">A VIN is 17 characters — letters and numbers, no I, O or Q.</p>
+            {!showYmm && (
+              <div className="vin-tabs" role="group" aria-label="How to give us your VIN">
+                <button
+                  type="button"
+                  className={vinTab === "scan" ? "vin-tab active" : "vin-tab"}
+                  aria-pressed={vinTab === "scan"}
+                  onClick={() => setVinTab("scan")}
+                >
+                  🚗 Scan the sticker
+                </button>
+                <button
+                  type="button"
+                  className={vinTab === "type" ? "vin-tab active" : "vin-tab"}
+                  aria-pressed={vinTab === "type"}
+                  onClick={() => setVinTab("type")}
+                >
+                  ⌨️ Type the VIN
+                </button>
+              </div>
             )}
-            <VinStickerScanner onUseVin={v => setVin(v)} />
+            {vinTab === "scan" && !showYmm ? (
+              <VinStickerScanner
+                embedded
+                onUseVin={v => {
+                  setVin(v);
+                  // Land on the filled field: the customer sees the
+                  // VIN in place, exactly like typing it — proof the
+                  // scan landed, and editable if it didn't.
+                  setVinTab("type");
+                }}
+              />
+            ) : (
+              <>
+                <label>
+                  VIN
+                  <input
+                    className="intake-vin"
+                    type="text"
+                    value={vin}
+                    onChange={e => setVin(e.target.value.toUpperCase())}
+                    placeholder="17 characters — on the dash by the windshield, or your registration"
+                    autoComplete="off"
+                    style={{ display: "block", width: "100%", marginTop: 4 }}
+                  />
+                </label>
+                <p className="muted">Your VIN is the fastest way to get your glass right.</p>
+                {vinValue && !isValidVin(vinValue) && (
+                  <p className="muted">A VIN is 17 characters — letters and numbers, no I, O or Q.</p>
+                )}
+              </>
+            )}
             {!vinValue && (
               <button
                 type="button"

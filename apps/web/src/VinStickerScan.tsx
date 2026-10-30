@@ -18,10 +18,17 @@ import { DoorJambGraphic, StickerGraphic } from "./vin-scan-graphics";
  * must not sail into the form dressed as a successful scan.
  */
 export function VinStickerScanner({
-  onUseVin
+  onUseVin,
+  embedded = false
 }: {
   /** Fill the intake's VIN field with a confirmed decode (vin-scan's isValidVin is the same gate typed VINs play by). */
   onUseVin: (vin: string) => void;
+  /**
+   * Embedded = the Scan tab of card 1's [Scan | Type] tabs: the
+   * panel is simply open, and the tab strip above does the
+   * switching the standalone entry button + close row used to do.
+   */
+  embedded?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -221,7 +228,7 @@ export function VinStickerScanner({
     setStatus(null);
   }
 
-  if (!open) {
+  if (!embedded && !open) {
     return (
       <div className="vin-scan-entry">
         <button type="button" className="intake-scan-btn" onClick={() => setOpen(true)}>
@@ -237,12 +244,14 @@ export function VinStickerScanner({
 
   return (
     <div className="vin-scan-panel">
-      <div className="vin-scan-head">
-        <strong>Scan the door sticker</strong>
-        <button type="button" className="vin-scan-close" onClick={closePanel}>
-          Type it instead
-        </button>
-      </div>
+      {!embedded && (
+        <div className="vin-scan-head">
+          <strong>Scan the door sticker</strong>
+          <button type="button" className="vin-scan-close" onClick={closePanel}>
+            Type it instead
+          </button>
+        </div>
+      )}
 
       <div className="vin-scan-steps">
         <div className="vin-scan-step">
