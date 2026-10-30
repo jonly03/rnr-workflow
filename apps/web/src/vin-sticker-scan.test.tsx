@@ -93,9 +93,18 @@ describe("public intake door-sticker scan (card 1)", () => {
     return screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement;
   }
 
-  it("shows the two instruction graphics when the scanner opens", () => {
+  it("scan comes first; the how-to graphics hide behind a plain link", () => {
     render(<PublicIntakePage />);
     openScanner();
+    // The Start button is right there; no instruction cards in the way.
+    expect(
+      screen.getByRole("button", { name: /start camera scan/i })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("img", { name: /sticker highlighted on the door frame/i })
+    ).not.toBeInTheDocument();
+    // One tap on the link and both graphics show.
+    fireEvent.click(screen.getByRole("button", { name: /where.s the sticker/i }));
     expect(
       screen.getByRole("img", { name: /sticker highlighted on the door frame/i })
     ).toBeInTheDocument();
@@ -221,6 +230,7 @@ describe("public intake door-sticker scan (card 1)", () => {
       screen.queryByRole("img", { name: /sticker highlighted on the door frame/i })
     ).not.toBeInTheDocument();
     openScanner();
+    fireEvent.click(screen.getByRole("button", { name: /where.s the sticker/i }));
     expect(
       screen.getByRole("img", { name: /sticker highlighted on the door frame/i })
     ).toBeInTheDocument();
@@ -248,10 +258,12 @@ describe("public intake door-sticker scan (card 1)", () => {
       configurable: true
     });
     render(<PublicIntakePage />);
-    // No tap needed: the graphics (hence the Scan tab) are already up.
+    // No tap needed: the Scan tab is already up — its Start button
+    // is the first thing on the card.
     expect(
-      screen.getByRole("img", { name: /sticker highlighted on the door frame/i })
+      screen.getByRole("button", { name: /start camera scan/i })
     ).toBeInTheDocument();
+    expect(screen.queryByLabelText(/^VIN/)).not.toBeInTheDocument();
   });
 
   it("without a camera the panel points at the photo option instead of dying", async () => {
