@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { decodeStickerCode, extractVinFromStickerText, isValidVin } from "./vin-scan";
+import {
+  decodeStickerCode,
+  extractVinFromStickerText,
+  isValidVin,
+  lookupVinCarInfo
+} from "./vin-scan";
 import { DoorJambGraphic, StickerGraphic } from "./vin-scan-graphics";
 
 /**
@@ -38,6 +43,14 @@ export function VinStickerScanner({
   const [showHelp, setShowHelp] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [candidate, setCandidate] = useState<string | null>(null);
+  // A found VIN is looked up (free NHTSA vPIC) as soon as it lands,
+  // so the confirmation names the car — "Is this your car?" beats
+  // proofreading 17 characters. The lookup never gates the buttons:
+  // loading or failed, the customer can still use the VIN.
+  const [carInfo, setCarInfo] = useState<string | null>(null);
+  const [lookupState, setLookupState] = useState<
+    "idle" | "loading" | "done" | "unknown"
+  >("idle");
   const [decoding, setDecoding] = useState(false);
   const [cameraOn, setCameraOn] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -96,6 +109,29 @@ export function VinStickerScanner({
       // Vibration is a nicety, never a blocker.
     }
   }
+
+  useEffect(() => {
+    if (!candidate) {
+      setCarInfo(null);
+      setLookupState("idle");
+      return;
+    }
+    let cancelled = false;
+    setLookupState("loading");
+    setCarInfo(null);
+    void lookupVinCarInfo(candidate).then(info => {
+      if (cancelled) return;
+      if (info) {
+        setCarInfo(info);
+        setLookupState("done");
+      } else {
+        setLookupState("unknown");
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [candidate]);
 
   async function startCamera() {
     setStatus(null);
@@ -303,16 +339,34 @@ export function VinStickerScanner({
 
       {candidate && (
         <div className="card vin-scan-candidate">
-          <p style={{ margin: "0 0 0.5rem" }}>
-            Found VIN:{" "}
-            <strong style={{ fontFamily: "ui-monospace, monospace" }}>{candidate}</strong>
-          </p>
-          <p className="muted" style={{ margin: "0 0 0.5rem" }}>
-            Check it matches the sticker before continuing.
-          </p>
+          {lookupState === "done" && carInfo ? (
+            <>
+              <p style={{ margin: "0 0 0.25rem" }}>
+                <strong style={{ fontSize: "1.05rem" }}>{carInfo}</strong>
+              </p>
+              <p className="muted" style={{ margin: "0 0 0.5rem" }}>
+                VIN {candidate}
+              </p>
+              <p style={{ margin: "0 0 0.5rem" }}>Is this your car?</p>
+            </>
+          ) : (
+            <>
+              <p style={{ margin: "0 0 0.5rem" }}>
+                Found VIN:{" "}
+                <strong style={{ fontFamily: "ui-monospace, monospace" }}>
+                  {candidate}
+                </strong>
+              </p>
+              <p className="muted" style={{ margin: "0 0 0.5rem" }}>
+                {lookupState === "loading"
+                  ? "Looking up the car…"
+                  : "We couldn't look this VIN up — check it matches the sticker before continuing."}
+              </p>
+            </>
+          )}
           <div className="actions">
             <button type="button" onClick={() => setCandidate(null)}>
-              Retake
+              Scan again
             </button>
             <button
               type="button"
