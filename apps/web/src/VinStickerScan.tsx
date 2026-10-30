@@ -31,6 +31,11 @@ export function VinStickerScanner({
   embedded?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  // The how-to graphics sit behind a plain link ("Where's the
+  // sticker?") — the scan button is the first thing on the tab and
+  // help is one tap away when someone actually needs it (Nelly's
+  // call, 2026-10-30: scan immediately, instructions on demand).
+  const [showHelp, setShowHelp] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [candidate, setCandidate] = useState<string | null>(null);
   const [decoding, setDecoding] = useState(false);
@@ -253,26 +258,6 @@ export function VinStickerScanner({
         </div>
       )}
 
-      <div className="vin-scan-steps">
-        <div className="vin-scan-step">
-          <h3>1 · Open the driver&rsquo;s door</h3>
-          <DoorJambGraphic />
-          <p>
-            The sticker is on the <b>frame the door closes against</b> — the
-            door jamb. You can only see it with the door open, roughly where
-            the door latch is.
-          </p>
-        </div>
-        <div className="vin-scan-step">
-          <h3>2 · Find the VIN sticker</h3>
-          <StickerGraphic />
-          <p>
-            Look for the VIN line. Most cars print a <b>barcode</b> under it;
-            newer cars add a <b>QR code</b>. Either one scans.
-          </p>
-        </div>
-      </div>
-
       <video
         ref={el => {
           videoRef.current = el;
@@ -343,6 +328,36 @@ export function VinStickerScanner({
             </button>
           </div>
         </div>
+      )}
+
+      <button
+        type="button"
+        className="intake-toggle"
+        aria-expanded={showHelp}
+        onClick={() => setShowHelp(v => !v)}
+      >
+        Where&rsquo;s the sticker?
+      </button>
+      {showHelp && (
+      <div className="vin-scan-steps">
+        <div className="vin-scan-step">
+          <h3>1 · Open the driver&rsquo;s door</h3>
+          <DoorJambGraphic />
+          <p>
+            The sticker is on the <b>frame the door closes against</b> — the
+            door jamb. You can only see it with the door open, roughly where
+            the door latch is.
+          </p>
+        </div>
+        <div className="vin-scan-step">
+          <h3>2 · Find the VIN sticker</h3>
+          <StickerGraphic />
+          <p>
+            Look for the VIN line. Most cars print a <b>barcode</b> under it;
+            newer cars add a <b>QR code</b>. Either one scans.
+          </p>
+        </div>
+      </div>
       )}
 
       <p className="vin-scan-fine">
