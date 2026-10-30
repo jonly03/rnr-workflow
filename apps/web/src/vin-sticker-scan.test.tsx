@@ -51,6 +51,7 @@ describe("public intake door-sticker scan (card 1)", () => {
       value: undefined,
       configurable: true
     });
+    (window as { matchMedia?: unknown }).matchMedia = undefined;
   });
 
   function stubCamera(playImpl: () => Promise<void>) {
@@ -73,7 +74,8 @@ describe("public intake door-sticker scan (card 1)", () => {
   });
 
   function openScanner() {
-    fireEvent.click(screen.getByRole("button", { name: /scan the door sticker/i }));
+    // Card 1 is tabbed now: the Scan tab IS the scanner.
+    fireEvent.click(screen.getByRole("button", { name: /scan the sticker/i }));
   }
 
   function scanPhoto() {
@@ -116,13 +118,17 @@ describe("public intake door-sticker scan (card 1)", () => {
     // (Scoped to the <strong>: the sticker diagram also prints this VIN.)
     expect(await screen.findByText(/Found VIN:/)).toBeInTheDocument();
     expect(screen.getByText(VALID_VIN, { selector: "strong" })).toBeInTheDocument();
-    expect(vinInput().value).toBe("");
+    expect(screen.queryByLabelText(/^VIN/)).not.toBeInTheDocument();
     expect(continueButton().disabled).toBe(true);
 
     fireEvent.click(screen.getByRole("button", { name: "Use this VIN" }));
 
-    // Confirmed: the VIN behaves exactly like a typed one, the panel
-    // closes, the customer is still on card 1, and no request fired.
+    // Confirmed: the customer lands on the Type tab with the VIN in
+    // the field — it behaves exactly like a typed one, the scanner
+    // is gone, the customer is still on card 1, and nothing fired.
+    expect(
+      screen.queryByRole("img", { name: /sticker highlighted on the door frame/i })
+    ).not.toBeInTheDocument();
     expect(vinInput().value).toBe(VALID_VIN);
     expect(screen.queryByText(/Found VIN:/)).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Your vehicle" })).toBeInTheDocument();
@@ -138,7 +144,7 @@ describe("public intake door-sticker scan (card 1)", () => {
     expect(await screen.findByText(/Found VIN:/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Retake" }));
     expect(screen.queryByText(/Found VIN:/)).not.toBeInTheDocument();
-    expect(vinInput().value).toBe("");
+    expect(screen.queryByLabelText(/^VIN/)).not.toBeInTheDocument();
     expect(continueButton().disabled).toBe(true);
   });
 
@@ -151,7 +157,7 @@ describe("public intake door-sticker scan (card 1)", () => {
     expect(screen.getByText(new RegExp(BAD_CHECK_VIN))).toBeInTheDocument();
     expect(screen.queryByText(/Found VIN:/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Use this VIN" })).not.toBeInTheDocument();
-    expect(vinInput().value).toBe("");
+    expect(screen.queryByLabelText(/^VIN/)).not.toBeInTheDocument();
     expect(continueButton().disabled).toBe(true);
   });
 
@@ -161,7 +167,7 @@ describe("public intake door-sticker scan (card 1)", () => {
     openScanner();
     scanPhoto();
     expect(await screen.findByText(/doesn't contain a VIN/)).toBeInTheDocument();
-    expect(vinInput().value).toBe("");
+    expect(screen.queryByLabelText(/^VIN/)).not.toBeInTheDocument();
   });
 
   it("no code in the photo says so and fills nothing", async () => {
@@ -170,7 +176,7 @@ describe("public intake door-sticker scan (card 1)", () => {
     openScanner();
     scanPhoto();
     expect(await screen.findByText(/No barcode or QR code found/)).toBeInTheDocument();
-    expect(vinInput().value).toBe("");
+    expect(screen.queryByLabelText(/^VIN/)).not.toBeInTheDocument();
   });
 
   it("a camera preview that refuses to play says so instead of scanning forever", async () => {
@@ -204,6 +210,47 @@ describe("public intake door-sticker scan (card 1)", () => {
     expect(screen.queryByText(/Scanning…/)).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /start camera scan/i })
+    ).toBeInTheDocument();
+  });
+
+  it("card 1 opens on Type by default; Scan is one tap away and back", () => {
+    render(<PublicIntakePage />);
+    // Desktop default: the VIN field, no scanner graphics yet.
+    expect(vinInput()).toBeInTheDocument();
+    expect(
+      screen.queryByRole("img", { name: /sticker highlighted on the door frame/i })
+    ).not.toBeInTheDocument();
+    openScanner();
+    expect(
+      screen.getByRole("img", { name: /sticker highlighted on the door frame/i })
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /type the vin/i }));
+    expect(vinInput()).toBeInTheDocument();
+  });
+
+  it("switching tabs never loses a typed VIN", () => {
+    render(<PublicIntakePage />);
+    fireEvent.change(vinInput(), { target: { value: "1C4H" } });
+    openScanner();
+    fireEvent.click(screen.getByRole("button", { name: /type the vin/i }));
+    expect(vinInput().value).toBe("1C4H");
+  });
+
+  it("a touch device with a camera opens on the Scan tab", () => {
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query.includes("coarse"),
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn()
+    })) as typeof window.matchMedia;
+    Object.defineProperty(window.navigator, "mediaDevices", {
+      value: { getUserMedia: vi.fn() },
+      configurable: true
+    });
+    render(<PublicIntakePage />);
+    // No tap needed: the graphics (hence the Scan tab) are already up.
+    expect(
+      screen.getByRole("img", { name: /sticker highlighted on the door frame/i })
     ).toBeInTheDocument();
   });
 
