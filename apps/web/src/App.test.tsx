@@ -514,14 +514,10 @@ describe("public intake page (QR front door)", () => {
     expect(screen.getByText("Step 1 of 3")).toBeInTheDocument();
     expect(screen.queryByRole("radio", { name: "Windshield" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/^Year/)).not.toBeInTheDocument();
-    expect(screen.getByLabelText(/scan vin/i)).toBeInTheDocument();
+    // The old "Scan VIN (optional)" photo button is gone — the door
+    // sticker scanner above it is the VIN capture path now.
+    expect(screen.queryByText(/Scan VIN \(optional\)/)).not.toBeInTheDocument();
     expect(continueButton().disabled).toBe(true);
-
-    // Scan VIN stays an optional attachment on card 1.
-    const vinPhoto = new File(["vin-bytes"], "vin.jpg", { type: "image/jpeg" });
-    fireEvent.change(screen.getByLabelText(/scan vin/i), {
-      target: { files: [vinPhoto] }
-    });
 
     fireEvent.change(screen.getByLabelText(/^VIN/), {
       target: { value: VALID_VIN }
@@ -583,7 +579,7 @@ describe("public intake page (QR front door)", () => {
     expect(posted.url).toContain("/public/intake");
     expect(posted.body!.get("glass_type")).toBe("WINDSHIELD");
     expect(posted.body!.get("vin")).toBe(VALID_VIN);
-    expect(posted.body!.get("vin_photo")).toBe(vinPhoto);
+    expect(posted.body!.get("vin_photo")).toBeNull();
     // The damage photo picked up on card 2 rides along; the removed
     // "What happened?" note field is never sent.
     expect(posted.body!.getAll("photos")).toEqual([damagePhoto]);
