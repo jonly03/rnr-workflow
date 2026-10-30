@@ -142,19 +142,79 @@ describe("public intake door-sticker scan (card 1)", () => {
     expect(screen.queryByText(/Found VIN:/)).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Your vehicle" })).toBeInTheDocument();
     expect(continueButton().disabled).toBe(false);
-    expect(fetchMock).not.toHaveBeenCalled();
+    // Nothing submits: the only network call a scan may make before
+    // Send is the free NHTSA lookup — never our own API.
+    expect(
+      fetchMock.mock.calls.every(c =>
+        String(c[0]).includes("vpic.nhtsa.dot.gov")
+      )
+    ).toBe(true);
   });
 
-  it("Retake discards the candidate without filling the VIN", async () => {
+  it("Scan again discards the candidate without filling the VIN", async () => {
     decodeMock.mockResolvedValue({ text: VALID_VIN, format: "Code39" });
     render(<PublicIntakePage />);
     openScanner();
     scanPhoto();
     expect(await screen.findByText(/Found VIN:/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Retake" }));
+    fireEvent.click(screen.getByRole("button", { name: "Scan again" }));
     expect(screen.queryByText(/Found VIN:/)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/^VIN/)).not.toBeInTheDocument();
     expect(continueButton().disabled).toBe(true);
+  });
+
+  it("a found VIN is looked up and the car is named for confirmation", async () => {
+    decodeMock.mockResolvedValue({
+      text: `MFD BY FCA VIN ${VALID_VIN} END`,
+      format: "QRCode"
+    });
+    fetchMock.mockImplementation(async (...args: unknown[]) =>
+      String(args[0]).includes("vpic.nhtsa.dot.gov")
+        ? {
+            ok: true,
+            json: async () => ({
+              Results: [
+                {
+                  ModelYear: "2018",
+                  Make: "JEEP",
+                  Model: "Wrangler Unlimited",
+                  Trim: "Sahara",
+                  ErrorCode: "0"
+                }
+              ]
+            })
+          }
+        : { ok: true, json: async () => ({}) }
+    );
+    render(<PublicIntakePage />);
+    openScanner();
+    scanPhoto();
+
+    // The confirmation names the car and asks the only question the
+    // customer can answer at a glance.
+    expect(
+      await screen.findByText(/2018 JEEP Wrangler Unlimited Sahara/)
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Is this your car\?/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Use this VIN" }));
+    expect(vinInput().value).toBe(VALID_VIN);
+    expect(continueButton().disabled).toBe(false);
+  });
+
+  it("when the lookup can't name the car, the card falls back to checking the sticker", async () => {
+    decodeMock.mockResolvedValue({ text: VALID_VIN, format: "Code39" });
+    render(<PublicIntakePage />);
+    openScanner();
+    scanPhoto();
+    // Default fetch stub answers {} — no Results, no car name.
+    expect(
+      await screen.findByText(/couldn't look this VIN up/)
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Found VIN:/)).toBeInTheDocument();
+    // The VIN is still usable — the lookup never gates the form.
+    fireEvent.click(screen.getByRole("button", { name: "Use this VIN" }));
+    expect(vinInput().value).toBe(VALID_VIN);
   });
 
   it("a decoded VIN whose check digit fails is rejected with an explanation, never offered", async () => {

@@ -80,6 +80,37 @@ export async function decodeStickerCode(source: Blob): Promise<StickerCode | nul
 }
 
 /**
+ * Free NHTSA vPIC decode of a scanned VIN, run from the browser —
+ * the same lookup the approved prototype ran (2026-10-29). It names
+ * the car ("2018 JEEP Wrangler Unlimited Sahara") so the customer
+ * confirms a vehicle they recognize instead of proofreading 17
+ * characters against a sticker. Display-only: the server still
+ * re-decodes after submit, and the paid MyGrant VIN lookup stays
+ * staff-triggered — this is the free public decode, nothing else.
+ * Null whenever the car can't be named (offline, unknown VIN) —
+ * the caller falls back to check-against-the-sticker.
+ */
+export async function lookupVinCarInfo(vin: string): Promise<string | null> {
+  try {
+    const res = await fetch(
+      `https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/${encodeURIComponent(vin)}?format=json`
+    );
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      Results?: Array<Record<string, string>>;
+    };
+    const r = data.Results?.[0];
+    if (!r || !r.Make || !r.Model) return null;
+    return (
+      [r.ModelYear, r.Make, r.Model, r.Trim].filter(Boolean).join(" ").trim() ||
+      null
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Pull the VIN candidate out of decoded sticker text. A plain
  * first-17-characters match is NOT enough: payloads that wrap the VIN
  * in other fields ("CERT LABEL 1C4H… GVWR 2400") glue into one long
