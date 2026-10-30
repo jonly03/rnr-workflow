@@ -408,9 +408,7 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 /* Card flow (Amendment 2): one card at a time, VIN hero, quiet Back,
    step dots + "Step X of 4" pinned under the nav row. */
 .intake-vin { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1.15rem; letter-spacing: .06em; padding: 12px; text-transform: uppercase; }
-.intake-scan { cursor: pointer; }
 .intake-scan-btn { display: inline-block; border: 1.5px solid #94a3b8; border-radius: 10px; padding: 9px 16px; font-weight: 600; color: #334155; background: #f8fafc; }
-.intake-scan-name { margin-left: 10px; font-size: .85rem; color: #64748b; }
 .intake-toggle { display: inline-block; margin-top: 14px; background: none; border: none; padding: 0; color: #c1271b; text-decoration: underline; cursor: pointer; font-size: .95rem; }
 .intake-ymm { margin-top: 12px; }
 /* Door-sticker VIN scan (VinStickerScan): graphics + camera panel on
