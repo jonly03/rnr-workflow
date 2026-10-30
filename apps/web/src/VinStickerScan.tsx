@@ -39,6 +39,9 @@ export function VinStickerScanner({
       streamRef.current = null;
     }
     setCameraOn(false);
+    // Never leave a stale "Scanning…" behind a stopped camera.
+    // Callers that stop for a result set their own status right after.
+    setStatus(null);
   }
 
   // Never leave the camera running after the panel or page goes away.
@@ -100,6 +103,26 @@ export function VinStickerScanner({
       return;
     }
     streamRef.current = stream;
+    const video = videoRef.current;
+    if (video) {
+      video.srcObject = stream;
+      try {
+        // Play HERE, inside the tap handler. The first version of
+        // this component played from a React effect and swallowed
+        // the rejection — on iOS Safari a refused play() then left
+        // the frame loop waiting forever on a video that never
+        // delivered a frame: the UI sat on "Scanning…" and nothing
+        // ever decoded (field report, 2026-10-30).
+        await video.play();
+      } catch {
+        stream.getTracks().forEach(t => t.stop());
+        streamRef.current = null;
+        setStatus(
+          "The camera preview couldn't start — use a photo of the sticker instead, or type the VIN in the box above."
+        );
+        return;
+      }
+    }
     scanningRef.current = true;
     setCameraOn(true);
     setStatus("Scanning… point at the door-sticker barcode or QR code.");
@@ -111,14 +134,24 @@ export function VinStickerScanner({
     if (!cameraOn) return;
     const video = videoRef.current;
     if (!video || !streamRef.current) return;
-    video.srcObject = streamRef.current;
-    void video.play().catch(() => {});
     let cancelled = false;
     let timer = 0;
+    // Watchdog: a live camera delivers frame data within moments.
+    // If the video still has none a few seconds in, the preview
+    // failed silently somewhere — say so and offer the other paths
+    // instead of "Scanning…" forever.
+    const watchdog = window.setTimeout(() => {
+      if (!cancelled && scanningRef.current && video.readyState < 2) {
+        stopCamera();
+        setStatus(
+          "The camera isn't sending pictures — use a photo of the sticker instead, or type the VIN in the box above."
+        );
+      }
+    }, 3500);
     const canvas = document.createElement("canvas");
     const tick = async () => {
       if (cancelled || !scanningRef.current) return;
-      if (video.readyState === 4 && video.videoWidth) {
+      if (video.readyState >= 3 && video.videoWidth) {
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         const ctx = canvas.getContext("2d");
@@ -150,6 +183,7 @@ export function VinStickerScanner({
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      window.clearTimeout(watchdog);
     };
     // handleDecodedText/stopCamera are stable enough across renders for
     // a camera loop keyed on cameraOn alone.
@@ -231,7 +265,13 @@ export function VinStickerScanner({
       </div>
 
       <video
-        ref={videoRef}
+        ref={el => {
+          videoRef.current = el;
+          if (el) {
+            el.muted = true;
+            el.setAttribute("playsinline", "");
+          }
+        }}
         className="vin-scan-video"
         playsInline
         muted
