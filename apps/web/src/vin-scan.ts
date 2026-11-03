@@ -90,6 +90,30 @@ export async function decodeStickerCode(source: Blob): Promise<StickerCode | nul
  * Null whenever the car can't be named (offline, unknown VIN) —
  * the caller falls back to check-against-the-sticker.
  */
+let lookupWarmed = false;
+
+/**
+ * Warm the connection to the vPIC host (DNS + TLS) ahead of the first
+ * lookup, so a decoded VIN's "Is this your car?" answer isn't stuck
+ * behind a cold handshake on the customer's phone. Called when the
+ * scan UI mounts — by the time a barcode is aimed at, decoded and
+ * proposed, the connection is already open and the lookup is one
+ * round-trip. Idempotent: repeat calls add nothing.
+ */
+export function warmVinLookupConnection(): void {
+  if (lookupWarmed || typeof document === "undefined") return;
+  lookupWarmed = true;
+  for (const rel of ["dns-prefetch", "preconnect"] as const) {
+    const link = document.createElement("link");
+    link.rel = rel;
+    link.href = "https://vpic.nhtsa.dot.gov";
+    // The lookup fetch is a CORS request without credentials, so the
+    // preconnect must use the same mode to be reusable for it.
+    if (rel === "preconnect") link.crossOrigin = "anonymous";
+    document.head.appendChild(link);
+  }
+}
+
 export async function lookupVinCarInfo(vin: string): Promise<string | null> {
   try {
     const res = await fetch(
