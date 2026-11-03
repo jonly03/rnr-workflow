@@ -356,7 +356,7 @@ export function VinStickerScanner({
           </button>
         ) : (
           <button type="button" className="primary" onClick={() => void startCamera()}>
-            📷 Start camera scan
+            📷 Start VIN scan
           </button>
         )}
         <label className="intake-scan-btn vin-scan-photo">
