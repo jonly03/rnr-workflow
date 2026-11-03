@@ -26,6 +26,9 @@ import type {
   InvoicePaymentStatus,
   Job,
   JobLocationPing,
+  NotificationRecord,
+  NotificationStatus,
+  ApprovalTokenPurpose,
   JobStepEvent,
   OperatorInvite,
   PriceCalculation,
@@ -241,6 +244,26 @@ export interface AppendJobLocationPingInput {
   recordedAt?: string;
 }
 
+export interface CreateNotificationInput {
+  caseId: string;
+  channel: string;
+  kind: string;
+  toPhone: string;
+  body: string;
+  status: NotificationStatus;
+  provider?: string | null;
+  note?: string | null;
+}
+
+export interface NotificationPatch {
+  status?: NotificationStatus;
+  provider?: string | null;
+  providerMessageId?: string | null;
+  error?: string | null;
+  note?: string | null;
+  sentAt?: string | null;
+}
+
 export interface CreateCaseAssetInput {
   /** Minted by the caller: the storage key embeds the asset id, and the
    *  key must be final before any bytes land. */
@@ -330,6 +353,13 @@ export interface CaseStore {
   createStaffUser(input: CreateStaffUserInput): Promise<StaffUser>;
   createApprovalToken(input: CreateApprovalTokenInput): Promise<{ jti: string }>;
   findApprovalTokenByHash(tokenHash: string): Promise<ApprovalTokenRecord | null>;
+  /** The newest unconsumed, unexpired token for one case + purpose, or
+   *  null. Used to audit link state — the raw token is hash-only and can
+   *  never be read back from the record this returns. */
+  findApprovalTokenForCase(
+    caseId: string,
+    purpose: ApprovalTokenPurpose
+  ): Promise<ApprovalTokenRecord | null>;
   consumeApprovalToken(jti: string): Promise<void>;
   /** Appends an event, optionally transitioning the case state atomically. */
   appendEvent(input: AppendEventInput): Promise<CaseEvent>;
@@ -431,6 +461,13 @@ export interface CaseStore {
   listJobLocationPings(jobId: string): Promise<JobLocationPing[]>;
   /** The newest ping per job, across all jobs (ops map + ETA reads). */
   latestJobLocationPings(): Promise<JobLocationPing[]>;
+  /** Records a client notification. Returns null when a row for the
+   *  same (case, kind) already exists — the unique constraint makes
+   *  per-kind notifications idempotent. */
+  createNotification(input: CreateNotificationInput): Promise<NotificationRecord | null>;
+  updateNotification(id: string, patch: NotificationPatch): Promise<NotificationRecord>;
+  /** The notification recorded for one case + kind, or null. */
+  getNotification(caseId: string, kind: string): Promise<NotificationRecord | null>;
   /** Registers one file in the case's asset registry (Slice B, §7.3). */
   createCaseAsset(input: CreateCaseAssetInput): Promise<CaseAsset>;
   getCaseAsset(id: string): Promise<CaseAsset | null>;
@@ -451,6 +488,7 @@ const emptyStore = (): StoreShape => ({
   jobs: [],
   job_step_events: [],
   job_location_pings: [],
+  notifications: [],
   case_assets: [],
   approval_tokens: [],
   glass_identifications: [],
@@ -640,6 +678,23 @@ export class JsonCaseStore implements CaseStore {
 
   async findApprovalTokenByHash(tokenHash: string): Promise<ApprovalTokenRecord | null> {
     return this.data.approval_tokens.find(t => t.token_hash === tokenHash) ?? null;
+  }
+
+  async findApprovalTokenForCase(
+    caseId: string,
+    purpose: ApprovalTokenPurpose
+  ): Promise<ApprovalTokenRecord | null> {
+    const now = Date.now();
+    const active = this.data.approval_tokens
+      .filter(
+        t =>
+          t.case_id === caseId &&
+          t.purpose === purpose &&
+          !t.consumed_at &&
+          Date.parse(t.expires_at) > now
+      )
+      .sort((a, b) => b.created_at.localeCompare(a.created_at));
+    return active[0] ?? null;
   }
 
   async consumeApprovalToken(jti: string): Promise<void> {
@@ -1229,6 +1284,67 @@ export class JsonCaseStore implements CaseStore {
       }
     }
     return [...latest.values()];
+  }
+
+  async createNotification(
+    input: CreateNotificationInput
+  ): Promise<NotificationRecord | null> {
+    if (
+      (this.data.notifications ?? []).some(
+        n => n.case_id === input.caseId && n.kind === input.kind
+      )
+    ) {
+      return null;
+    }
+    const record: NotificationRecord = {
+      id: randomUUID(),
+      case_id: input.caseId,
+      channel: input.channel,
+      kind: input.kind,
+      to_phone: input.toPhone,
+      body: input.body,
+      status: input.status,
+      provider: input.provider ?? null,
+      provider_message_id: null,
+      error: null,
+      note: input.note ?? null,
+      created_at: new Date().toISOString(),
+      sent_at: null
+    };
+    const next = structuredClone(this.data);
+    next.notifications = [...(next.notifications ?? []), record];
+    this.persist(next);
+    return record;
+  }
+
+  async updateNotification(
+    id: string,
+    patch: NotificationPatch
+  ): Promise<NotificationRecord> {
+    const next = structuredClone(this.data);
+    const record = (next.notifications ?? []).find(n => n.id === id);
+    if (!record) throw new Error("Notification not found.");
+    if (patch.status !== undefined) record.status = patch.status;
+    if (patch.provider !== undefined) record.provider = patch.provider;
+    if (patch.providerMessageId !== undefined) {
+      record.provider_message_id = patch.providerMessageId;
+    }
+    if (patch.error !== undefined) record.error = patch.error;
+    if (patch.note !== undefined) record.note = patch.note;
+    if (patch.sentAt !== undefined) record.sent_at = patch.sentAt;
+    this.persist(next);
+    return record;
+  }
+
+  async getNotification(
+    caseId: string,
+    kind: string
+  ): Promise<NotificationRecord | null> {
+    return (
+      (this.data.notifications ?? []).find(
+        n => n.case_id === caseId && n.kind === kind
+      ) ?? null
+    );
   }
 
   async createCaseAsset(input: CreateCaseAssetInput): Promise<CaseAsset> {

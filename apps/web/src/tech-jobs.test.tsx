@@ -342,4 +342,35 @@ describe("Location sharing in the tech view (Slice C)", () => {
     await screen.findByTestId("tech-job-detail");
     expect(screen.queryByTestId("location-sharing-status")).toBeNull();
   });
+
+  it("labels the final checklist action 'Complete job' (Nelly, 2026-11-03)", async () => {
+    const priorSteps = [
+      "PICKUP",
+      "PICKED_UP",
+      "EN_ROUTE",
+      "ARRIVED",
+      "CHECKED_IN",
+      "BEFORE_PHOTOS",
+      "PREP_STARTED",
+      "PREP_DONE",
+      "INSTALL_STARTED",
+      "INSTALL_DONE",
+      "AFTER_PHOTOS",
+      "CLIENT_CHECKIN"
+    ];
+    const job = makeJob({
+      current_step: "FINISHED",
+      steps: priorSteps.map(s => stepEvent(s))
+    });
+    mockFetch(url => {
+      if (url.endsWith("/tech/jobs/job-1")) return { job };
+      return {};
+    });
+    render(<TechJobDetail jobId="job-1" onBack={() => undefined} />);
+    await screen.findByTestId("tech-job-detail");
+    expect(
+      screen.getByRole("button", { name: "Complete job" })
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Finish job" })).toBeNull();
+  });
 });

@@ -15,6 +15,7 @@ import type {
   InvoiceEvent,
   Job,
   JobLocationPing,
+  NotificationRecord,
   JobStepEvent,
   OperatorInvite,
   PriceCalculation,
@@ -38,6 +39,8 @@ import type {
   CreateCaseAssetInput,
   CreateCaseStoreInput,
   CreateJobInput,
+  CreateNotificationInput,
+  NotificationPatch,
   CreateOperatorInviteInput,
   CreateStaffUserInput,
   CreateTechProfileInput,
@@ -56,7 +59,7 @@ import type {
   TechProfilePatch,
   VinLookupGlassResult
 } from "./store.js";
-import type { GlassType } from "./types.js";
+import type { ApprovalTokenPurpose, GlassType } from "./types.js";
 
 type Pool = pg.Pool;
 type PoolClient = pg.PoolClient;
@@ -311,6 +314,24 @@ function jobLocationPingRow(row: any): JobLocationPing {
     lon: Number(row.lon),
     accuracy_m: row.accuracy_m == null ? null : Number(row.accuracy_m),
     recorded_at: iso(row.recorded_at)
+  };
+}
+
+function notificationRow(row: any): NotificationRecord {
+  return {
+    id: row.id,
+    case_id: row.case_id,
+    channel: row.channel,
+    kind: row.kind,
+    to_phone: row.to_phone,
+    body: row.body,
+    status: row.status,
+    provider: row.provider ?? null,
+    provider_message_id: row.provider_message_id ?? null,
+    error: row.error ?? null,
+    note: row.note ?? null,
+    created_at: iso(row.created_at),
+    sent_at: row.sent_at ? iso(row.sent_at) : null
   };
 }
 
@@ -582,6 +603,21 @@ export class PgCaseStore implements CaseStore {
        where jti = $1 and consumed_at is null`,
       [jti]
     );
+  }
+
+  async findApprovalTokenForCase(
+    caseId: string,
+    purpose: ApprovalTokenPurpose
+  ): Promise<ApprovalTokenRecord | null> {
+    const result = await this.pool.query(
+      `select * from approval_tokens
+       where case_id = $1 and purpose = $2
+         and consumed_at is null and expires_at > now()
+       order by created_at desc
+       limit 1`,
+      [caseId, purpose]
+    );
+    return result.rowCount ? approvalTokenRow(result.rows[0]) : null;
   }
 
   async appendEvent(input: AppendEventInput): Promise<CaseEvent> {
@@ -1365,6 +1401,72 @@ export class PgCaseStore implements CaseStore {
        order by job_id, recorded_at desc, id desc`
     );
     return result.rows.map(jobLocationPingRow);
+  }
+
+  async createNotification(
+    input: CreateNotificationInput
+  ): Promise<NotificationRecord | null> {
+    const result = await this.pool.query(
+      `insert into notifications(id, case_id, channel, kind, to_phone, body,
+         status, provider, note)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       on conflict (case_id, kind) do nothing
+       returning *`,
+      [
+        randomUUID(),
+        input.caseId,
+        input.channel,
+        input.kind,
+        input.toPhone,
+        input.body,
+        input.status,
+        input.provider ?? null,
+        input.note ?? null
+      ]
+    );
+    return result.rowCount ? notificationRow(result.rows[0]) : null;
+  }
+
+  async updateNotification(
+    id: string,
+    patch: NotificationPatch
+  ): Promise<NotificationRecord> {
+    const current = await this.pool.query(
+      "select * from notifications where id = $1",
+      [id]
+    );
+    if (!current.rowCount) throw new Error("Notification not found.");
+    const row = current.rows[0];
+    const result = await this.pool.query(
+      `update notifications
+       set status = $2, provider = $3, provider_message_id = $4,
+           error = $5, note = $6, sent_at = $7
+       where id = $1
+       returning *`,
+      [
+        id,
+        patch.status !== undefined ? patch.status : row.status,
+        patch.provider !== undefined ? patch.provider : row.provider,
+        patch.providerMessageId !== undefined
+          ? patch.providerMessageId
+          : row.provider_message_id,
+        patch.error !== undefined ? patch.error : row.error,
+        patch.note !== undefined ? patch.note : row.note,
+        patch.sentAt !== undefined ? patch.sentAt : row.sent_at
+      ]
+    );
+    return notificationRow(result.rows[0]);
+  }
+
+  async getNotification(
+    caseId: string,
+    kind: string
+  ): Promise<NotificationRecord | null> {
+    const result = await this.pool.query(
+      "select * from notifications where case_id = $1 and kind = $2",
+      [caseId, kind]
+    );
+    return result.rowCount ? notificationRow(result.rows[0]) : null;
   }
 
   async createCaseAsset(input: CreateCaseAssetInput): Promise<CaseAsset> {

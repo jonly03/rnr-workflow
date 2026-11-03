@@ -5540,6 +5540,26 @@ export function PublicTrackingPage({ token }: { token: string }) {
         <p style={{ fontSize: 18 }}>
           <strong>{view.status}</strong>
         </p>
+        {view.review_url && (
+          <div data-testid="tracking-complete" style={{ margin: "14px 0" }}>
+            <p style={{ fontSize: 17, margin: "0 0 6px" }}>
+              <strong>Your service is complete 🎉</strong>
+            </p>
+            <p className="muted" style={{ margin: "0 0 10px" }}>
+              Thanks for choosing R&R Finest Auto Glass. If we earned it,
+              a quick Google review helps our small shop a lot.
+            </p>
+            <a
+              className="primary"
+              href={view.review_url}
+              target="_blank"
+              rel="noreferrer"
+              style={{ display: "inline-block", padding: "10px 18px", borderRadius: 8, textDecoration: "none" }}
+            >
+              ⭐ Leave us a Google review
+            </a>
+          </div>
+        )}
         {view.eta && (
           <p data-testid="tracking-eta" style={{ fontSize: 16 }}>
             🚗 Your technician is on the way — <strong>estimated arrival: {view.eta.label}</strong>.
