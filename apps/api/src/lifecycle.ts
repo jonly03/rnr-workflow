@@ -1,3 +1,5 @@
+import { notifyJobCompleted } from "./notifications.js";
+import type { SmsSender } from "./sms.js";
 import type { CaseStore } from "./store.js";
 import type { CaseRecord } from "./types.js";
 
@@ -88,6 +90,12 @@ export interface Actor {
   id: string | null;
 }
 
+/** Optional side-effect hooks threaded from the app factory. */
+export interface LifecycleHooks {
+  /** SMS seam for the completion text; defaults to the env-built sender. */
+  smsSender?: SmsSender;
+}
+
 /**
  * Advances one fulfillment step. Only the step's safe payload fields are
  * recorded on the event (scheduled_at, technician_name, note) — the event
@@ -99,7 +107,8 @@ export async function advanceLifecycle(
   caseId: string,
   action: string,
   actor: Actor,
-  payload: Record<string, unknown> = {}
+  payload: Record<string, unknown> = {},
+  hooks: LifecycleHooks = {}
 ): Promise<CaseRecord> {
   const step = LIFECYCLE_STEPS[action];
   if (!step) {
@@ -134,5 +143,23 @@ export async function advanceLifecycle(
   });
   const updated = await store.getCase(caseId);
   if (!updated) throw new Error("Case not found.");
+  if (action === "complete_service") {
+    // The end of the workflow (Nelly, 2026-11-03): the client gets
+    // their completion text — tracker link + Google review ask. This
+    // is the single funnel every completion passes through (staff
+    // action and the tech's final checklist step alike), and the state
+    // guard above means it commits exactly once. The notification can
+    // never fail the completion: delivery problems are recorded on
+    // the notification row itself, and anything unexpected is logged
+    // here, never thrown.
+    try {
+      await notifyJobCompleted(store, caseId, { sender: hooks.smsSender });
+    } catch (error) {
+      console.error(
+        `job_completed notification failed for case ${caseId}:`,
+        error
+      );
+    }
+  }
   return updated;
 }

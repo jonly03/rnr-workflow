@@ -156,7 +156,7 @@ export const JOB_STEPS = [
   { step: "INSTALL_DONE", label: "Install done", action: "Install done" },
   { step: "AFTER_PHOTOS", label: "After photos", action: "Photos uploaded" },
   { step: "CLIENT_CHECKIN", label: "Client check-in", action: "Record check-in" },
-  { step: "FINISHED", label: "Finished", action: "Finish job" }
+  { step: "FINISHED", label: "Finished", action: "Complete job" }
 ] as const;
 
 export type JobStep = (typeof JOB_STEPS)[number]["step"];

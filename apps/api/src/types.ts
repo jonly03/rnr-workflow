@@ -358,6 +358,36 @@ export interface JobLocationPing {
   recorded_at: string;
 }
 
+/** Delivery state of one client notification (migration 017). */
+export type NotificationStatus = "queued" | "sent" | "failed" | "skipped";
+
+/**
+ * One client notification, recorded durably BEFORE delivery is attempted
+ * so a failed send never loses the fact that it was owed. Unique per
+ * (case_id, kind): the job-completion text is sent exactly once.
+ */
+export interface NotificationRecord {
+  id: string;
+  case_id: string;
+  /** Delivery channel — "sms" today. */
+  channel: string;
+  /** What the notification is about — "job_completed" today. */
+  kind: string;
+  /** Destination as recorded (E.164 for SMS when a phone exists). */
+  to_phone: string;
+  body: string;
+  status: NotificationStatus;
+  /** SMS seam driver that attempted delivery ("mock" | "twilio"). */
+  provider: string | null;
+  provider_message_id: string | null;
+  /** Delivery failure detail, when status is "failed". */
+  error: string | null;
+  /** Audit note: delivery decisions (tracker-link minting, skip reason). */
+  note: string | null;
+  created_at: string;
+  sent_at: string | null;
+}
+
 /** What a case asset holds (brief §7.3 registry). */
 export type AssetKind =
   | "INTAKE_PHOTO"
@@ -414,6 +444,7 @@ export interface StoreShape {
   jobs: Job[];
   job_step_events: JobStepEvent[];
   job_location_pings: JobLocationPing[];
+  notifications: NotificationRecord[];
   case_assets: CaseAsset[];
   approval_tokens: ApprovalTokenRecord[];
   glass_identifications: GlassIdentification[];

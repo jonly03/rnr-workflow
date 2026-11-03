@@ -728,6 +728,10 @@ export interface PublicTrackingView {
    *  ("about 15–25 min") — an estimate computed server-side, never
    *  coordinates. Null whenever there is nothing honest to show. */
   eta: { label: string; minutes_low: number; minutes_high: number } | null;
+  /** Google review link, present only once the job is complete
+   *  (SERVICE_COMPLETED or CLOSED) — the page renders its completion
+   *  state + review button from it. Null in every earlier state. */
+  review_url: string | null;
 }
 
 export function getPublicTracking(token: string) {

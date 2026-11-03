@@ -149,6 +149,8 @@ import {
   recordJobLocationPing,
   TrackingError
 } from "./tracking.js";
+import { createSmsSender, type SmsSender } from "./sms.js";
+import { googleReviewUrl, JOB_COMPLETED_KIND } from "./notifications.js";
 import { createRateLimiter } from "./rate-limit.js";
 import {
   createAddressProvider,
@@ -382,6 +384,13 @@ export interface AppDeps {
    * uses S3; anything else uses the local dev driver (Slice B §7.2).
    */
   assetStorage?: AssetStorage;
+  /**
+   * SMS sender override (tests inject capturing/failing drivers).
+   * Defaults to the env-selected seam: SMS_PROVIDER=twilio with full
+   * TWILIO_* credentials sends real texts; anything else is the mock
+   * driver, which records through the notifications table only.
+   */
+  smsSender?: SmsSender;
 }
 
 export function createApp(
@@ -415,6 +424,10 @@ export function createApp(
   const assetStorage =
     deps.assetStorage ??
     createAssetStorage(process.env, { signingSecret: authConfig.authSecret });
+  // SMS seam for the job-completion text: mock by default (records via
+  // the notifications table, sends nothing); Twilio only when fully
+  // configured — see sms.ts.
+  const smsSender = deps.smsSender ?? createSmsSender(process.env);
   const app = express();
 
   // Do not fingerprint the framework: Express sets X-Powered-By by default.
@@ -507,7 +520,21 @@ export function createApp(
     const client_intake = intakeEvent
       ? clientIntakeView(intakeEvent.payload, intakeEvent.occurred_at)
       : null;
-    return { ...c, vehicle, glass_request, glass_identification, supplier_offers, price_calculation, quote, invoice, invoice_events, awaiting_payment, client_intake, job };
+    // The job-completion text (2026-11-03): staff see whether the
+    // client was texted when the job completed — status + when + the
+    // audit note (skip reason / tracker-link minting). Null until the
+    // job completes. The body itself stays in the notifications table.
+    const completionNotification = await store.getNotification(c.id, JOB_COMPLETED_KIND);
+    const completion_notification = completionNotification
+      ? {
+          status: completionNotification.status,
+          provider: completionNotification.provider,
+          sent_at: completionNotification.sent_at,
+          note: completionNotification.note,
+          error: completionNotification.error
+        }
+      : null;
+    return { ...c, vehicle, glass_request, glass_identification, supplier_offers, price_calculation, quote, invoice, invoice_events, awaiting_payment, client_intake, job, completion_notification };
   };
 
   /**
@@ -589,7 +616,11 @@ export function createApp(
       google_signin: googleProvider !== null,
       // Which asset byte driver is active (Slice B): "s3" in production,
       // "local" in dev, "mock" in tests. A name, never a credential.
-      assets_storage: assetStorage.name
+      assets_storage: assetStorage.name,
+      // Which SMS driver is EFFECTIVE for the completion text: "mock"
+      // until Twilio is fully configured (SMS_PROVIDER + TWILIO_*), so
+      // a half-configured deploy reads as mock here, never as twilio.
+      sms_provider: smsSender.name
     });
   };
   app.get("/health", healthHandler);
@@ -1202,7 +1233,8 @@ export function createApp(
         payload: {
           client_name: parsed.data.client_name,
           note: parsed.data.note
-        }
+        },
+        smsSender
       });
       const fresh = (await store.getJob(job.id)) ?? job;
       return res.json({ job: await techJobDetail(fresh, req.staff!) });
@@ -1638,6 +1670,15 @@ export function createApp(
       glass_type: quote?.snapshot.glass_type ?? null,
       status: FRIENDLY_STATUS[c.current_state] ?? "In progress",
       current_state: c.current_state,
+      // The Google review ask (Nelly, 2026-11-03): present ONLY once
+      // the work is done — SERVICE_COMPLETED or CLOSED. The tracker
+      // renders its completion state + review button from this; the
+      // completion text carries the same link. Null in every earlier
+      // state, and it is the only field added by this feature.
+      review_url:
+        c.current_state === "SERVICE_COMPLETED" || c.current_state === "CLOSED"
+          ? googleReviewUrl()
+          : null,
       signed_by: quote?.signature?.name ?? null,
       signed_at: quote?.signature?.signed_at ?? null,
       signature_method: quote?.signature ? signatureMethodOf(quote.signature) : null,
@@ -2753,7 +2794,7 @@ export function createApp(
             }
           }
         }
-        await advanceLifecycle(store, c.id, action, staffActor, payload);
+        await advanceLifecycle(store, c.id, action, staffActor, payload, { smsSender });
         const updated = await store.getCase(c.id);
         return res.json(await detail(updated!));
       }

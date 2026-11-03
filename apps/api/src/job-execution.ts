@@ -1,5 +1,6 @@
 import type { CaseStore } from "./store.js";
 import { advanceLifecycle } from "./lifecycle.js";
+import type { SmsSender } from "./sms.js";
 import { dayRangeUtc, operatorTimezone, todayKey } from "./scheduler.js";
 import type { Job, JobStepEvent } from "./types.js";
 
@@ -53,7 +54,7 @@ export const JOB_STEP_LABELS: Record<JobStep, string> = {
   INSTALL_DONE: "Install done",
   AFTER_PHOTOS: "Upload after photos",
   CLIENT_CHECKIN: "Client check-in",
-  FINISHED: "Finish job"
+  FINISHED: "Complete job"
 };
 
 export function isJobStep(value: unknown): value is JobStep {
@@ -129,6 +130,8 @@ export async function advanceJobStep(
     step: string;
     actor: { type: string; id: string | null };
     payload?: Record<string, unknown>;
+    /** SMS seam for the completion text fired by the FINISHED step. */
+    smsSender?: SmsSender;
   }
 ): Promise<{ job: Job; steps: JobStepEvent[] }> {
   const job = await store.getJob(input.jobId);
@@ -246,7 +249,9 @@ export async function advanceJobStep(
     await store.updateJob(job.id, { status: "COMPLETED" });
     const current = await store.getCase(job.case_id);
     if (current?.current_state === "INSTALLATION_IN_PROGRESS") {
-      await advanceLifecycle(store, job.case_id, "complete_service", techActor, {});
+      await advanceLifecycle(store, job.case_id, "complete_service", techActor, {}, {
+        smsSender: input.smsSender
+      });
     }
   }
 
