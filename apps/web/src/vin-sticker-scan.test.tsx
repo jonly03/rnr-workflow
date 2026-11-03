@@ -92,7 +92,7 @@ describe("public intake door-sticker scan (card 1)", () => {
     render(<PublicIntakePage />);
     // The Start button is right there; no instruction cards in the way.
     expect(
-      screen.getByRole("button", { name: /start camera scan/i })
+      screen.getByRole("button", { name: /start vin scan/i })
     ).toBeInTheDocument();
     // Mounting the scan UI warms the vPIC connection (DNS + TLS), so
     // the car lookup after a decode isn't stuck behind a cold start.
@@ -248,7 +248,7 @@ describe("public intake door-sticker scan (card 1)", () => {
       Promise.reject(new Error("NotAllowedError"))
     );
     render(<PublicIntakePage />);
-    fireEvent.click(screen.getByRole("button", { name: /start camera scan/i }));
+    fireEvent.click(screen.getByRole("button", { name: /start vin scan/i }));
     expect(
       await screen.findByText(/camera preview couldn't start/i)
     ).toBeInTheDocument();
@@ -256,19 +256,19 @@ describe("public intake door-sticker scan (card 1)", () => {
     // The stream was torn down and the start button is back.
     expect(trackStop).toHaveBeenCalled();
     expect(
-      screen.getByRole("button", { name: /start camera scan/i })
+      screen.getByRole("button", { name: /start vin scan/i })
     ).toBeInTheDocument();
   });
 
   it("stopping the camera clears the Scanning status", async () => {
     stubCamera(() => Promise.resolve());
     render(<PublicIntakePage />);
-    fireEvent.click(screen.getByRole("button", { name: /start camera scan/i }));
+    fireEvent.click(screen.getByRole("button", { name: /start vin scan/i }));
     expect(await screen.findByText(/Scanning…/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /stop camera/i }));
     expect(screen.queryByText(/Scanning…/)).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /start camera scan/i })
+      screen.getByRole("button", { name: /start vin scan/i })
     ).toBeInTheDocument();
   });
 
@@ -284,7 +284,7 @@ describe("public intake door-sticker scan (card 1)", () => {
     ).not.toBeInTheDocument();
     // Scan leads the card, the field follows it in the layout, and
     // the how-to graphics still hide behind their link.
-    const start = screen.getByRole("button", { name: /start camera scan/i });
+    const start = screen.getByRole("button", { name: /start vin scan/i });
     expect(
       start.compareDocumentPosition(vinInput()) &
         Node.DOCUMENT_POSITION_FOLLOWING
@@ -305,7 +305,7 @@ describe("public intake door-sticker scan (card 1)", () => {
     expect(
       screen.queryByText(/fit the barcode or qr code inside the frame/i)
     ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /start camera scan/i }));
+    fireEvent.click(screen.getByRole("button", { name: /start vin scan/i }));
     expect(await screen.findByText(/Scanning…/)).toBeInTheDocument();
     expect(
       screen.getByText(/fit the barcode or qr code inside the frame/i)
@@ -321,7 +321,7 @@ describe("public intake door-sticker scan (card 1)", () => {
     stubCamera(() => Promise.resolve());
     render(<PublicIntakePage />);
     fireEvent.change(vinInput(), { target: { value: "1C4H" } });
-    fireEvent.click(screen.getByRole("button", { name: /start camera scan/i }));
+    fireEvent.click(screen.getByRole("button", { name: /start vin scan/i }));
     expect(await screen.findByText(/Scanning…/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /stop camera/i }));
     expect(vinInput().value).toBe("1C4H");
@@ -353,14 +353,14 @@ describe("public intake door-sticker scan (card 1)", () => {
       screen.queryByRole("button", { name: /scan the sticker/i })
     ).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /start camera scan/i })
+      screen.getByRole("button", { name: /start vin scan/i })
     ).toBeInTheDocument();
     expect(vinInput()).toBeInTheDocument();
   });
 
   it("without a camera the panel points at the photo option instead of dying", async () => {
     render(<PublicIntakePage />);
-    fireEvent.click(screen.getByRole("button", { name: /start camera scan/i }));
+    fireEvent.click(screen.getByRole("button", { name: /start vin scan/i }));
     expect(await screen.findByText(/Camera isn't available here/)).toBeInTheDocument();
   });
 });
