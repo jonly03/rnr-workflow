@@ -3,7 +3,8 @@ import {
   decodeStickerCode,
   extractVinFromStickerText,
   isValidVin,
-  lookupVinCarInfo
+  lookupVinCarInfo,
+  warmVinLookupConnection
 } from "./vin-scan";
 import { DoorJambGraphic, StickerGraphic } from "./vin-scan-graphics";
 
@@ -29,9 +30,10 @@ export function VinStickerScanner({
   /** Fill the intake's VIN field with a confirmed decode (vin-scan's isValidVin is the same gate typed VINs play by). */
   onUseVin: (vin: string) => void;
   /**
-   * Embedded = the Scan tab of card 1's [Scan | Type] tabs: the
-   * panel is simply open, and the tab strip above does the
-   * switching the standalone entry button + close row used to do.
+   * Embedded = card 1's stacked layout (2026-11-03 — the [Scan |
+   * Type] tab bar is gone; it read as a button that did nothing on
+   * phones, where Scan was already the default): the panel is
+   * simply open at the top of the card, above the VIN field.
    */
   embedded?: boolean;
 }) {
@@ -56,6 +58,41 @@ export function VinStickerScanner({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const scanningRef = useRef(false);
+  // Sequence guard for the car lookup: a newer candidate (or a
+  // cleared one) invalidates any lookup still in flight, so a slow
+  // answer for a discarded VIN can never land on the card.
+  const lookupSeqRef = useRef(0);
+
+  /**
+   * Kick the vPIC lookup off NOW, in the same breath as the decode
+   * that produced the candidate — not in an effect after the next
+   * render. Nelly's 2026-11-03 field note was "the lookup is not
+   * happening right away"; between the direct call here and the
+   * connection warmed at mount, the answer is one round-trip away
+   * when the confirmation card appears.
+   */
+  function startLookup(vin: string) {
+    const seq = ++lookupSeqRef.current;
+    setLookupState("loading");
+    setCarInfo(null);
+    void lookupVinCarInfo(vin).then(info => {
+      if (lookupSeqRef.current !== seq) return;
+      if (info) {
+        setCarInfo(info);
+        setLookupState("done");
+      } else {
+        setLookupState("unknown");
+      }
+    });
+  }
+
+  /** Drop the candidate and forget any lookup still out for it. */
+  function clearCandidate() {
+    lookupSeqRef.current++;
+    setCandidate(null);
+    setCarInfo(null);
+    setLookupState("idle");
+  }
 
   function stopCamera() {
     scanningRef.current = false;
@@ -70,7 +107,10 @@ export function VinStickerScanner({
   }
 
   // Never leave the camera running after the panel or page goes away.
+  // Mounting also warms the vPIC connection (DNS + TLS), so the car
+  // lookup that follows a decode doesn't pay a cold handshake.
   useEffect(() => {
+    warmVinLookupConnection();
     const stream = streamRef;
     const scanning = scanningRef;
     return () => {
@@ -85,7 +125,7 @@ export function VinStickerScanner({
   function handleDecodedText(text: string, format: string) {
     const vin = extractVinFromStickerText(text);
     if (!vin) {
-      setCandidate(null);
+      clearCandidate();
       setStatus(
         `That ${format || "code"} doesn't contain a VIN. Point the camera at the barcode or QR code on the door sticker.`
       );
@@ -95,14 +135,15 @@ export function VinStickerScanner({
       // The extract guarantees the shape, so a failure here is the
       // check digit: a character was misread. Say so, offer no
       // candidate — retry or typing beats a quietly wrong VIN.
-      setCandidate(null);
+      clearCandidate();
       setStatus(
-        `We read ${vin}, but it didn't pass the VIN check — a character was probably misread. Try scanning again, or type the VIN in the box above.`
+        `We read ${vin}, but it didn't pass the VIN check — a character was probably misread. Try scanning again, or type the VIN in the box below.`
       );
       return;
     }
     setStatus(null);
     setCandidate(vin);
+    startLookup(vin);
     try {
       navigator.vibrate?.(120);
     } catch {
@@ -110,32 +151,9 @@ export function VinStickerScanner({
     }
   }
 
-  useEffect(() => {
-    if (!candidate) {
-      setCarInfo(null);
-      setLookupState("idle");
-      return;
-    }
-    let cancelled = false;
-    setLookupState("loading");
-    setCarInfo(null);
-    void lookupVinCarInfo(candidate).then(info => {
-      if (cancelled) return;
-      if (info) {
-        setCarInfo(info);
-        setLookupState("done");
-      } else {
-        setLookupState("unknown");
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [candidate]);
-
   async function startCamera() {
     setStatus(null);
-    setCandidate(null);
+    clearCandidate();
     if (!navigator.mediaDevices?.getUserMedia) {
       setStatus("Camera isn't available here — use a photo of the sticker instead.");
       return;
@@ -166,7 +184,7 @@ export function VinStickerScanner({
         stream.getTracks().forEach(t => t.stop());
         streamRef.current = null;
         setStatus(
-          "The camera preview couldn't start — use a photo of the sticker instead, or type the VIN in the box above."
+          "The camera preview couldn't start — use a photo of the sticker instead, or type the VIN in the box below."
         );
         return;
       }
@@ -192,7 +210,7 @@ export function VinStickerScanner({
       if (!cancelled && scanningRef.current && video.readyState < 2) {
         stopCamera();
         setStatus(
-          "The camera isn't sending pictures — use a photo of the sticker instead, or type the VIN in the box above."
+          "The camera isn't sending pictures — use a photo of the sticker instead, or type the VIN in the box below."
         );
       }
     }, 3500);
@@ -244,19 +262,19 @@ export function VinStickerScanner({
     e.target.value = "";
     if (!file) return;
     setDecoding(true);
-    setCandidate(null);
+    clearCandidate();
     setStatus("Reading the sticker photo…");
     try {
       const hit = await decodeStickerCode(file);
       if (!hit) {
         setStatus(
-          "No barcode or QR code found in that photo. Get closer, fill the frame with just the code, and avoid glare — or type the VIN above."
+          "No barcode or QR code found in that photo. Get closer, fill the frame with just the code, and avoid glare — or type the VIN below."
         );
       } else {
         handleDecodedText(hit.text, hit.format);
       }
     } catch {
-      setStatus("Couldn't read that photo. Try again, or type the VIN in the box above.");
+      setStatus("Couldn't read that photo. Try again, or type the VIN in the box below.");
     } finally {
       setDecoding(false);
     }
@@ -265,7 +283,7 @@ export function VinStickerScanner({
   function closePanel() {
     stopCamera();
     setOpen(false);
-    setCandidate(null);
+    clearCandidate();
     setStatus(null);
   }
 
@@ -294,19 +312,36 @@ export function VinStickerScanner({
         </div>
       )}
 
-      <video
-        ref={el => {
-          videoRef.current = el;
-          if (el) {
-            el.muted = true;
-            el.setAttribute("playsinline", "");
-          }
-        }}
-        className="vin-scan-video"
-        playsInline
-        muted
-        style={{ display: cameraOn ? "block" : "none" }}
-      />
+      <div className={cameraOn ? "vin-scan-view on" : "vin-scan-view"}>
+        <video
+          ref={el => {
+            videoRef.current = el;
+            if (el) {
+              el.muted = true;
+              el.setAttribute("playsinline", "");
+            }
+          }}
+          className="vin-scan-video"
+          playsInline
+          muted
+          style={{ display: cameraOn ? "block" : "none" }}
+        />
+        {cameraOn && (
+          // Framing guide (Nelly, 2026-11-03): one wide rectangle
+          // the customer fits the sticker's code into, instead of
+          // guessing at a bare preview. Purely visual — pointer
+          // events pass through, and Stop stays fully usable.
+          <div className="vin-scan-frame" aria-hidden="true">
+            <span className="vin-scan-corner vin-scan-corner-tl" />
+            <span className="vin-scan-corner vin-scan-corner-tr" />
+            <span className="vin-scan-corner vin-scan-corner-bl" />
+            <span className="vin-scan-corner vin-scan-corner-br" />
+            <span className="vin-scan-frame-caption">
+              Fit the barcode or QR code inside the frame
+            </span>
+          </div>
+        )}
+      </div>
       {cameraOn && (
         <p className="vin-scan-hint">
           Hold the barcode or QR code inside the frame, about 6–10 inches
@@ -365,7 +400,7 @@ export function VinStickerScanner({
             </>
           )}
           <div className="actions">
-            <button type="button" onClick={() => setCandidate(null)}>
+            <button type="button" onClick={clearCandidate}>
               Scan again
             </button>
             <button
@@ -373,7 +408,7 @@ export function VinStickerScanner({
               className="primary"
               onClick={() => {
                 stopCamera();
-                setCandidate(null);
+                clearCandidate();
                 setOpen(false);
                 onUseVin(candidate);
               }}
