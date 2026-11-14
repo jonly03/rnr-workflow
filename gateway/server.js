@@ -54,18 +54,22 @@ const AUDIT_PATH = process.env.RR_AUDIT_PATH || path.join(__dirname, 'audit.log'
 // get_case_status instead of re-implementing the case engine.
 // NOTE 2026-11-13 ~23:30 EST: Pedro turned Vercel Deployment Protection
 // OFF on rnr-case-web, so the staging intake now loads publicly and no
-// bypass is needed. But the Case API is erroring: RESOLVED CAUSE 23:36
-// EST — the staging database (Supabase rnr-case-core-staging, ref
-// tvfrfkxyvicnjibjhloa, Free plan) was PAUSED after 7 days idle; every
-// DB call failed ENOTFOUND. Pedro resumed it ~23:35 EST; restoration
-// takes minutes to hours and was NOT yet healthy at 23:37 EST (health
-// still 500). Until it is healthy the proxy honestly returns 502
-// upstream_error; the bypass env is kept for a wall coming back.
+// bypass is needed. The Case API behind it was erroring (500
+// INTERNAL_ERROR) because the staging database (Supabase
+// rnr-case-core-staging, ref tvfrfkxyvicnjibjhloa, Free plan) was PAUSED
+// after 7 days idle; every DB call failed ENOTFOUND. Pedro resumed it
+// ~23:35 EST; restoration was CONFIRMED healthy 23:47 EST
+// (/api/v1/health ok:true, storage postgres) and re-verified 2026-11-14
+// ~04:50 EST by direct curl (ok:true, storage postgres). create_case /
+// get_case_status now proxy live; the proxy still honestly returns 502
+// upstream_error if the API ever goes down again — the gateway never
+// fakes a 201. The bypass env is kept for a wall coming back.
 const CASE_API_URL = (process.env.RR_CASE_API_URL || 'https://rnr-case-staging-zero-to100-edu.vercel.app').replace(/\/$/, '');
 // Optional Vercel Deployment Protection bypass secret, sent as
-// x-vercel-protection-bypass on proxied calls. Staging currently sits
-// behind Deployment Protection, so without this the proxy returns 502
-// upstream_error until protection is turned off. Never commit the secret.
+// x-vercel-protection-bypass on proxied calls. The wall is OFF since
+// 2026-11-13 ~23:30 EST, so the bypass is not needed right now; keep
+// the env for a wall coming back, else the proxy returns 502
+// upstream_error. Never commit the secret.
 const VERCEL_BYPASS = process.env.RR_VERCEL_BYPASS_SECRET || '';
 const VPIC = 'https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues';
 const PORT = Number(process.env.PORT || 3000);
@@ -999,6 +1003,6 @@ server.listen(PORT, () => {
   console.log(`Tools: ${TOOL_NAMES.join(', ')} (POST /brain, GET /brain/tools)`);
   console.log(`Catalog: ${(catalog.vehicles || []).length} vehicles from data/catalog.json`);
   console.log(`Pricing: decode $${config.pricing.decode} / decode+glass $${config.pricing.decodeGlass} / full vehicle $${config.pricing.fullVehicle} / location +$${config.pricing.locationAddon} (config/pricing.json)`);
-  console.log(`Case API: ${CASE_API_URL}${VERCEL_BYPASS ? ' (Vercel bypass set)' : ''} — wall is OFF since 2026-11-13 23:30 EST, but the API answers INTERNAL_ERROR; create_case/get_case_status will 502 upstream_error until it is healthy`);
+  console.log(`Case API: ${CASE_API_URL}${VERCEL_BYPASS ? ' (Vercel bypass set)' : ''} — wall OFF since 2026-11-13 23:30 EST; staging DB restoration confirmed healthy 23:47 EST, create_case/get_case_status proxy live (502 upstream_error only if it goes down again)`);
   console.log('Demo key: rr-demo (25/month). Staff key: rr-staff. Low-quota test key: rr-test-low (quota 1). Rate test key: rr-test-rate (5/min).');
 });

@@ -87,17 +87,17 @@ through the gateway — damage photos go through the web intake.
 
 - Vercel Deployment Protection was turned OFF 2026-11-13 ~23:30 EST, so
   the staging intake page loads publicly and no bypass is needed.
-- BUT the Case API behind it is erroring: `/api/v1/health` answers
-  `500 INTERNAL_ERROR` ("The request could not be completed.").
-  RESOLVED CAUSE 2026-11-13 23:36 EST: the staging database was PAUSED,
-  not deleted — Supabase project rnr-case-core-staging (ref
-  tvfrfkxyvicnjibjhloa, Free plan) paused Nov 13 after 7 days idle.
-  Pedro resumed it himself ~23:35 EST; restoration takes "a few minutes
-  to several hours" and was NOT yet healthy at 23:37 EST (health still
-  500). Until it is healthy, `create_case` and `get_case_status`
-  honestly return `502 upstream_error` and charge $0 — the gateway never
-  fakes a 201. Note for the future: free Supabase projects pause after 7
-  days idle, so staging goes down whenever nobody touches it for a week.
+- The Case API behind it was erroring (`500 INTERNAL_ERROR`) because
+  the staging database was PAUSED, not deleted — Supabase project
+  rnr-case-core-staging (ref tvfrfkxyvicnjibjhloa, Free plan) paused
+  Nov 13 after 7 days idle. Pedro resumed it himself ~23:35 EST;
+  restoration was CONFIRMED healthy 23:47 EST (`/api/v1/health`
+  `ok:true`, storage postgres) and re-verified 2026-11-14 ~04:50 EST
+  by direct curl. `create_case` and `get_case_status` now proxy live;
+  if the API ever goes down again they honestly return `502
+  upstream_error` and charge $0 — the gateway never fakes a 201. Note
+  for the future: free Supabase projects pause after 7 days idle, so
+  staging goes down whenever nobody touches it for a week.
 - `order_glass` enforces every gate (staff key, valid VIN, spend cap)
   and then returns `503 mygrant_not_configured`: the live MyGrant session
   is not wired in this standalone build. The real provider lives in
