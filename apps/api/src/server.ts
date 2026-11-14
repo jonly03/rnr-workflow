@@ -2,6 +2,10 @@ import { createApp } from "./app.js";
 import { ensureSeedAdmin } from "./auth.js";
 import { createRealtimeServer } from "./realtime.js";
 import { createStore } from "./store-factory.js";
+import { mountBrainGateway } from "./gateway.js";
+import { createGlassCatalogProvider, createSourcingProvider } from "./mygrant.js";
+import { loadPricingConfig } from "./pricing.js";
+import { loadQuotingConfig } from "./quoting.js";
 
 const port = Number(process.env.PORT || 3001);
 
@@ -18,7 +22,19 @@ if (!authSecret) {
 }
 
 const store = createStore();
-const app = createApp(store, { authSecret });
+// One set of providers/configs shared by the API and the Brain Gateway,
+// so the door and the app see the same store, catalog, sourcing, and pricing.
+const glassCatalog = createGlassCatalogProvider();
+const sourcingProvider = createSourcingProvider();
+const pricingConfig = loadPricingConfig();
+const quotingConfig = loadQuotingConfig();
+const app = createApp(
+  store,
+  { authSecret },
+  {},
+  { glassCatalog, sourcingProvider, pricingConfig, quotingConfig }
+);
+mountBrainGateway(app, { store, glassCatalog, sourcingProvider, pricingConfig, quotingConfig });
 const server = createRealtimeServer(app, store, authSecret);
 
 async function boot() {

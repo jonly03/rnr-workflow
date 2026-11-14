@@ -1,0 +1,1 @@
+{"currency":"USD","decode":0.15,"decodeGlass":0.85,"fullVehicle":1.25,"locationAddon":0.1,"note":"Single source of truth for Brain Gateway usage prices. Change the numbers here, never in code. These are the approved draft defaults — Pedro sets the prices.","version":1}
