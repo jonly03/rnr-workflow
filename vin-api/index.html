@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>R&amp;R VIN API — Layer 2 MVP (standalone demo)</title>
+<style>
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; max-width: 960px; margin: 0 auto; padding: 20px; color: #1a1a1a; line-height: 1.5; }
+  h1 { margin-bottom: 0; } h1 span { color: #c00; }
+  .muted { color: #666; } .small { font-size: 0.9em; }
+  .card { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin: 16px 0; }
+  .warn-box { background: #fff8e1; border: 1px solid #f0c040; padding: 10px; border-radius: 6px; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 0.8em; }
+  .badge.ok { background: #e0f2e9; color: #14663a; }
+  .badge.warn { background: #fff3cd; color: #7a5b00; }
+  .badge.dim { background: #eee; color: #555; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0 20px; }
+  th, td { border: 1px solid #ddd; padding: 8px; text-align: left; vertical-align: top; }
+  th { background: #f5f5f5; }
+  input[type="text"], input[type="number"] { padding: 8px; font-size: 1em; width: 100%; box-sizing: border-box; }
+  input#vin { font-family: monospace; text-transform: uppercase; max-width: 340px; }
+  button { background: #c00; color: #fff; border: 0; border-radius: 6px; padding: 10px 18px; font-size: 1em; cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.ghost { background: #eee; color: #222; padding: 6px 10px; font-size: 0.9em; margin: 2px; }
+  .qs { margin: 6px 0 0 16px; padding: 0; font-size: 0.9em; color: #555; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+  .grid label { display: block; font-size: 0.9em; color: #555; }
+  .price-row { display: flex; justify-content: space-between; max-width: 420px; padding: 2px 0; }
+  #error { color: #a00; font-weight: 600; }
+  pre { background: #f5f5f5; padding: 12px; overflow: auto; font-size: 0.85em; }
+  fieldset { border: 1px solid #ddd; border-radius: 8px; margin: 16px 0; }
+  legend { font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>R&amp;R VIN API <span>— Layer 2 MVP</span></h1>
+<p class="muted">VIN + door-jamb photo &rarr; whole car: exterior, interior, engine, mechanical. Standalone demo — no server, no other layer, nothing is charged. The VIN is decoded live by NHTSA (free); parts come from R&amp;R's verified catalog (<code>catalog.json</code>, 4 vehicles, 37 part rows).</p>
+
+<fieldset>
+  <legend>1 · VIN lookup</legend>
+  <form id="lookup-form">
+    <label for="vin">VIN (17 characters)</label><br>
+    <input id="vin" type="text" maxlength="17" placeholder="e.g. 3TMAZ5CN6GM000123" autocomplete="off">
+    <div style="margin:10px 0">
+      <label><input type="checkbox" name="needs" value="exterior" checked> Exterior</label>
+      <label><input type="checkbox" name="needs" value="interior" checked> Interior</label>
+      <label><input type="checkbox" name="needs" value="engine" checked> Engine</label>
+      <label><input type="checkbox" name="needs" value="mechanical" checked> Mechanical</label>
+      <label><input type="checkbox" name="needs" value="glass" checked> Glass only (subset of exterior)</label>
+    </div>
+    <button type="submit">Decode &amp; look up parts</button>
+  </form>
+  <p class="small">Try one: 
+    <button class="ghost" data-vin="3TMAZ5CN6GM000123">2016 Tacoma</button>
+    <button class="ghost" data-vin="3CZRZ1H58PM000123">2023 HR-V</button>
+    <button class="ghost" data-vin="5TDZK3DC0DS000123">2013 Sienna</button>
+    <button class="ghost" data-vin="4T1B11HK4JU000123">2018 Camry</button>
+    <button class="ghost" data-vin="WDD5J5BB2LN065797">2020 CLA35 AMG</button>
+    <button class="ghost" data-vin="1HGCM82633A004352">2003 Accord</button>
+  </p>
+  <p class="muted small">The first four are synthetic test VINs (valid check digits) that decode live to the demo vehicles. The CLA35 and Accord decode live too, but aren't in the parts catalog yet — their categories come back null, never guessed.</p>
+</fieldset>
+
+<fieldset>
+  <legend>2 · Door-jamb label (optional — settles tires)</legend>
+  <p class="muted small">Photograph the label on the driver door jamb. The camera reads tire size, cold pressures, GVWR and build date. Check the values — correct anything misread — then run the lookup above. A confirmed tire size replaces the "variant ambiguous" tire answer.</p>
+  <input id="doorjamb-photo" type="file" accept="image/*">
+  <button id="doorjamb-read" type="button">Read label</button>
+  <p id="doorjamb-status" class="muted small"></p>
+  <div id="doorjamb-result"></div>
+  <div class="grid">
+    <label>Tire size (front)<input id="dj-tire-front" type="text" placeholder="e.g. 245/35 ZR19"></label>
+    <label>Tire size (rear)<input id="dj-tire-rear" type="text" placeholder="e.g. 245/35 ZR19"></label>
+    <label>Pressure front (PSI)<input id="dj-pressure-front" type="number" min="0" max="80"></label>
+    <label>Pressure rear (PSI)<input id="dj-pressure-rear" type="number" min="0" max="80"></label>
+    <label>GVWR (lbs)<input id="dj-gvwr" type="number" min="0"></label>
+    <label>Build date (MM/YY)<input id="dj-build-date" type="text" placeholder="e.g. 11/19"></label>
+    <label>VIN from label<input id="dj-vin" type="text" maxlength="17"></label>
+  </div>
+  <p class="muted small">Manual entries are labeled "manual entry (door-jamb label)" in the result. The photo never leaves this browser except to the OCR library's CDN download — no photo is uploaded to R&amp;R.</p>
+</fieldset>
+
+<fieldset>
+  <legend>Pricing (draft — from config.json)</legend>
+  <div id="pricing"><p class="muted">Loading…</p></div>
+</fieldset>
+
+<p id="error"></p>
+<div id="result"></div>
+
+<footer>
+  <hr>
+  <p class="muted small">What this MVP does not do: no prices or availability (supplier feeds don't exist yet — parts show null), no NAGS glass feed (glass shows <i>licensed_required</i> unless the part number is on file from an R&amp;R job), no charging, no signups, no customer data. A variant the VIN can't settle is reported as ambiguous with the follow-up question — never guessed. See <code>README.md</code> and <code>API_SPEC.md</code> in this folder.</p>
+</footer>
+
+<script type="module" src="./lookup.js"></script>
+<script type="module" src="./door-jamb.js"></script>
+</body>
+</html>
