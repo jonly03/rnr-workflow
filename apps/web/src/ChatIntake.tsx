@@ -17,7 +17,7 @@
  * stored by us (SpeechRecognition hands us text, never audio).
  *
  * Prices: customer ranges come from the shared
- * config/vin-brain-pricing.json (defaults Pedro sets) — never
+ * apps/web/src/vin-brain-pricing.json (defaults Pedro sets) — never
  * hardcoded here. Ranges are shown as typical, staff confirm the
  * real price with the quote.
  */
@@ -59,7 +59,7 @@ import {
   type CustomerQuoteRanges,
   type VoiceCapability
 } from "./chat-intake";
-import pricing from "../../../config/vin-brain-pricing.json";
+import pricing from "./vin-brain-pricing.json";
 
 const QUOTE_RANGES = pricing.customer_quote_ranges as unknown as CustomerQuoteRanges;
 

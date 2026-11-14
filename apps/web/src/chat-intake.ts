@@ -263,7 +263,7 @@ export function verdictReason(verdict: DamageVerdict, answers: DamageAnswers, la
 }
 
 // ---------------------------------------------------------------------
-// Pricing ranges (from config/vin-brain-pricing.json — defaults Pedro sets)
+// Pricing ranges (from apps/web/src/vin-brain-pricing.json — defaults Pedro sets)
 // ---------------------------------------------------------------------
 
 export interface CustomerQuoteRanges {
