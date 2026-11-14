@@ -90,6 +90,8 @@ import {
 import { OpsMap, type OpsMapMarker } from "./OpsMap";
 import { useJobLocationSharing } from "./location-sharing";
 import { VinStickerScanner } from "./VinStickerScan";
+import { ChatIntakePage } from "./ChatIntake";
+import { IntakeLiveStatus } from "./IntakeLiveStatus";
 import { isValidVin } from "./vin-scan";
 
 type Screen = "queue" | "new" | "detail" | "quote" | "operators" | "schedule" | "invoices" | "ops";
@@ -493,14 +495,18 @@ export function App() {
   };
 
   // Customer-facing public pages live outside the staff app entirely:
-  // /quote/<token> (sign = approve), /track/<token> (job tracking), and
-  // /intake (the QR front door — the customer creates the case).
+  // /quote/<token> (sign = approve), /track/<token> (job tracking),
+  // /intake (the QR front door — the customer creates the case), and
+  // /chat (the talking intake — same case, by conversation).
   // They are gated by the token (or, for intake, by rate limit +
   // validation), never by a staff session.
   const publicRoute = useMemo(() => {
     if (typeof window === "undefined") return null;
     if (window.location.pathname === "/intake") {
       return { kind: "intake" as const, token: "" };
+    }
+    if (window.location.pathname === "/chat") {
+      return { kind: "chat" as const, token: "" };
     }
     const invite = window.location.pathname.match(/^\/invite\/([A-Za-z0-9_-]+)$/);
     if (invite) {
@@ -518,6 +524,9 @@ export function App() {
   }
   if (publicRoute?.kind === "intake") {
     return <PublicIntakePage />;
+  }
+  if (publicRoute?.kind === "chat") {
+    return <ChatIntakePage />;
   }
   if (publicRoute?.kind === "invite") {
     return <InviteAcceptPage credential={publicRoute.token} authError={authError} />;
@@ -5704,99 +5713,6 @@ function isValidIntakeYear(raw: string): boolean {
   if (!/^\d{4}$/.test(t)) return false;
   const y = Number(t);
   return y >= INTAKE_MIN_VEHICLE_YEAR && y <= new Date().getFullYear() + 1;
-}
-
-const INTAKE_STATUS_POLL_MS = 4000;
-const INTAKE_TERMINAL_PHASES = ["approved", "declined", "expired"];
-
-/**
- * Live progress on the intake confirmation page: polls the client-safe
- * status projection behind the customer's status token and narrates
- * what's happening behind the scenes (identifying → pricing → quote).
- * The page is COMPLETE when the quote exists: it mints the sign link
- * itself and hands it over as a button — the customer never has to wait
- * for a text or a staff click. Signing is what books the job in (the
- * staff flow then starts at Order parts).
- */
-function IntakeLiveStatus({ statusToken }: { statusToken: string }) {
-  const [status, setStatus] = useState<PublicIntakeStatus | null>(null);
-  const [signUrl, setSignUrl] = useState<string | null>(null);
-  const mintingRef = useRef(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    let timer: number | undefined;
-    const poll = async () => {
-      let terminal = false;
-      try {
-        const s = await getPublicIntakeStatus(statusToken);
-        if (!cancelled && s && typeof s.phase === "string" && Array.isArray(s.steps)) {
-          setStatus(s);
-          terminal = INTAKE_TERMINAL_PHASES.includes(s.phase);
-        }
-      } catch {
-        // A failed poll is never the customer's problem: keep waiting.
-      }
-      if (!cancelled && !terminal) {
-        timer = window.setTimeout(poll, INTAKE_STATUS_POLL_MS);
-      }
-    };
-    void poll();
-    return () => {
-      cancelled = true;
-      if (timer) window.clearTimeout(timer);
-    };
-  }, [statusToken]);
-
-  // Once the quote is ready, mint its sign link (once) and show it.
-  useEffect(() => {
-    if (status?.quote_ready && !signUrl && !mintingRef.current) {
-      mintingRef.current = true;
-      createIntakeQuoteLink(statusToken)
-        .then(link => setSignUrl(`${window.location.origin}${link.path}`))
-        .catch(() => {
-          // Let a later poll retry the mint.
-          mintingRef.current = false;
-        });
-    }
-  }, [status?.quote_ready, signUrl, statusToken]);
-
-  const steps: PublicIntakeStatus["steps"] = status?.steps ?? [
-    { key: "received", label: "Request received", done: true },
-    { key: "glass", label: "Identifying your glass", done: false },
-    { key: "pricing", label: "Pricing your job", done: false },
-    { key: "quote", label: "Quote ready to sign", done: false }
-  ];
-
-  return (
-    <div className="intake-live">
-      <h2>What&rsquo;s happening with your request</h2>
-      {status?.headline && <p aria-live="polite">{status.headline}</p>}
-      <ul className="intake-steps">
-        {steps.map(s => (
-          <li key={s.key} className={s.done ? "done" : "pending"}>
-            <span aria-hidden="true">{s.done ? "✓" : "•"}</span> {s.label}
-          </li>
-        ))}
-      </ul>
-      {signUrl && status?.phase === "quote_ready" && (
-        <>
-          <p>
-            <a className="primary intake-sign-btn" href={signUrl}>
-              Review &amp; sign your quote
-            </a>
-          </p>
-          <small>
-            Signing approves your quote — that&rsquo;s what books your job
-            in. No payment is due when you sign.
-          </small>
-        </>
-      )}
-      {status?.phase === "approved" && (
-        <p>✓ Approved — thank you! We&rsquo;ll text you to schedule your service.</p>
-      )}
-    </div>
-  );
 }
 
 /**
