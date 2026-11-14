@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shop Ops Brain — R&amp;R's Finest Auto Glass (MVP)</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; background: #f4f4f2; color: #1c1c1c; }
+  header { background: #14213d; color: #fff; padding: 14px 18px; }
+  header h1 { margin: 0; font-size: 20px; }
+  header p { margin: 4px 0 0; font-size: 13px; color: #d7dbe3; }
+  .banner { background: #fff3cd; border-bottom: 2px solid #e0a800; padding: 8px 18px; font-size: 13px; }
+  nav { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 18px 0; }
+  nav button { border: 1px solid #bbb; background: #fff; padding: 8px 12px; border-radius: 6px 6px 0 0; cursor: pointer; font-size: 14px; }
+  nav button.active { background: #14213d; color: #fff; border-color: #14213d; }
+  main { padding: 16px 18px 40px; max-width: 1100px; }
+  section.tab { display: none; background: #fff; border: 1px solid #ddd; border-radius: 0 8px 8px 8px; padding: 16px; }
+  section.tab.active { display: block; }
+  h2 { margin-top: 0; font-size: 18px; }
+  h3 { font-size: 15px; margin: 18px 0 6px; }
+  .muted { color: #555; font-size: 13px; }
+  .flag { background: #fff3cd; border-left: 4px solid #e0a800; padding: 6px 10px; margin: 8px 0; font-size: 13px; }
+  .err { background: #fdecea; border-left: 4px solid #c0392b; padding: 6px 10px; margin: 8px 0; font-size: 13px; }
+  .ok { background: #eafaf1; border-left: 4px solid #1e8449; padding: 6px 10px; margin: 8px 0; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; margin: 8px 0; }
+  th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background: #f0f0ee; }
+  input, select, textarea { font-size: 14px; padding: 6px; margin: 2px 0; }
+  button { font-size: 14px; padding: 7px 12px; cursor: pointer; }
+  .btn-primary { background: #14213d; color: #fff; border: 1px solid #14213d; border-radius: 4px; }
+  .btn-danger { background: #fff; color: #c0392b; border: 1px solid #c0392b; border-radius: 4px; }
+  .drop { border: 2px dashed #888; border-radius: 8px; padding: 22px; text-align: center; color: #555; margin: 10px 0; }
+  .drop.over { border-color: #14213d; background: #eef2f8; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+  .card { border: 1px solid #ddd; border-radius: 8px; padding: 12px; background: #fbfbf9; }
+  .card h4 { margin: 0 0 6px; font-size: 14px; }
+  .kv { font-size: 13px; line-height: 1.5; }
+  .kv b { display: inline-block; min-width: 130px; color: #444; }
+  label { display: block; font-size: 13px; margin: 8px 0 2px; color: #444; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+  .row > div { min-width: 160px; }
+  footer { padding: 12px 18px; font-size: 12px; color: #666; }
+  @media (max-width: 640px) { .kv b { min-width: 100px; } }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>Shop Ops Brain — R&amp;R's Finest Auto Glass</h1>
+  <p>Layer 3 MVP · standalone black-box · 118 Terrace St, Roxbury MA 02120 · 857-266-1284 · Mon–Sat 8–6 · Ship-to C034125-001</p>
+</header>
+<div class="banner"><strong>DRAFT ONLY.</strong> Nothing in this app sends email, places a real Mygrant order, or files an invoice. Every order and invoice here is a <strong>draft preview</strong>. Amounts shown are insurer-<em>approved</em> amounts — never money received.</div>
+
+<nav id="tabs">
+  <button data-tab="intake" class="active">1 · Referral Intake</button>
+  <button data-tab="jobs">2 · Jobs</button>
+  <button data-tab="order">3 · Mygrant Order</button>
+  <button data-tab="invoice">4 · Invoice Draft</button>
+  <button data-tab="profit">5 · True Profit</button>
+  <button data-tab="brief">6 · Daily Brief</button>
+  <button data-tab="tech">7 · Tech Helper</button>
+  <button data-tab="pricing">8 · Pricing</button>
+</nav>
+
+<main>
+<!-- ============ 1 · INTAKE ============ -->
+<section class="tab active" id="tab-intake">
+  <h2>Referral auto-read</h2>
+  <p class="muted">Drop a Safelite referral PDF, or paste the sheet text. The parser is the verified one from the shop's referral intake (0 field mismatches across all 8 real referrals). <strong>No real customer data leaves this page</strong> — parsing happens in your browser. Test with the synthetic fixtures below; real PDFs stay in the shop's files, never in this repo.</p>
+  <div class="drop" id="dropzone">Drop a Safelite referral PDF here, or <button id="pickfile">choose a file</button>
+    <input type="file" id="fileinput" accept="application/pdf" style="display:none">
+  </div>
+  <div id="pdfjs-status" class="muted"></div>
+  <label for="pastetext">Or paste referral sheet text:</label>
+  <textarea id="pastetext" rows="6" style="width:100%" placeholder="Paste the text of a Safelite referral sheet…"></textarea>
+  <div class="row">
+    <button class="btn-primary" id="parse-paste">Parse pasted text</button>
+    <button id="load-fixture-text">Load synthetic sheet text</button>
+    <button id="load-fixtures">Load 8 synthetic demo jobs</button>
+    <button id="download-synth-pdf">Download a synthetic referral PDF</button>
+    <button class="btn-danger" id="reset-data">Reset demo data</button>
+  </div>
+  <div id="intake-result"></div>
+</section>
+
+<!-- ============ 2 · JOBS ============ -->
+<section class="tab" id="tab-jobs">
+  <h2>Jobs</h2>
+  <p class="muted">Workflow states use the business-system Lists values. Advance a job only when the work is actually done. Data is stored in this browser only (localStorage) — the demo ships with synthetic jobs, no real customer PII.</p>
+  <div id="jobs-list"></div>
+  <h3>Edit selected job</h3>
+  <div id="job-editor"><p class="muted">Select a job above to edit dates, costs, and payment.</p></div>
+</section>
+
+<!-- ============ 3 · ORDER ============ -->
+<section class="tab" id="tab-order">
+  <h2>Mygrant order — DRAFT ONLY</h2>
+  <p class="muted">Build the order draft from a booked job. This never places a real order: Mygrant has no API, and ordering runs through the browser with Pedro's go-ahead each time. The live stock/order step uses the <code>services/mygrant-browser</code> headless-Chromium service in the integrated build; this MVP drafts the order and records the glass cost once Pedro enters it.</p>
+  <label for="order-job">Booked job</label>
+  <select id="order-job"></select>
+  <div id="order-draft"></div>
+  <h3>Record glass cost (from the Mygrant receipt)</h3>
+  <p class="muted">Glass receipts show no customer/job name — match by NAGS part number + date. Entering the cost here records it against the job and flows into True Profit.</p>
+  <div class="row">
+    <div><label>Glass / parts cost ($)</label><input id="glass-cost" type="number" step="0.01" min="0" placeholder="e.g. 154.95"></div>
+    <div><label>Sales tax paid to Mygrant ($)</label><input id="glass-tax" type="number" step="0.01" min="0" placeholder="e.g. 4.46"></div>
+    <div><label>&nbsp;</label><button class="btn-primary" id="save-glass-cost">Save glass cost to job</button></div>
+  </div>
+  <div id="order-result"></div>
+</section>
+
+<!-- ============ 4 · INVOICE ============ -->
+<section class="tab" id="tab-invoice">
+  <h2>Invoice draft</h2>
+  <p class="muted">Draft only — Pedro files the invoice at safelitesolutionsnetwork.com. Invoice within <strong>10 days of install</strong>. Amount = approved amount, flagged as approved — never money received.</p>
+  <label for="invoice-job">Job</label>
+  <select id="invoice-job"></select>
+  <div id="invoice-draft"></div>
+</section>
+
+<!-- ============ 5 · PROFIT ============ -->
+<section class="tab" id="tab-profit">
+  <h2>True profit per job</h2>
+  <p class="muted">Same formulas as the business-system Jobs sheet: Gross = Invoice − Glass − Tax; Net = Gross − Glue − Other Job Costs (labor shown separately, subtracted once). Glue is $22.66/job (1.5 tubes, Express 30) and is counted <strong>exactly once</strong> — per-job column or general expense, never both.</p>
+  <div id="profit-table"></div>
+</section>
+
+<!-- ============ 6 · BRIEF ============ -->
+<section class="tab" id="tab-brief">
+  <h2>Daily brief + mobile route</h2>
+  <p class="muted">Built from the jobs in this app only. It is <strong>not</strong> your calendar — the device calendar cache is unreliable, so an empty day here does not mean the shop is free.</p>
+  <div class="row">
+    <div><label>Brief date</label><input id="brief-date" type="date"></div>
+    <div><label>&nbsp;</label><button class="btn-primary" id="brief-go">Show brief</button></div>
+  </div>
+  <div id="brief-result"></div>
+</section>
+
+<!-- ============ 7 · TECH HELPER ============ -->
+<section class="tab" id="tab-tech">
+  <h2>Tech helper</h2>
+  <p class="muted">Decode a VIN with the free NHTSA service (live, no key). A VIN gives year/make/model/trim — it does <strong>not</strong> give the exact windshield variant (rain sensor / ADAS camera / HUD / acoustic / heated). Where the variant matters, ask for a photo or a follow-up question; never guess it.</p>
+  <div class="row">
+    <div><label>VIN (17 characters)</label><input id="vin-input" type="text" maxlength="17" placeholder="e.g. 1HGCM82633A004352" style="width:260px"></div>
+    <div><label>&nbsp;</label><button class="btn-primary" id="decode-vin">Decode VIN</button></div>
+  </div>
+  <div id="vin-result"></div>
+  <h3>Recalibration + urethane for a job</h3>
+  <label for="tech-job">Job</label>
+  <select id="tech-job"></select>
+  <div id="tech-job-result"></div>
+</section>
+
+<!-- ============ 8 · PRICING ============ -->
+<section class="tab" id="tab-pricing">
+  <h2>Pricing config</h2>
+  <p class="muted">Prices come from <code>config/pricing.json</code>. Nothing is hardcoded in the app. These are <strong>draft defaults</strong> — Pedro has not set his prices.</p>
+  <div id="pricing-result"></div>
+</section>
+</main>
+
+<footer>
+  Shop Ops Brain · Layer 3 MVP · branch <code>mvp/layer-3-shop-ops</code> · Standalone: no server, no other layer running. Data stays in this browser (localStorage). Synthetic fixtures only — no real customer PII in this repo.
+</footer>
+
+<script src="parser.js"></script>
+<script src="logic.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
