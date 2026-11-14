@@ -54,14 +54,13 @@ const AUDIT_PATH = process.env.RR_AUDIT_PATH || path.join(__dirname, 'audit.log'
 // get_case_status instead of re-implementing the case engine.
 // NOTE 2026-11-13 ~23:30 EST: Pedro turned Vercel Deployment Protection
 // OFF on rnr-case-web, so the staging intake now loads publicly and no
-// bypass is needed. But the Case API is erroring: DIAGNOSED 23:33 EST as
-// a database-connection failure in the API itself (every DB call fails:
-// tenant/user postgres.tvfrfkxyvicnjibjhloa not found, ENOTFOUND FATAL).
-// The Supabase project behind that ref is most likely deleted, paused,
-// or the connection string / pooler host is wrong; fix is to point the
-// API's DATABASE_URL at a live database and redeploy (not yet done).
-// Until that lands the proxy honestly returns 502 upstream_error; the
-// bypass env is kept for a wall coming back.
+// bypass is needed. But the Case API is erroring: RESOLVED CAUSE 23:36
+// EST — the staging database (Supabase rnr-case-core-staging, ref
+// tvfrfkxyvicnjibjhloa, Free plan) was PAUSED after 7 days idle; every
+// DB call failed ENOTFOUND. Pedro resumed it ~23:35 EST; restoration
+// takes minutes to hours and was NOT yet healthy at 23:37 EST (health
+// still 500). Until it is healthy the proxy honestly returns 502
+// upstream_error; the bypass env is kept for a wall coming back.
 const CASE_API_URL = (process.env.RR_CASE_API_URL || 'https://rnr-case-staging-zero-to100-edu.vercel.app').replace(/\/$/, '');
 // Optional Vercel Deployment Protection bypass secret, sent as
 // x-vercel-protection-bypass on proxied calls. Staging currently sits
@@ -786,7 +785,7 @@ async function toolCreateCase(args, keyCfg, ip) {
   try { payload = await upstream.json(); } catch { payload = null; }
   if (upstream.status !== 201 || !payload?.ok) {
     const msg = payload?.error?.message || `Case system answered HTTP ${upstream.status}.`;
-    return { status: 502, charged: false, body: errBody('upstream_error', `${msg} Your request was not created. The case API itself is erroring right now (INTERNAL_ERROR seen 2026-11-13 after Deployment Protection came off) — retry once it is healthy, or call R&R at 857-266-1284.`) };
+    return { status: 502, charged: false, body: errBody('upstream_error', `${msg} Your request was not created. The staging database was paused (free Supabase plan, 7 days idle) and is being restored — retry once it is healthy, or call R&R at 857-266-1284.`) };
   }
   return {
     status: 201, charged: false, priceUsd: 0,
