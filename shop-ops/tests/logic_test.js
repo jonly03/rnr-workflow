@@ -15,10 +15,10 @@ function check(name, fn) {
 }
 
 console.log("Invoice clock (10 days from install):");
-check("Erika install 2026-10-18 -> deadline 2026-10-28", () => {
+check("HR-V install 2026-10-18 -> deadline 2026-10-28", () => {
   assert.strictEqual(logic.invoiceDeadline("2026-10-18"), "2026-10-28");
 });
-check("Gaige install by 2026-10-27 -> latest deadline 2026-11-06", () => {
+check("Tacoma install by 2026-10-27 -> latest deadline 2026-11-06", () => {
   assert.strictEqual(logic.invoiceDeadline("2026-10-27"), "2026-11-06");
 });
 check("clock due-today on deadline day", () => {
@@ -39,7 +39,7 @@ check("clock invoiced once filed", () => {
 });
 
 console.log("True profit (business-system formulas):");
-check("Gaige-style math: 642.75 - 154.95 - 4.46 - 22.66 - 80.00 = 380.68", () => {
+check("Tacoma-style math: 642.75 - 154.95 - 4.46 - 22.66 - 80.00 = 380.68", () => {
   const p = logic.computeProfit({
     invoiceAmount: 642.75, glassCost: 154.95, salesTax: 4.46,
     laborHours: 2, laborRate: 40, otherJobCosts: 0, glueMode: "per-job"

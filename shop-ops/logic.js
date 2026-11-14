@@ -51,7 +51,7 @@ var PAYMENT_STATUSES = [
 ];
 
 // Recalibration rates from the Safelite referral sheets on file
-// (Erika Arias #186114: Static $300 / Dynamic $275 / Dual $500).
+// (referral #186114: Static $300 / Dynamic $275 / Dual $500).
 // A job's own sheet rates win when present. Bill ONLY the type
 // actually performed — never static + dynamic together.
 var RECALIBRATION_RATES = { static: 300, dynamic: 275, dual: 500 };
