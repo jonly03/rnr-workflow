@@ -89,11 +89,15 @@ through the gateway — damage photos go through the web intake.
   the staging intake page loads publicly and no bypass is needed.
 - BUT the Case API behind it is erroring: `/api/v1/health` answers
   `500 INTERNAL_ERROR` ("The request could not be completed.") and the
-  intake POST hangs. Until the API is healthy, `create_case` and
+  intake POST hangs. DIAGNOSED 2026-11-13 23:33 EST: it is a
+  database-connection failure in the API itself, NOT the proxy — every DB
+  call fails with tenant/user `postgres.tvfrfkxyvicnjibjhloa` not found
+  (ENOTFOUND, FATAL) via PgCaseStore.health. The Supabase project behind
+  that ref is most likely deleted, paused, or the connection string /
+  pooler host is wrong. Fix is to point the API's DATABASE_URL at a live
+  database and redeploy (not yet done). Until then, `create_case` and
   `get_case_status` honestly return `502 upstream_error` and charge $0 —
-  the gateway never fakes a 201. If Deployment Protection ever comes
-  back, set `RR_VERCEL_BYPASS_SECRET` and the proxy sends it as
-  `x-vercel-protection-bypass`.
+  the gateway never fakes a 201.
 - `order_glass` enforces every gate (staff key, valid VIN, spend cap)
   and then returns `503 mygrant_not_configured`: the live MyGrant session
   is not wired in this standalone build. The real provider lives in
