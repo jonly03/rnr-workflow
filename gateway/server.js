@@ -54,10 +54,14 @@ const AUDIT_PATH = process.env.RR_AUDIT_PATH || path.join(__dirname, 'audit.log'
 // get_case_status instead of re-implementing the case engine.
 // NOTE 2026-11-13 ~23:30 EST: Pedro turned Vercel Deployment Protection
 // OFF on rnr-case-web, so the staging intake now loads publicly and no
-// bypass is needed. But with the wall down, /api/v1/health answers
-// INTERNAL_ERROR — the API behind the intake is erroring (cause unknown,
-// under investigation). Until that is fixed the proxy honestly returns
-// 502 upstream_error; the bypass env is kept for a wall coming back.
+// bypass is needed. But the Case API is erroring: DIAGNOSED 23:33 EST as
+// a database-connection failure in the API itself (every DB call fails:
+// tenant/user postgres.tvfrfkxyvicnjibjhloa not found, ENOTFOUND FATAL).
+// The Supabase project behind that ref is most likely deleted, paused,
+// or the connection string / pooler host is wrong; fix is to point the
+// API's DATABASE_URL at a live database and redeploy (not yet done).
+// Until that lands the proxy honestly returns 502 upstream_error; the
+// bypass env is kept for a wall coming back.
 const CASE_API_URL = (process.env.RR_CASE_API_URL || 'https://rnr-case-staging-zero-to100-edu.vercel.app').replace(/\/$/, '');
 // Optional Vercel Deployment Protection bypass secret, sent as
 // x-vercel-protection-bypass on proxied calls. Staging currently sits
