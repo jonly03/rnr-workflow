@@ -1,0 +1,1 @@
+{"description":"R&R VIN API — Layer 4 MVP. Sellable VIN-to-whole-car lookup (exterior, interior, engine, mechanical). Standalone Node server, no dependencies.","engines":{"node":">=18"},"license":"UNLICENSED","main":"server.js","name":"rr-vin-api","private":true,"scripts":{"start":"node server.js","test":"node test/test-api.mjs"},"version":"0.2.0"}
