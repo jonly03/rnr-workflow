@@ -581,8 +581,19 @@ Branch SHAs verified via `git ls-remote` 2026-11-13 23:48 EST:
   and Google already points to it); it listed duplicate FAQ and hero sections
   as defects that a source check showed are not in the page at all; and it
   flagged the Yelp rating as not re-verified live that night. It was sent back
-  for corrections on all of that. **Do not quote the draft PDF's findings as
-  fact until the corrected version is delivered.**
+  for corrections on all of that.
+- **Update (2026-11-14, after this trail was first written): the corrected
+  audit was delivered** — overall **38/100**, "Findable by name. Invisible
+  where it counts." Branded search passes (85/100); absent from all 8 generic
+  money queries and both Boston best-of lists; root cause is review volume
+  (Google 5.0 with only 2 reviews vs competitors' 44–103), single GBP
+  category, no services list, no sitemap, single-page site, no prices. Yelp
+  3.0/2 reviews was NOT re-verified live Nov 13–14. Branded merch on Instagram
+  shows wrong phone 857-468-2946 — Pedro to confirm if old number or print
+  error. Fix order: funnel health first, then review asks (drafts ready), then
+  profile completion. Report:
+  `~/workspace/goals/r-r-s-finest-auto-glass-marketing-launch/files/rr-finest-visibility-audit/visibility-audit.pdf`
+  (12 pages). Quote the corrected report, not the draft.
 
 ## 9. Chats — where each thread lives
 
