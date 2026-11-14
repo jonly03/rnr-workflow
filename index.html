@@ -197,7 +197,7 @@ p{line-height:1.55;color:var(--text2)}
           <div class="nav-title">Milestones</div><nav class="nav">${nav()}</nav>
         </aside>
         <main class="main">
-          <div class="topbar"><div class="crumb">R&R / Client Demo / ${esc(title)}</div><div class="top-actions"><button class="btn small ghost" data-action="toggle-theme" aria-label="Toggle color theme">${state.theme==="dark"?"☀ Light mode":"☾ Dark mode"}</button><button class="btn small ghost" data-action="reset-demo">Reset demo</button><a class="btn small" href="#/overview">Milestone map</a></div></div>
+          <div class="topbar"><div class="crumb">R&R / Client Demo / ${esc(title)}</div><div class="top-actions"><button class="btn small ghost" data-action="toggle-theme" aria-label="Toggle color theme">${state.theme==="dark"?"☀ Light mode":"☾ Dark mode"}</button><button class="btn small ghost" data-action="reset-demo">Reset demo</button><a class="btn small" href="#/overview">Milestone map</a><a class="btn small primary" href="r-r-s-finest-auto-glass.html">R&amp;R's Finest Auto Glass — Live site</a></div></div>
           <div class="content">${body}${footer()}</div>
         </main>
       </div>`;
@@ -223,6 +223,7 @@ p{line-height:1.55;color:var(--text2)}
     ][i]}</p><span class="badge brand">Open demo →</span></a>`).join("");
     return shell(
       hero("Client presentation","R&R Product Milestone Demo Suite","A single, no-backend, routed demo experience for walking the client from product definition through launch readiness.",'<span class="badge success">14 milestones</span><span class="badge brand">Interactive</span><span class="badge">Client-side only</span>')+
+      `<section class="section"><div class="panel"><h3>R&amp;R's Finest Auto Glass — Live site</h3><p>The live customer site for R&amp;R's Finest Auto Glass in Boston — windshield, side and rear glass, with Start a Case intake. This demo suite is the workflow behind it.</p><div class="btn-row"><a class="btn primary" href="r-r-s-finest-auto-glass.html">Visit live auto glass site →</a></div></div></section>`+
       `<section class="section"><div class="section-head"><div><h3>Milestone map</h3><p>Use this as the presentation sequence with the client.</p></div></div><div class="grid three">${cards}</div></section>`,
       "Overview"
     );
