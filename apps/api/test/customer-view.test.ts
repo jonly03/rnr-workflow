@@ -129,7 +129,7 @@ describe("Customer part line (Nelly, 2026-11-23)", () => {
     }
     const partNumber = settled!.body.glass_identification.selected_candidate.part_number as string;
 
-    const link = await staff(f).post(`/api/v1/cases/${caseId}/quote-link`).expect(201);
+    const link = await staff(f).post(`/api/v1/cases/${caseId}/quote-link`).expect(200);
     const pub = await request(f.app)
       .get(`/api/v1/public/quote/${link.body.token}`)
       .expect(200);

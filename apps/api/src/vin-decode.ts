@@ -50,11 +50,11 @@ export function composeVehicleDescriptor(decoded: {
   const parts: string[] = [];
 
   const electrification = `${decoded.electrificationLevel ?? ""} ${decoded.fuelType ?? ""}`;
-  if (/\bBEV\b|battery electric/i.test(electrification) || /^\s*electric\s*$/i.test(decoded.fuelType ?? "")) {
-    parts.push("Electric");
-  } else if (/hybrid/i.test(electrification)) {
-    parts.push("Hybrid");
-  }
+  const powertrainLabel = /\bBEV\b|battery electric/i.test(electrification) || /^\s*electric\s*$/i.test(decoded.fuelType ?? "")
+    ? "Electric"
+    : /hybrid/i.test(electrification)
+      ? "Hybrid"
+      : "";
 
   const body = decoded.bodyClass ?? "";
   const bodyLabel = /sport utility|\bSUV\b/i.test(body)
@@ -76,7 +76,12 @@ export function composeVehicleDescriptor(decoded: {
                   : /wagon/i.test(body)
                     ? "Wagon"
                     : "";
-  if (bodyLabel) parts.push(bodyLabel);
+  // Powertrain + body read as ONE segment ("Electric SUV"), the way
+  // Nelly's example phrases it; either stands alone when the other
+  // is absent.
+  if (powertrainLabel && bodyLabel) parts.push(`${powertrainLabel} ${bodyLabel}`);
+  else if (powertrainLabel) parts.push(powertrainLabel);
+  else if (bodyLabel) parts.push(bodyLabel);
 
   const drive = decoded.driveType ?? "";
   const driveLabel = /\bAWD\b|all-wheel/i.test(drive)
