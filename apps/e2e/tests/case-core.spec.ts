@@ -162,6 +162,7 @@ test("Client intake → live progress → sign → staff lands on Order parts", 
   // text alone never enables Send. This single submission drives the
   // case through identification → sourcing → pricing → quote on its own.
   await page.getByLabel(/Your name/).fill("Jane Customer");
+  await page.getByLabel(/^Email/).fill("jane@example.com");
   await page.getByLabel(/Mobile phone/).fill("(617) 555-0142");
   await expect(page.getByRole("button", { name: "Send request" })).toBeDisabled();
   await page.getByLabel(/Service address/).fill("118 Terr");
@@ -252,6 +253,7 @@ test("Staff queue updates live when a client intake lands (no refresh)", async (
   await clientPage.getByRole("radio", { name: "Windshield" }).click();
   await clientPage.getByRole("button", { name: "Continue" }).click();
   await clientPage.getByLabel(/Your name/).fill("Live Arrival");
+  await clientPage.getByLabel(/^Email/).fill("arrival@example.com");
   await clientPage.getByLabel(/Mobile phone/).fill("(617) 555-0142");
   await clientPage.getByLabel(/Service address/).fill("118 Terr");
   await clientPage

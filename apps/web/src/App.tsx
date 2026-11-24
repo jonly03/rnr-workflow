@@ -892,6 +892,9 @@ export function App() {
                             <p className="client-contact">
                               <strong>Client-submitted:</strong>{" "}
                               {c.client_intake.customer_name ?? "Customer"}
+                              {c.client_intake.customer_email
+                                ? ` · ${c.client_intake.customer_email}`
+                                : ""}
                               {c.client_intake.customer_phone
                                 ? ` · ${c.client_intake.customer_phone}`
                                 : ""}
@@ -2917,6 +2920,9 @@ function CaseDetail({
             <p className="client-contact">
               <span className="client-badge" data-testid="client-intake-badge">Client QR</span>{" "}
               Submitted by {item.client_intake.customer_name ?? "the customer"}
+              {item.client_intake.customer_email
+                ? ` · ${item.client_intake.customer_email}`
+                : ""}
               {item.client_intake.customer_phone
                 ? ` · ${item.client_intake.customer_phone}`
                 : ""}
@@ -5805,7 +5811,7 @@ function IntakeLiveStatus({ statusToken }: { statusToken: string }) {
  * with the quote). A step-by-step card flow — one card at a time, vehicle
  * first, contact last — and a single POST /public/intake from the final
  * card creates a DIRECT case flagged CLIENT_QR. The customer gets a case
- * reference plus one promise: we'll text a quote link to their mobile.
+ * reference plus one promise: we'll email a quote link to their email.
  *
  * Three cards (Nelly, 2026-10-21 — supersedes the original four): (1)
  * vehicle, (2) glass + optional damage photos, (3) contact. The old
@@ -5821,6 +5827,7 @@ export function PublicIntakePage() {
   const [make, setMake] = useState("");
   const [model, setModel] = useState("");
   const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [addressQuery, setAddressQuery] = useState("");
   const [address, setAddress] = useState<AddressSuggestion | null>(null);
@@ -5844,21 +5851,26 @@ export function PublicIntakePage() {
   // "I don't have the VIN" expander's complete YMM is the vehicle ID.
   const vehicleReady = vinValue ? isValidVin(vinValue) : showYmm && ymmComplete;
   // Contact-card gates, mirroring the server's validation pass.
+  // Email is the required contact (Nelly, 2026-11-23 — the quote and
+  // invoice are emailed); the phone is optional, but a phone that is
+  // typed must still be a valid US number (the server judges it too).
   const nameValid = name.trim().length >= 2;
-  const phoneValid = normalizeUsPhoneClient(phone) !== null;
+  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+  const phoneValid = phone.trim() === "" || normalizeUsPhoneClient(phone) !== null;
   // Demo relaxation (2026-10-22): a typed address opens Send too —
   // a pick from the suggestion list is no longer required (no live
   // address provider is configured yet). Restore `address !== null`
   // when the picked-only rule returns.
   const addressReady = address !== null || addressQuery.trim().length > 0;
-  const contactReady = nameValid && phoneValid && addressReady;
+  const contactReady = nameValid && emailValid && phoneValid && addressReady;
   // What still blocks Send, in plain words. The button used to sit
   // silently disabled when a gate failed (a 9-digit phone reads as a
   // full number to the person typing it) — in front of a customer
   // that looks like a broken form. Name the missing pieces instead.
   const contactMissing = [
     !nameValid && "your name",
-    !phoneValid && "a valid 10-digit mobile number",
+    !emailValid && "your email address",
+    !phoneValid && "a valid 10-digit mobile number (or leave it blank)",
     !addressReady && "the service address"
   ].filter(Boolean) as string[];
   const glassLabel = INTAKE_GLASS_OPTIONS.find(o => o.id === glassType)?.label ?? "";
@@ -6008,8 +6020,12 @@ export function PublicIntakePage() {
       setError("We need your name.");
       return;
     }
+    if (!emailValid) {
+      setError("Enter a valid email address — your quote and invoice are emailed to it.");
+      return;
+    }
     if (!phoneValid) {
-      setError("Enter a valid 10-digit US mobile number so we can text your quote.");
+      setError("That mobile number doesn't look right — check it, or leave the phone field blank.");
       return;
     }
     if (!address && !addressQuery.trim()) {
@@ -6020,7 +6036,8 @@ export function PublicIntakePage() {
     }
     const form = new FormData();
     form.append("customer_name", name.trim());
-    form.append("customer_phone", phone.trim());
+    form.append("customer_email", email.trim());
+    if (phone.trim()) form.append("customer_phone", phone.trim());
     form.append("glass_type", glassType);
     // A picked suggestion rides with its structured fields; free text
     // rides as the typed address alone (demo relaxation, 2026-10-22).
@@ -6066,7 +6083,7 @@ export function PublicIntakePage() {
           <p className="muted">{confirmation.message}</p>
           <p className="muted">
             Save your reference — mention it if you call us. No payment is
-            due now; you'll see your price in the quote we text you, and
+            due now; you'll see your price in the quote we email you, and
             nothing moves forward until you approve it.
           </p>
           {confirmation.statusToken && (
@@ -6084,7 +6101,7 @@ export function PublicIntakePage() {
           <p className="eyebrow">R&R Finest Auto Glass</p>
           <h1>How can we service your auto glass?</h1>
           <p>
-            Tell us about your car and the glass it needs — we'll text you
+            Tell us about your car and the glass it needs — we'll email you
             a quote link. No account, no payment due now.
           </p>
         </div>
@@ -6260,12 +6277,26 @@ export function PublicIntakePage() {
               <p className="error">Please enter your full name.</p>
             )}
             <label>
-              Mobile phone
+              Email
+              <input
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="you@example.com — your quote and invoice are emailed here"
+                autoComplete="email"
+                style={{ display: "block", width: "100%", marginTop: 4 }}
+              />
+            </label>
+            {email.trim().length > 0 && !emailValid && (
+              <p className="error">Enter a valid email address.</p>
+            )}
+            <label>
+              Mobile phone <span className="muted">(optional)</span>
               <input
                 type="tel"
                 value={phone}
                 onChange={e => setPhone(e.target.value)}
-                placeholder="(617) 555-0123 — we'll text your quote link here"
+                placeholder="(617) 555-0123"
                 autoComplete="tel"
                 style={{ display: "block", width: "100%", marginTop: 4 }}
               />

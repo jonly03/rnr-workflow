@@ -75,6 +75,7 @@ const SERVICE_ADDRESS = {
 
 const VALID = {
   customer_name: "Jane Customer",
+  customer_email: "jane@example.com",
   customer_phone: "(617) 555-0142",
   glass_type: "WINDSHIELD",
   vin: VIN_17,
@@ -95,7 +96,7 @@ describe("Public client intake (QR front door)", () => {
     expect(res.body.status_token).toMatch(/^rnappr_/);
     expect(res.body.ok).toBe(true);
     expect(res.body.reference).toMatch(/^RRA-\d{6}$/);
-    expect(res.body.message).toContain("text a quote link");
+    expect(res.body.message).toContain("email a quote link");
 
     const list = await staffGet(f, "/api/v1/cases").expect(200);
     expect(list.body).toHaveLength(1);
@@ -109,10 +110,11 @@ describe("Public client intake (QR front door)", () => {
     expect(c.quote.status).toBe("SENT");
     expect(c.vehicle).toMatchObject({ year: 2020, make: "Honda", model: "Accord", vin: VIN_17 });
     expect(c.glass_request.glass_type).toBe("WINDSHIELD");
-    // Staff see who sent it and how to reach them (quote link goes by text).
+    // Staff see who sent it and how to reach them (quote link goes by email).
     expect(c.client_intake).toMatchObject({
       source: "CLIENT_QR",
       customer_name: "Jane Customer",
+      customer_email: "jane@example.com",
       customer_phone: "(617) 555-0142",
       note: "Cracked on the highway",
       vin_ocr_suggestion: null,
@@ -130,6 +132,7 @@ describe("Public client intake (QR front door)", () => {
     expect(submitted).toBeDefined();
     expect(submitted.payload.source).toBe("CLIENT_QR");
     expect(submitted.payload.customer_phone).toBe("(617) 555-0142");
+    expect(submitted.payload.customer_email).toBe("jane@example.com");
   });
 
   it("accepts an intake with no note (3-card flow) and projects note as null; a legacy note is still honored", async () => {
@@ -155,6 +158,7 @@ describe("Public client intake (QR front door)", () => {
       .post("/api/v1/public/intake")
       .field("customer_name", "Jane Customer")
       .field("customer_phone", "6175550142")
+      .field("customer_email", "jane@example.com")
       .field("glass_type", "WINDSHIELD")
       .field("vin", VIN_17)
       .field("year", "2020")
@@ -216,18 +220,28 @@ describe("Public client intake (QR front door)", () => {
     expect(list.body).toHaveLength(0);
   });
 
-  it("rejects missing name, missing/unusable phone, bad glass type, and no vehicle info", async () => {
+  it("rejects missing name, missing/unusable email, bad glass type, and no vehicle info", async () => {
     const f = await fixture();
     const { customer_name: _n, ...noName } = VALID;
     await intake(f, noName).expect(422);
+    // Email is the required contact (Nelly, 2026-11-23): missing or
+    // malformed email is a 422. Phone is optional — no phone at all is
+    // fine — but a phone that IS provided must still be a usable
+    // 10-digit US number.
+    const { customer_email: _e, ...noEmail } = VALID;
+    await intake(f, noEmail).expect(422);
+    await intake(f, { ...VALID, customer_email: "not-an-email" }).expect(422);
+    await intake(f, { ...VALID, customer_email: "jane@" }).expect(422);
     const { customer_phone: _p, ...noPhone } = VALID;
-    await intake(f, noPhone).expect(422);
+    await intake(f, noPhone).expect(201);
     await intake(f, { ...VALID, customer_phone: "call me" }).expect(422);
     await intake(f, { ...VALID, glass_type: "SUNROOF" }).expect(422);
     const { vin: _v, year: _y, make: _mk, model: _md, ...noVehicle } = VALID;
     await intake(f, noVehicle).expect(422);
     const list = await staffGet(f, "/api/v1/cases").expect(200);
-    expect(list.body).toHaveLength(0);
+    // Every rejected shape above created nothing; the one success is
+    // the phone-less submission (phone is optional since 2026-11-23).
+    expect(list.body).toHaveLength(1);
   });
 
   it("service address: a missing one is a 400 naming the field; free text is accepted (demo relaxation 2026-10-22)", async () => {
@@ -273,10 +287,10 @@ describe("Public client intake (QR front door)", () => {
     expect(submitted.payload.service_address).toEqual(SERVICE_ADDRESS);
   });
 
-  it("tightened field validation: 1-char name, non-10-digit phones, out-of-range YMM years are rejected", async () => {
+  it("tightened field validation: 1-char name, non-10-digit phones (when provided), out-of-range YMM years are rejected", async () => {
     const f = await fixture();
     await intake(f, { ...VALID, customer_name: "J" }).expect(422);
-    // 7-digit local number: not a textable US mobile.
+    // 7-digit local number: not a usable US mobile (when a phone is given at all).
     await intake(f, { ...VALID, customer_phone: "555-0142" }).expect(422);
     await intake(f, { ...VALID, customer_phone: "016-555-0142" }).expect(422);
     // Country-code and punctuation formats ARE accepted.
@@ -314,6 +328,7 @@ describe("Public client intake (QR front door)", () => {
       .post("/api/v1/public/intake")
       .field("customer_name", "Jane Customer")
       .field("customer_phone", "6175550142")
+      .field("customer_email", "jane@example.com")
       .field("glass_type", "WINDSHIELD")
       .field("vin", VIN_17)
       .field("year", "2020")
@@ -341,6 +356,7 @@ describe("Public client intake (QR front door)", () => {
       .post("/api/v1/public/intake")
       .field("customer_name", "Jane Customer")
       .field("customer_phone", "6175550142")
+      .field("customer_email", "jane@example.com")
       .field("glass_type", "WINDSHIELD")
       .field("year", "2020")
       .field("make", "Honda")
@@ -352,6 +368,7 @@ describe("Public client intake (QR front door)", () => {
       .post("/api/v1/public/intake")
       .field("customer_name", "Jane Customer")
       .field("customer_phone", "6175550142")
+      .field("customer_email", "jane@example.com")
       .field("glass_type", "WINDSHIELD")
       .field("year", "2020")
       .field("make", "Honda")
@@ -385,6 +402,7 @@ describe("Public client intake (QR front door)", () => {
       .post("/api/v1/public/intake")
       .field("customer_name", "Jane Customer")
       .field("customer_phone", "6175550142")
+      .field("customer_email", "jane@example.com")
       .field("glass_type", "WINDSHIELD")
       .field("vin", VIN_17)
       .field("year", "2020")
@@ -397,6 +415,7 @@ describe("Public client intake (QR front door)", () => {
       .post("/api/v1/public/intake")
       .field("customer_name", "John Customer")
       .field("customer_phone", "6175550143")
+      .field("customer_email", "jane@example.com")
       .field("glass_type", "BACK_GLASS")
       .field("year", "2021")
       .field("make", "Ford")
@@ -429,6 +448,7 @@ describe("Public client intake (QR front door)", () => {
       .post("/api/v1/public/intake")
       .field("customer_name", "Jane Customer")
       .field("customer_phone", "6175550142")
+      .field("customer_email", "jane@example.com")
       .field("glass_type", "WINDSHIELD")
       .field("vin", VIN_17)
       .field("year", "2020")

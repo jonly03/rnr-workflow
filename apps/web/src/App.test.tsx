@@ -469,7 +469,7 @@ describe("public intake page (QR front door)", () => {
             ok: true,
             reference: "RRA-000042",
             message:
-              "Thanks — your request is in. We'll review it and text a quote link to the mobile number you gave us.",
+              "Thanks — your request is in. We'll review it and email a quote link to the email address you gave us.",
             status_token: "rnappr_statustoken"
           })
         };
@@ -559,8 +559,12 @@ describe("public intake page (QR front door)", () => {
     fireEvent.change(screen.getByLabelText(/mobile phone/i), {
       target: { value: "(617) 555-0142" }
     });
-    // Name + phone alone don't open Send: an address (typed or
-    // picked) is also required.
+    // Name + phone alone don't open Send: the email (the required
+    // contact since 2026-11-23) and an address are also required.
+    expect(send.disabled).toBe(true);
+    fireEvent.change(screen.getByPlaceholderText(/you@example\.com/), {
+      target: { value: "jane@example.com" }
+    });
     expect(send.disabled).toBe(true);
     await pickServiceAddress();
     expect(send.disabled).toBe(false);
@@ -574,7 +578,7 @@ describe("public intake page (QR front door)", () => {
 
     expect(await screen.findByRole("heading", { name: /Request received/ })).toBeInTheDocument();
     expect(screen.getByText("RRA-000042")).toBeInTheDocument();
-    expect(screen.getByText(/text a quote link/)).toBeInTheDocument();
+    expect(screen.getByText(/email a quote link/)).toBeInTheDocument();
     expect(posted.calls).toBe(1);
     expect(posted.url).toContain("/public/intake");
     expect(posted.body!.get("glass_type")).toBe("WINDSHIELD");
@@ -586,6 +590,7 @@ describe("public intake page (QR front door)", () => {
     expect(posted.body!.get("note")).toBeNull();
     expect(posted.body!.get("customer_name")).toBe("Jane Customer");
     expect(posted.body!.get("customer_phone")).toBe("(617) 555-0142");
+    expect(posted.body!.get("customer_email")).toBe("jane@example.com");
     // The picked service address rides as structured JSON with its
     // provider place id — exactly what the API validates and stores.
     expect(JSON.parse(posted.body!.get("service_address") as string)).toEqual(
@@ -603,7 +608,7 @@ describe("public intake page (QR front door)", () => {
     expect(document.body.textContent ?? "").not.toMatch(/\$\d/);
   });
 
-  it("contact card gates: name ≥ 2 chars, phone must normalize to 10 US digits, address required — typed free text submits (demo relaxation)", async () => {
+  it("contact card gates: name ≥ 2 chars, email required, a typed phone must normalize to 10 US digits, address required — typed free text submits (demo relaxation)", async () => {
     const posted = stubIntakeFetch();
     render(<PublicIntakePage />);
     walkToCard3();
@@ -612,7 +617,7 @@ describe("public intake page (QR front door)", () => {
     // The disabled button says why: with nothing filled, all three
     // missing pieces are named.
     expect(screen.getByText(/Still needed:/)).toHaveTextContent(
-      "your name · a valid 10-digit mobile number · the service address"
+      "your name · your email address · the service address"
     );
 
     // A picked address + good phone, but a 1-char name: still blocked,
@@ -626,6 +631,12 @@ describe("public intake page (QR front door)", () => {
     expect(send.disabled).toBe(true);
     fireEvent.change(screen.getByLabelText(/your name/i), {
       target: { value: "Jane Customer" }
+    });
+    // Still blocked: the email (the required contact since 2026-11-23)
+    // is missing.
+    expect(send.disabled).toBe(true);
+    fireEvent.change(screen.getByPlaceholderText(/you@example\.com/), {
+      target: { value: "jane@example.com" }
     });
     expect(send.disabled).toBe(false);
     expect(screen.queryByText("Please enter your full name.")).not.toBeInTheDocument();
@@ -642,7 +653,7 @@ describe("public intake page (QR front door)", () => {
     expect(screen.getByText(/valid 10-digit US mobile number/)).toBeInTheDocument();
     // ...and the reason line names the phone as the blocker.
     expect(screen.getByText(/Still needed:/)).toHaveTextContent(
-      "a valid 10-digit mobile number"
+      "a valid 10-digit mobile number (or leave it blank)"
     );
     // +1 and punctuation are fine.
     fireEvent.change(screen.getByLabelText(/mobile phone/i), {
@@ -674,6 +685,9 @@ describe("public intake page (QR front door)", () => {
     });
     fireEvent.change(screen.getByLabelText(/mobile phone/i), {
       target: { value: "(617) 555-0142" }
+    });
+    fireEvent.change(screen.getByPlaceholderText(/you@example\.com/), {
+      target: { value: "jane@example.com" }
     });
     await pickServiceAddress();
     fireEvent.click(screen.getByRole("button", { name: "Send request" }));

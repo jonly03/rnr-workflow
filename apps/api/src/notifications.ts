@@ -59,10 +59,11 @@ export function webBaseUrl(
 export interface ClientContact {
   name: string | null;
   phone: string | null;
+  email: string | null;
 }
 
 /**
- * The client's name + phone, read defensively from the intake event —
+ * The client's name + phone + email, read defensively from the intake event —
  * the same source job-execution's jobClientInfo reads. Duplicated here
  * deliberately: job-execution imports lifecycle, lifecycle imports this
  * module, so importing job-execution back would close a cycle.
@@ -76,13 +77,14 @@ export async function clientContactForCase(
   const intake = [...events]
     .reverse()
     .find(e => e.event_type === "CLIENT_INTAKE_SUBMITTED");
-  if (!intake) return { name: null, phone: null };
+  if (!intake) return { name: null, phone: null, email: null };
   const payload = intake.payload ?? {};
   const str = (v: unknown) =>
     typeof v === "string" && v.trim() ? v.trim() : null;
   return {
     name: str(payload.customer_name),
-    phone: str(payload.customer_phone)
+    phone: str(payload.customer_phone),
+    email: str(payload.customer_email)
   };
 }
 

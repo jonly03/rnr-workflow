@@ -89,11 +89,13 @@ export interface ServiceAddress {
 
 /** Staff-only projection of a client self-service intake (QR front door).
  *  Present when the customer created the case themselves; null for
- *  staff-created cases. Customer contact lives here so staff can text
- *  the quote link to the mobile the customer provided. */
+ *  staff-created cases. Customer contact lives here: the quote and
+ *  invoice go to the customer's email (required since 2026-11-23);
+ *  the phone is optional and still used for the completion text. */
 export interface ClientIntake {
   source: string;
   customer_name: string | null;
+  customer_email: string | null;
   customer_phone: string | null;
   note: string | null;
   vin_ocr_suggestion: string | null;

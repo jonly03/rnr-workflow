@@ -493,6 +493,7 @@ describe("Asset visibility law (Slice B, §7.3)", () => {
       .post("/api/v1/public/intake")
       .field("customer_name", "Jamie Client")
       .field("customer_phone", "617-555-0100")
+      .field("customer_email", "jamie@example.com")
       .field("glass_type", "WINDSHIELD")
       .field("year", "2020")
       .field("make", "Honda")

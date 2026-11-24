@@ -142,6 +142,7 @@ describe("Staff realtime feed", () => {
       .post("/api/v1/public/intake")
       .send({
         customer_name: "Jane Customer",
+        customer_email: "jane@example.com",
         customer_phone: "(617) 555-0142",
         glass_type: "WINDSHIELD",
         vin: VIN_17,

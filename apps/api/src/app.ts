@@ -200,7 +200,12 @@ const MAX_VEHICLE_YEAR = new Date().getFullYear() + 1;
 
 const publicIntakeSchema = z.object({
   customer_name: z.string().trim().min(2).max(120),
-  customer_phone: z.string().trim().min(7).max(32),
+  // Email is the required contact (Nelly, 2026-11-23): the quote and
+  // the invoice are emailed, and unsigned-quote reminders go by email.
+  // Phone is optional now — stored when provided (the completion text
+  // still uses it), never required.
+  customer_email: z.string().trim().toLowerCase().email().max(254),
+  customer_phone: z.string().trim().min(7).max(32).optional(),
   glass_type: z.enum(["WINDSHIELD", "BACK_GLASS", "DOOR_GLASS", "QUARTER_GLASS", "VENT_GLASS"]),
   // Legacy: the 3-card intake (2026-10-21) removed the "What happened?"
   // free-text field, and the client no longer sends it. Still accepted
@@ -266,6 +271,7 @@ export interface ServiceAddressView {
 export interface ClientIntakeView {
   source: string;
   customer_name: string | null;
+  customer_email: string | null;
   customer_phone: string | null;
   note: string | null;
   /** OCR reading of the client's VIN photo — a staff suggestion only. */
@@ -300,6 +306,7 @@ function clientIntakeView(payload: Record<string, unknown>, occurredAt: string):
   return {
     source: str(payload.source) ?? "CLIENT_QR",
     customer_name: str(payload.customer_name),
+    customer_email: str(payload.customer_email),
     customer_phone: str(payload.customer_phone),
     note: str(payload.note),
     vin_ocr_suggestion: str(payload.vin_ocr_suggestion),
@@ -2008,13 +2015,13 @@ export function createApp(
         street: parsedAddress.data.street ?? null
       };
 
-      // Phone: must normalize to a valid 10-digit US number (common
-      // formats and a leading 1 are fine; anything else is not a
-      // number we can text a quote to).
-      if (!normalizeUsPhone(input.customer_phone)) {
+      // Phone is optional (email is the required contact since
+      // 2026-11-23), but a phone that IS provided must still normalize
+      // to a valid 10-digit US number — the completion text goes to it.
+      if (input.customer_phone && !normalizeUsPhone(input.customer_phone)) {
         return intakeValidationError(
           res,
-          "Enter a valid 10-digit US mobile number so we can text your quote.",
+          "That mobile number doesn't look right — check it, or leave the phone field blank.",
           "customer_phone"
         );
       }
@@ -2109,7 +2116,8 @@ export function createApp(
         payload: {
           source: "CLIENT_QR",
           customer_name: input.customer_name,
-          customer_phone: input.customer_phone,
+          customer_email: input.customer_email,
+          customer_phone: input.customer_phone ?? null,
           note: input.note ?? null,
           service_address: serviceAddress,
           vin_provided: vin !== null,
@@ -2205,7 +2213,7 @@ export function createApp(
         reference: created.reference,
         status_token: statusGrant.token,
         message:
-          "Thanks — your request is in. We'll review it and text a quote link to the mobile number you gave us."
+          "Thanks — your request is in. We'll review it and email a quote link to the email address you gave us."
       });
     }
   );
