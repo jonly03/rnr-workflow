@@ -106,6 +106,17 @@ describe("Customer view (Direct): sign link + tracking link", () => {
     expect(view.body.noun).toBe("quote");
     expect(view.body.vehicle).toEqual({ year: 2020, make: "Honda", model: "Ambiguous" });
     expect(view.body.total_cents).toBeGreaterThan(0);
+    // The glass line is REQUIRED (Nelly, 2026-11-23): it is the part's
+    // customer price (cost + profit baked in, like the invoice's
+    // glass_cents), and glass + labor + tax must visibly sum to the
+    // total — e.g. under the current Direct pricing, $163.70 glass +
+    // $125.00 labor + $10.23 tax (6.25% on the glass line only) =
+    // $298.93. Without it the total is unexplainable and the tax
+    // looks like it falls on labor.
+    expect(view.body.glass_cents).toBeGreaterThan(0);
+    expect(view.body.glass_cents + view.body.labor_cents + view.body.tax_cents).toBe(
+      view.body.total_cents
+    );
     // Projection law: no internal economics or supplier data, ever.
     const raw = JSON.stringify(view.body);
     for (const forbidden of ["glass_cost", "profit", "supplier", "current_state", "vin"]) {

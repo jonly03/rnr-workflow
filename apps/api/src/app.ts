@@ -1546,7 +1546,12 @@ export function createApp(
   const quoteNounFor = (channel: Channel): string =>
     channel === "AUCTION" ? "work request" : channel === "INSURANCE" ? "estimate" : "quote";
 
-  /** Customer projection of a quote: totals the client may see, nothing else. */
+  /** Customer projection of a quote: the charges the client may see,
+   *  nothing else. The glass line is the part's customer price — glass
+   *  cost + profit baked in, exactly like the invoice's glass_cents
+   *  (payments.ts) — so glass + labor + tax visibly sums to the total.
+   *  The raw glass cost, the profit, the part number, the supplier and
+   *  the VIN never appear here (Nelly, 2026-11-23). */
   const publicQuoteView = async (c: CaseRecord) => {
     const quote = await store.getLatestQuote(c.id);
     if (!quote) return null;
@@ -1563,6 +1568,7 @@ export function createApp(
         model: quote.snapshot.vehicle.model
       },
       glass_type: quote.snapshot.glass_type,
+      glass_cents: quote.snapshot.glass_cost_cents + quote.snapshot.profit_cents,
       labor_cents: quote.snapshot.labor_cents,
       tax_cents: quote.snapshot.tax_cents,
       total_cents: quote.snapshot.sell_price_cents,

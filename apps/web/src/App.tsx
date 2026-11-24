@@ -5400,8 +5400,9 @@ export function PublicQuotePage({ token }: { token: string }) {
           {view.glass_type.toLowerCase().replaceAll("_", " ")} replacement
         </p>
         <dl>
+          <dt>Glass — {view.glass_type.toLowerCase().replaceAll("_", " ")} replacement</dt><dd>{fmt(view.glass_cents)}</dd>
           <dt>Labor</dt><dd>{fmt(view.labor_cents)}</dd>
-          <dt>Tax</dt><dd>{fmt(view.tax_cents)}</dd>
+          <dt>Tax (6.25% on glass only — labor is not taxed)</dt><dd>{fmt(view.tax_cents)}</dd>
           <dt><strong>Total due</strong></dt>
           <dd><strong>{fmt(view.total_cents)}</strong></dd>
         </dl>

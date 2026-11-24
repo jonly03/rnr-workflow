@@ -660,6 +660,9 @@ export interface PublicQuoteView {
   noun: string;
   vehicle: { year: number; make: string; model: string };
   glass_type: string;
+  /** The glass line: part price with the margin baked in (never the
+   *  raw cost or profit). Glass + labor + tax = total. */
+  glass_cents: number;
   labor_cents: number;
   tax_cents: number;
   total_cents: number;
