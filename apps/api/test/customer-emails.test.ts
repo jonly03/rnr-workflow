@@ -46,7 +46,7 @@ interface Fixture {
 }
 
 async function fixture(
-  sender: EmailSender | undefined = new CapturingSender()
+  sender: EmailSender | null = new CapturingSender()
 ): Promise<Fixture> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rnr-customer-emails-"));
   const storeFile = path.join(dir, "cases.json");
@@ -94,14 +94,10 @@ const act = (f: Fixture, caseId: string, action: string, body: Record<string, un
 
 /** Seeds the customer's email the way the public intake records it. */
 async function seedIntakeEmail(f: Fixture, caseId: string, email = "jane@example.com") {
-  const c = await f.store.getCase(caseId);
   await f.store.appendEvent({
     caseId,
-    channel: c!.channel,
     actor: { type: "CUSTOMER", id: null },
     eventType: "CLIENT_INTAKE_SUBMITTED",
-    fromState: null,
-    toState: null,
     payload: {
       customer_name: "Jane Customer",
       customer_email: email,
@@ -158,7 +154,7 @@ describe("customer quote + invoice emails", () => {
   it("emails the quote when it is generated, once per version, with the sign link", async () => {
     const f = await fixture();
     const caseId = await quotedCase(f);
-    const quoteMails = f.sender.sent.filter(m => m.subject.includes("quote is ready"));
+    const quoteMails = f.sender.sent.filter(m => m.subject.includes("quote ("));
     expect(quoteMails).toHaveLength(1);
     expect(quoteMails[0].to).toBe("jane@example.com");
     expect(quoteMails[0].body).toContain(`${WEB_BASE}/quote/rnappr_`);
@@ -168,7 +164,7 @@ describe("customer quote + invoice emails", () => {
 
     // Idempotent: re-dispatching does not send a second copy.
     await dispatchQuoteEmail(f.store, caseId, { sender: f.sender });
-    expect(f.sender.sent.filter(m => m.subject.includes("quote is ready"))).toHaveLength(1);
+    expect(f.sender.sent.filter(m => m.subject.includes("quote ("))).toHaveLength(1);
   });
 
   it("staff sign_quote generates the invoice AND emails it (signing is wired to invoicing)", async () => {
@@ -180,7 +176,7 @@ describe("customer quote + invoice emails", () => {
     // QUOTE_APPROVED with no invoice until a separate manual action.
     expect(detail.body.current_state).toBe("INVOICED");
     expect(await f.store.getLatestInvoice(caseId)).not.toBeNull();
-    const invoiceMails = f.sender.sent.filter(m => m.subject.includes("invoice is ready"));
+    const invoiceMails = f.sender.sent.filter(m => m.subject.includes("invoice ("));
     expect(invoiceMails).toHaveLength(1);
     expect(invoiceMails[0].to).toBe("jane@example.com");
     expect(invoiceMails[0].body).toContain(`${WEB_BASE}/track/rnappr_`);
@@ -189,7 +185,7 @@ describe("customer quote + invoice emails", () => {
   });
 
   it("records a loud failure (never a fake send) when email is unconfigured, without breaking the flow", async () => {
-    const f = await fixture(undefined);
+    const f = await fixture(null);
     const caseId = await quotedCase(f);
     const row = await f.store.getNotification(caseId, "quote_sent_v1");
     expect(row?.status).toBe("failed");

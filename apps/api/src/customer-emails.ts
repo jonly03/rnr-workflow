@@ -232,7 +232,12 @@ async function recordAndSend(
       sentAt: new Date().toISOString()
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    // Keep the machine-readable code (e.g. EMAIL_NOT_CONFIGURED) in
+    // the recorded error alongside the human message, so staff tooling
+    // can group failures without string-matching prose.
+    const code = (err as { code?: unknown })?.code;
+    const raw = err instanceof Error ? err.message : String(err);
+    const message = typeof code === "string" && code ? `${code}: ${raw}` : raw;
     console.error(
       `customer email failed for case ${caseId} (${input.kind}): ${message}`
     );
