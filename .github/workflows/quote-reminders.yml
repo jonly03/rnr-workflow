@@ -1,0 +1,37 @@
+name: Quote reminders (24h, unsigned quotes)
+
+# Nelly, 2026-11-23: while a quote is unsigned, email the customer a
+# reminder every 24 hours, stopping at signature or expiry (5-day
+# window => at most 4 reminders). The cadence and stop conditions
+# live in the API (apps/api/src/customer-emails.ts); this workflow is
+# only the hourly trigger that calls it.
+#
+# Activation (repo Settings -> Secrets and variables -> Actions):
+#   vars.QUOTE_REMINDER_API_URL   — e.g. https://<api-host>/api/v1/jobs/quote-reminders
+#   secrets.QUOTE_REMINDER_CRON_SECRET — must match the API's env var
+# Until both are set the job logs a warning and exits green, so this
+# workflow never fails hourly over a configuration nobody made yet.
+
+on:
+  schedule:
+    - cron: "15 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call the quote-reminders endpoint
+        env:
+          API_URL: ${{ vars.QUOTE_REMINDER_API_URL }}
+          CRON_SECRET: ${{ secrets.QUOTE_REMINDER_CRON_SECRET }}
+        run: |
+          if [ -z "$API_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "::warning::QUOTE_REMINDER_API_URL var / QUOTE_REMINDER_CRON_SECRET secret are not both set — quote reminders are NOT running. Set them to activate the 24h unsigned-quote reminder emails."
+            exit 0
+          fi
+          curl --fail --silent --show-error \
+            -X POST "$API_URL" \
+            -H "x-cron-secret: $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            -d '{}'
