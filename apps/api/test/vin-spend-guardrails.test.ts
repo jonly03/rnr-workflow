@@ -114,8 +114,9 @@ describe("paid VIN lookup spend tracking", () => {
     const provider = new PaidMockProvider();
     const f = await fixture(provider);
     const created = await f.createCase().expect(201);
+    // No staff action: the paid lookup fires automatically during
+    // identification (Nelly, 2026-11-23) and the $1 spend is recorded.
     await f.startIdentification(created.body.id).expect(200);
-    await f.runVinLookup(created.body.id).expect(200);
     expect(provider.vinLookups).toBe(1);
 
     const spent = await f.store.getVinLookupSpendCentsSince(new Date(0).toISOString());
@@ -148,8 +149,10 @@ describe("paid VIN lookup spend tracking", () => {
       expect(r.reserved).toBe(true);
     }
     const created = await f.createCase().expect(201);
-    await f.startIdentification(created.body.id).expect(200);
-    const blocked = await f.runVinLookup(created.body.id).expect(200);
+    // The auto lookup hits the cap during identification itself: the
+    // case lands in SYSTEM_ATTENTION_REQUIRED with the failure on its
+    // event log — reported on the case, never a silent block.
+    const blocked = await f.startIdentification(created.body.id).expect(200);
     expect(blocked.body.current_state).toBe("SYSTEM_ATTENTION_REQUIRED");
     expect(provider.vinLookups).toBe(0);
 
@@ -173,8 +176,8 @@ describe("paid VIN lookup spend tracking", () => {
     const f = await fixture(provider);
     const created = await f.createCase().expect(201);
     await f.startIdentification(created.body.id).expect(200);
-    // Cap is $0, but the free provider is never gated.
-    await f.runVinLookup(created.body.id).expect(200);
+    // Cap is $0, but the free provider is never gated — the auto
+    // lookup still ran during identification.
     expect(provider.vinLookups).toBe(1);
   });
 
@@ -185,7 +188,6 @@ describe("paid VIN lookup spend tracking", () => {
     const f = await fixture(provider);
     const created = await f.createCase().expect(201);
     await f.startIdentification(created.body.id).expect(200);
-    await f.runVinLookup(created.body.id).expect(200);
     expect(provider.vinLookups).toBe(1);
 
     const spent = await f.store.getVinLookupSpendCentsSince(new Date(0).toISOString());
@@ -203,7 +205,6 @@ describe("paid VIN lookup spend tracking", () => {
     const f = await fixture(provider);
     const created = await f.createCase().expect(201);
     await f.startIdentification(created.body.id).expect(200);
-    await f.runVinLookup(created.body.id).expect(200);
 
     const spent = await f.store.getVinLookupSpendCentsSince(new Date(0).toISOString());
     expect(spent).toBe(0);
