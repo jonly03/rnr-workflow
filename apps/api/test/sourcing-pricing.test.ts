@@ -142,7 +142,7 @@ describe("Sourcing + Pricing", () => {
     expect(calc.glass_cost_cents).toBe(selected.price_cents);
     expect(calc.labor_cents).toBe(12500);
     expect(calc.profit_cents).toBe(25000);
-    expect(calc.tax_cents).toBe(Math.round(selected.price_cents * 0.0625));
+    expect(calc.tax_cents).toBe(Math.round((selected.price_cents + calc.profit_cents) * 0.0625));
     expect(calc.sell_price_cents).toBe(
       calc.glass_cost_cents + calc.labor_cents + calc.profit_cents + calc.tax_cents
     );
@@ -323,35 +323,53 @@ describe("Sourcing + Pricing", () => {
   });
 
   it("calculatePrice applies the pricing formula correctly", () => {
-    // $200 glass + $125 labor + $250 profit + 6.25% tax on glass ($12.50).
+    // $200 glass + $125 labor + $250 profit + 6.25% tax on the marked-up
+    // part price ($200 + $250 = $450 -> $28.13 tax). Labor is never taxed.
     const result = calculatePrice({
       glass_cost_cents: 20000,
       labor_cents: 12500,
       profit_cents: 25000,
       tax_rate: 0.0625
     });
-    expect(result.tax_cents).toBe(1250);
-    expect(result.sell_price_cents).toBe(20000 + 12500 + 25000 + 1250);
-    expect(dollars(result.sell_price_cents)).toBe("$587.50");
+    expect(result.tax_cents).toBe(2813);
+    expect(result.sell_price_cents).toBe(20000 + 12500 + 25000 + 2813);
+    expect(dollars(result.sell_price_cents)).toBe("$603.13");
+  });
+
+  it("calculatePrice taxes the marked-up part price, never labor (owner example)", () => {
+    // Nelly's worked example (2026-11-23, with the $250 total profit
+    // including labor): $38.70 glass + $125 profit-beyond-labor markup =
+    // $163.70 part price; tax 6.25% of $163.70 = $10.23; labor $125
+    // untaxed; total $298.93.
+    const result = calculatePrice({
+      glass_cost_cents: 3870,
+      labor_cents: 12500,
+      profit_cents: 12500,
+      tax_rate: 0.0625
+    });
+    expect(result.tax_cents).toBe(1023);
+    expect(result.sell_price_cents).toBe(29893);
+    expect(dollars(result.sell_price_cents)).toBe("$298.93");
   });
 
   it("calculatePrice rounds tax to the nearest cent", () => {
-    // $100.08 * 6.25% = $6.255 → rounds to $6.26.
+    // Tax base is the marked-up part price (glass + profit):
+    // ($100.00 + $250.00) * 6.25% = $21.875 → rounds to $21.88.
     const result = calculatePrice({
-      glass_cost_cents: 10008,
+      glass_cost_cents: 10000,
       labor_cents: 12500,
       profit_cents: 25000,
       tax_rate: 0.0625
     });
-    expect(result.tax_cents).toBe(626);
-    // $100.01 * 6.25% = $6.250625 → rounds to $6.25.
+    expect(result.tax_cents).toBe(2188);
+    // ($99.99 + $250.00) * 6.25% = $21.874375 → rounds to $21.87.
     const result2 = calculatePrice({
-      glass_cost_cents: 10001,
+      glass_cost_cents: 9999,
       labor_cents: 12500,
       profit_cents: 25000,
       tax_rate: 0.0625
     });
-    expect(result2.tax_cents).toBe(625);
+    expect(result2.tax_cents).toBe(2187);
   });
 
   it("excludes offers with malformed prices", async () => {

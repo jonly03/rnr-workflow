@@ -8,7 +8,9 @@ import type { CaseRecord, PriceCalculation } from "./types.js";
  * - labor_cents: flat labor charge per job ($125).
  * - target_profit_cents: target profit per job ($250, per owner policy —
  *   applies regardless of glass cost).
- * - tax_rate: sales tax rate applied to the glass cost (6.25%).
+ * - tax_rate: sales tax rate applied to the marked-up part price
+ *   (glass cost + profit — the glass line the client is charged),
+ *   never to labor (6.25%).
  */
 export interface PricingConfig {
   labor_cents: number;
@@ -116,7 +118,9 @@ export interface PriceResult {
 /**
  * Calculates the client sell price from the pricing inputs.
  * sell_price = glass_cost + labor + profit + tax, where
- * tax = round(glass_cost * tax_rate).
+ * tax = round((glass_cost + profit) * tax_rate): tax is charged on the
+ * part at its marked-up price (the glass line the client pays), and
+ * never on labor (owner policy, 2026-11-23).
  *
  * All amounts are integer cents; rounding is to the nearest cent.
  */
@@ -138,7 +142,7 @@ export function calculatePrice(inputs: PriceInputs): PriceResult {
       422
     );
   }
-  const tax_cents = Math.round(inputs.glass_cost_cents * inputs.tax_rate);
+  const tax_cents = Math.round((inputs.glass_cost_cents + inputs.profit_cents) * inputs.tax_rate);
   const sell_price_cents =
     inputs.glass_cost_cents + inputs.labor_cents + inputs.profit_cents + tax_cents;
   return {
@@ -154,7 +158,8 @@ export function calculatePrice(inputs: PriceInputs): PriceResult {
  * Runs pricing. Automatic after GLASS_SELECTED.
  *
  * The price is always calculated from the configured labor ($125), target
- * profit ($250), and tax (6.25% of glass cost), then auto-approved. Per owner
+ * profit ($250), and tax (6.25% of the marked-up part price — glass +
+ * profit; labor is never taxed), then auto-approved. Per owner
  * policy, the $250 target profit applies regardless of glass cost — cheap
  * glass does not route to manual review.
  */
