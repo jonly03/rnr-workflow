@@ -13,7 +13,7 @@ quote → `INVOICED` → `close_case` → `CLOSED`.
 
 `quotes` table: id, case_id, version (v1, v2… immutable — a requote supersedes,
 never mutates), snapshot JSON (vehicle + part + economics at generation),
-expires_at (72h default, configuration-driven via `QUOTE_EXPIRY_HOURS`),
+expires_at (5-day / 120h default since 2026-11-23, configuration-driven via `QUOTE_EXPIRY_HOURS`; originally 72h),
 status (`SENT`/`APPROVED`/`DECLINED`/`EXPIRED`), signature
 `{name, signed_at, attribution, signature_hash (SHA-256), signature_data_url}`.
 
@@ -39,7 +39,7 @@ status (`SENT`/`APPROVED`/`DECLINED`/`EXPIRED`), signature
 
 - **Client channel:** the quote view shows a live validity countdown and the
   expiry timestamp; an expired quote shows "ask staff for a new one".
-- **Staff side:** the same 72h shows as an **SLA timer** on the quote card
+- **Staff side:** the same validity window (5 days since 2026-11-23; originally 72h) shows as an **SLA timer** on the quote card
   ("SLA: expires in 41h", "Expired — re-quote to proceed").
 
 ## Channel language (labels only)
