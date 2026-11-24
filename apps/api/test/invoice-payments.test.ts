@@ -68,7 +68,7 @@ async function fixture(): Promise<Fixture> {
       .set("Authorization", `Bearer ${token}`)
       .send({
         channel: "DIRECT",
-        vehicle: { year: 2020, make: "Honda", model: "Ambiguous", vin: VIN_17 },
+        vehicle: { year: 2020, make: "Honda", model: "Ambiguous", vin: VIN_17, descriptor: "Sedan · FWD · 4-door · built in the USA" },
         glass_request: { glass_type: "DOOR_GLASS" as GlassType }
       });
   return { app, store, token, adminToken, createCase };
@@ -524,6 +524,12 @@ describe("Invoice PDF", () => {
     expect(text).toContain("Thank you for your business");
     expect(text).toContain("R&R's FINEST,");
     expect(text).toContain(detail.quote.snapshot.vehicle.vin);
+    // The glass row's Description is the composed part line (Nelly,
+    // 2026-11-23): vehicle + decode descriptor mirrored back. (The
+    // PDF wraps it across two text runs, so assert the pieces.)
+    expect(text).toContain("Glass - door glass for your 2020 Honda Ambiguous");
+    expect(text).toContain("Sedan");
+    expect(text).toContain("built in the USA");
     expectLeakFree(text, detail);
   });
 

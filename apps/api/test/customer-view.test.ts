@@ -96,6 +96,54 @@ async function quotedCase(f: Fixture): Promise<{ caseId: string; linkToken: stri
   return { caseId, linkToken: link.body.token as string };
 }
 
+describe("Customer part line (Nelly, 2026-11-23)", () => {
+  it("mirrors the vehicle + decode descriptor on the quote, with no VIN/part/supplier in the line", async () => {
+    const f = await fixture();
+    // Staff create carrying the descriptor composed from the VIN
+    // decode (the create form forwards it from /vin/decode).
+    const created = await staff(f)
+      .post("/api/v1/cases")
+      .send({
+        channel: "DIRECT",
+        vehicle: {
+          year: 2023,
+          make: "Toyota",
+          model: "bZ4X",
+          vin: VIN_17,
+          descriptor: "Electric SUV · AWD · 5-door · built in Japan"
+        },
+        glass_request: { glass_type: "WINDSHIELD" as GlassType }
+      })
+      .expect(201);
+    const caseId = created.body.id as string;
+    await act(f, caseId, "start_identification").expect(200);
+    // Single-candidate YMM: identification resolves and the chain
+    // auto-quotes without a human review step.
+    const start = Date.now();
+    let settled: request.Response | null = null;
+    for (;;) {
+      const r = await staff(f).get(`/api/v1/cases/${caseId}`).expect(200);
+      if (r.body.current_state === "QUOTE_SENT") { settled = r; break; }
+      if (Date.now() - start > 15000) throw new Error("timed out waiting for QUOTE_SENT");
+      await new Promise(rr => setTimeout(rr, 100));
+    }
+    const partNumber = settled!.body.glass_identification.selected_candidate.part_number as string;
+
+    const link = await staff(f).post(`/api/v1/cases/${caseId}/quote-link`).expect(200);
+    const pub = await request(f.app)
+      .get(`/api/v1/public/quote/${link.body.token}`)
+      .expect(200);
+    expect(pub.body.glass_line_description).toBe(
+      "Glass — windshield for your 2023 Toyota bZ4X · Electric SUV · AWD · 5-door · built in Japan"
+    );
+    const line = pub.body.glass_line_description as string;
+    expect(line).not.toContain(VIN_17);
+    expect(line).not.toContain(partNumber);
+    expect(line.toLowerCase()).not.toContain("supplier");
+    expect(line.toLowerCase()).not.toContain("profit");
+  });
+});
+
 describe("Customer view (Direct): sign link + tracking link", () => {
   it("serves a leak-free quote projection to the token holder only", async () => {
     const f = await fixture();

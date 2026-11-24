@@ -2406,7 +2406,10 @@ function VinFirstCase({
           year: decoded.year,
           make: decoded.make,
           model: decoded.model,
-          vin: decoded.vin
+          vin: decoded.vin,
+          // Forward the decode's composed descriptor so the quote /
+          // invoice part line can mirror the vehicle (Nelly, 2026-11-23).
+          descriptor: decoded.descriptor ?? null
         },
         glass_request: { glass_type: glassType }
       });

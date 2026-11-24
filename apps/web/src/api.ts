@@ -280,6 +280,7 @@ export interface CreateCaseInput {
     make: string;
     model: string;
     vin: string;
+    descriptor?: string | null;
   };
   glass_request: {
     glass_type: GlassType;
@@ -369,6 +370,8 @@ export interface DecodedVehicle {
   model: string;
   trim: string;
   bodyClass: string;
+  /** Composed server-side from the decode (Nelly, 2026-11-23). */
+  descriptor?: string;
 }
 
 export function decodeVin(vin: string) {
@@ -660,6 +663,8 @@ export interface PublicQuoteView {
   noun: string;
   vehicle: { year: number; make: string; model: string };
   glass_type: string;
+  /** The composed customer part line (Nelly, 2026-11-23). */
+  glass_line_description: string;
   labor_cents: number;
   tax_cents: number;
   total_cents: number;

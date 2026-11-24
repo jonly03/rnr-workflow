@@ -1,5 +1,6 @@
 import type { CaseStore } from "./store.js";
 import type { Invoice, InvoiceDisputeResolution } from "./types.js";
+import { composeGlassLineDescription } from "./vin-decode.js";
 
 /**
  * Invoice payment lifecycle (Fulfillment Slice D, brief §3.6):
@@ -495,6 +496,13 @@ export interface InvoiceClientView {
   bill_to: string | null;
   vehicle: { year: number; make: string; model: string; vin: string };
   glass_type: string;
+  /**
+   * The customer part line (Nelly, 2026-11-23), composed exactly as
+   * on the quote: glass + the customer's vehicle + its VIN-decode
+   * descriptor. The part number stays in its own field/column (the
+   * confirmed paper format); it is never inside this line.
+   */
+  glass_line_description: string;
   part_number: string | null;
   /** Glass line amount with margin baked in (what the client pays for glass). */
   glass_cents: number;
@@ -528,6 +536,11 @@ export async function buildInvoiceClientView(
       vin: snap.vehicle.vin
     },
     glass_type: snap.glass_type,
+    glass_line_description: composeGlassLineDescription({
+      glassType: snap.glass_type,
+      vehicle: snap.vehicle,
+      descriptor: snap.vehicle_descriptor
+    }),
     part_number: snap.part_number,
     glass_cents: snap.glass_cost_cents + snap.profit_cents,
     labor_cents: snap.labor_cents,

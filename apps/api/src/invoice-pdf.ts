@@ -166,7 +166,6 @@ function wrap(text: string, size: number, maxWidth: number): string[] {
 
 export function renderInvoicePdf(view: InvoiceClientView): Buffer {
   const p = new PdfPage();
-  const glassLabel = GLASS_LABELS[view.glass_type] ?? view.glass_type.replaceAll("_", " ");
 
   // --- Black band header -------------------------------------------------
   p.rect(MARGIN, 40, CONTENT_W, 54, BLACK);
@@ -293,17 +292,30 @@ export function renderInvoicePdf(view: InvoiceClientView): Buffer {
     const font = bold ? "F2" : "F1";
     p.text(qtyX, rowY, qty, { font, size: 10 });
     p.text(partX, rowY, part, { font, size: 10 });
-    p.text(descX, rowY, desc, { font, size: 10 });
+    // Long descriptions (the vehicle-mirroring part line) wrap to a
+    // second line instead of running into the Sell column.
+    const descLines = wrap(desc, 10, sellRight - descX - 8).slice(0, 2);
+    descLines.forEach((line, i) => {
+      p.text(descX, rowY + i * 11, line, { font, size: 10 });
+    });
     if (amount !== null) {
       p.textRight(sellRight, rowY, fmtMoney(amount), { font, size: 10 });
       p.textRight(totalRight, rowY, fmtMoney(amount), { font, size: 10 });
     }
-    rowY += 16;
+    rowY += 16 + (descLines.length - 1) * 11;
     p.line(MARGIN, rowY, RIGHT, GREY, 0.4);
     rowY += 4;
   };
 
-  itemRow("1", view.part_number ?? "-", `${glassLabel} - replacement glass`, view.glass_cents);
+  // The glass row's Description is the composed customer part line
+  // (Nelly, 2026-11-23) — vehicle + decode descriptor, mirroring the
+  // quote. The em dash renders as a hyphen in the PDF font encoding.
+  itemRow(
+    "1",
+    view.part_number ?? "-",
+    view.glass_line_description.replaceAll("—", "-"),
+    view.glass_cents
+  );
   itemRow("1", "LABOR", "Labor - remove & install", view.labor_cents);
   // Calibration: quoted on the confirmed format, never in the total.
   rowY += 2;

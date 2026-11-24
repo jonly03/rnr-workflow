@@ -169,6 +169,7 @@ export async function generateQuote(
       model: vehicle.model,
       vin: vehicle.vin
     },
+    vehicle_descriptor: vehicle.descriptor ?? null,
     glass_type: glassRequest.glass_type,
     part_number: selected?.part_number ?? null,
     supplier_name: selected?.supplier_name ?? null,
