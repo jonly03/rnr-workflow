@@ -482,6 +482,10 @@ describe("Invoice PDF", () => {
     const snap = detail.quote.snapshot;
     for (const name of MOCK_SUPPLIERS) expect(pdfText).not.toContain(name);
     expect(pdfText.toLowerCase()).not.toContain("profit");
+    // The part number NEVER appears on the customer invoice (owner
+    // policy, 2026-11-23): the glass line is plain words only.
+    if (snap.part_number) expect(pdfText).not.toContain(snap.part_number);
+    expect(pdfText).not.toContain("Part Number");
     // Raw glass cost must not appear as a figure; the client sees the
     // baked glass line (cost + profit) instead. (Skipped only if the
     // raw figure coincidentally equals a legitimate printed amount.)

@@ -10,8 +10,9 @@ import type { InvoiceClientView } from "./payments.js";
  *
  * The ONLY input is the client projection (payments.buildInvoiceClientView):
  * the glass line carries cost+profit baked in. Supplier name, raw glass
- * cost, and profit are not in the projection and therefore cannot appear
- * here — the same leak law as every other client surface.
+ * cost, profit, and the part number are not in the projection and
+ * therefore cannot appear here — the same leak law as every other
+ * client surface.
  */
 
 const PAGE_W = 612; // US Letter, points
@@ -271,12 +272,10 @@ export function renderInvoicePdf(view: InvoiceClientView): Buffer {
   const itemsTop = vehTop + 62;
   p.rect(MARGIN, itemsTop, CONTENT_W, 22, DARKBOX);
   const qtyX = MARGIN + 8;
-  const partX = MARGIN + 44;
-  const descX = MARGIN + 170;
+  const descX = MARGIN + 44;
   const sellRight = RIGHT - 78;
   const totalRight = RIGHT - 8;
   p.text(qtyX, itemsTop + 5, "Qty", { font: "F2", size: 9.5, color: WHITE });
-  p.text(partX, itemsTop + 5, "Part Number", { font: "F2", size: 9.5, color: WHITE });
   p.text(descX, itemsTop + 5, "Description", { font: "F2", size: 9.5, color: WHITE });
   p.textRight(sellRight, itemsTop + 5, "Sell", { font: "F2", size: 9.5, color: WHITE });
   p.textRight(totalRight, itemsTop + 5, "Total", { font: "F2", size: 9.5, color: WHITE });
@@ -284,7 +283,6 @@ export function renderInvoicePdf(view: InvoiceClientView): Buffer {
   let rowY = itemsTop + 22;
   const itemRow = (
     qty: string,
-    part: string,
     desc: string,
     amount: number | null,
     bold = false
@@ -292,7 +290,6 @@ export function renderInvoicePdf(view: InvoiceClientView): Buffer {
     rowY += 6;
     const font = bold ? "F2" : "F1";
     p.text(qtyX, rowY, qty, { font, size: 10 });
-    p.text(partX, rowY, part, { font, size: 10 });
     p.text(descX, rowY, desc, { font, size: 10 });
     if (amount !== null) {
       p.textRight(sellRight, rowY, fmtMoney(amount), { font, size: 10 });
@@ -303,14 +300,13 @@ export function renderInvoicePdf(view: InvoiceClientView): Buffer {
     rowY += 4;
   };
 
-  itemRow("1", view.part_number ?? "-", `${glassLabel} - replacement glass`, view.glass_cents);
-  itemRow("1", "LABOR", "Labor - remove & install", view.labor_cents);
+  itemRow("1", `${glassLabel} - replacement glass`, view.glass_cents);
+  itemRow("1", "Labor - remove & install", view.labor_cents);
   // Calibration: quoted on the confirmed format, never in the total.
   rowY += 2;
   p.line(MARGIN, rowY, RIGHT, INK, 1.2);
   rowY += 6;
-  p.text(partX, rowY, "Calibration", { font: "F2", size: 10 });
-  p.text(descX, rowY, "If needed - additional", { font: "F2", size: 10 });
+  p.text(descX, rowY, "Calibration - If needed - additional", { font: "F2", size: 10 });
   p.textRight(totalRight, rowY, "$300.00", { font: "F2", size: 10 });
   rowY += 16;
   p.line(MARGIN, rowY, RIGHT, INK, 1.2);

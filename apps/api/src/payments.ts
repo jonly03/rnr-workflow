@@ -484,9 +484,10 @@ export async function resolveInvoiceDispute(
  * field-by-field from the signed quote's snapshot + the invoice record:
  * the glass line carries cost+profit baked in (as on the quote page);
  * supplier name, raw glass cost, and profit never appear. The confirmed
- * R&R paper format shows the vehicle's own VIN and the part number, so
- * those are included — they are the client's own vehicle/part, not
- * economics.
+ * R&R paper format shows the vehicle's own VIN, so it is included — it
+ * is the client's own vehicle, not economics. The part number is NEVER
+ * included (owner policy, 2026-11-23): the customer invoice carries the
+ * glass line in plain words only.
  */
 export interface InvoiceClientView {
   reference: string;
@@ -495,7 +496,6 @@ export interface InvoiceClientView {
   bill_to: string | null;
   vehicle: { year: number; make: string; model: string; vin: string };
   glass_type: string;
-  part_number: string | null;
   /** Glass line amount with margin baked in (what the client pays for glass). */
   glass_cents: number;
   labor_cents: number;
@@ -528,7 +528,6 @@ export async function buildInvoiceClientView(
       vin: snap.vehicle.vin
     },
     glass_type: snap.glass_type,
-    part_number: snap.part_number,
     glass_cents: snap.glass_cost_cents + snap.profit_cents,
     labor_cents: snap.labor_cents,
     tax_cents: invoice.actuals.tax_cents,
