@@ -562,7 +562,7 @@ describe("public intake page (QR front door)", () => {
     // Name + phone alone don't open Send: the email (the required
     // contact since 2026-11-23) and an address are also required.
     expect(send.disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText(/^email/i), {
+    fireEvent.change(screen.getByPlaceholderText(/you@example\.com/), {
       target: { value: "jane@example.com" }
     });
     expect(send.disabled).toBe(true);
@@ -635,7 +635,7 @@ describe("public intake page (QR front door)", () => {
     // Still blocked: the email (the required contact since 2026-11-23)
     // is missing.
     expect(send.disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText(/^email/i), {
+    fireEvent.change(screen.getByPlaceholderText(/you@example\.com/), {
       target: { value: "jane@example.com" }
     });
     expect(send.disabled).toBe(false);
@@ -686,7 +686,7 @@ describe("public intake page (QR front door)", () => {
     fireEvent.change(screen.getByLabelText(/mobile phone/i), {
       target: { value: "(617) 555-0142" }
     });
-    fireEvent.change(screen.getByLabelText(/^email/i), {
+    fireEvent.change(screen.getByPlaceholderText(/you@example\.com/), {
       target: { value: "jane@example.com" }
     });
     await pickServiceAddress();
