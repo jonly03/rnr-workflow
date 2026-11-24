@@ -144,8 +144,9 @@ async function approvedCase(f: Fixture): Promise<string> {
 /** Signed + invoiced case (state INVOICED, invoice UNSENT). */
 async function invoicedCase(f: Fixture): Promise<string> {
   const caseId = await approvedCase(f);
+  // Signing generates the invoice (wiring, Nelly 2026-11-23) — no
+  // separate generate_invoice step; the case's invoice is v1.
   await act(f, caseId, "sign_quote", signBody()).expect(200);
-  await act(f, caseId, "generate_invoice").expect(200);
   return caseId;
 }
 
