@@ -178,12 +178,19 @@ export async function runIdentification(
     payload: { candidate_count: candidates.length }
   });
 
-  await evaluateCandidates(store, caseId, glassRequest, candidates, provider.name, SYSTEM);
+  await evaluateCandidates(store, caseId, vehicle, glassRequest, candidates, provider.name, SYSTEM);
+
+  // Nelly's sourcing default (2026-11-23): for windshield / back glass
+  // the paid VIN lookup is the DEFAULT resolution path, not a
+  // staff-triggered fallback — fire it now if evaluation parked the
+  // case in VIN_LOOKUP_REQUIRED.
+  await autoVinLookupIfRequired(store, provider, caseId);
 }
 
 async function evaluateCandidates(
   store: CaseStore,
   caseId: string,
+  vehicle: Vehicle,
   glassRequest: GlassRequest,
   candidates: GlassCandidate[],
   providerName: string,
@@ -195,6 +202,23 @@ async function evaluateCandidates(
     transition({ current_state: "GLASS_MATCH_EVALUATION" } as CaseRecord, event);
 
   if (candidates.length === 0) {
+    // No YMM coverage at all. For windshield / back glass with a valid
+    // VIN on the vehicle, the paid VIN lookup is the default path for
+    // these glass types (Nelly, 2026-11-23) — the VIN decodes the
+    // vehicle directly, so try it before declaring the glass
+    // unidentified. Without a usable VIN there is nothing to look up.
+    if (VIN_ELIGIBLE.has(glassRequest.glass_type) && hasUsableVin(vehicle)) {
+      await store.appendEvent({
+        caseId, eventType: "VIN_NEEDED", actor,
+        nextState: at("VIN_NEEDED"),
+        payload: {
+          provider: providerName,
+          candidate_count: 0,
+          reason: "YMM returned no candidates; VIN lookup is the default for this glass type."
+        }
+      });
+      return;
+    }
     await store.appendEvent({
       caseId, eventType: "NO_VALID_GLASS", actor,
       nextState: at("NO_VALID_GLASS"),
@@ -335,8 +359,84 @@ async function waitForVinLookupResult(
   }
 }
 
+/** True when the vehicle carries a VIN that passes the shared ISO 3779 gate. */
+function hasUsableVin(vehicle: Vehicle): boolean {
+  try {
+    assertValidVin(vehicle.vin);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Staff-confirmed paid VIN lookup. Guardrails (all backend-enforced):
+ * The auto-default VIN lookup (Nelly, 2026-11-23): when identification
+ * parks a windshield / back-glass case in VIN_LOOKUP_REQUIRED, the
+ * paid lookup fires immediately as a SYSTEM action — the $1 is
+ * pre-approved by policy for these glass types, so no staff click is
+ * needed. Every guardrail of the manual path applies unchanged (per-
+ * (VIN, glass type) cache, single-flight claim, daily spend-cap
+ * reservation), because this calls the same requestVinLookup.
+ *
+ * Deliberately non-fatal outcomes, all visible on the event log:
+ * - No usable VIN on the vehicle: the case STAYS in
+ *   VIN_LOOKUP_REQUIRED (staff can add/fix the VIN, then use the
+ *   manual trigger) and AUTO_VIN_LOOKUP_SKIPPED records why.
+ * - Spend cap reached: requestVinLookup records VIN_LOOKUP_FAILED
+ *   with the cap message and routes the case to
+ *   SYSTEM_ATTENTION_REQUIRED — reported on the case, never a silent
+ *   block (the reservation error names today's spend vs the cap).
+ * - A concurrent lookup already in flight (single-flight loser):
+ *   AUTO_VIN_LOOKUP_DEFERRED is recorded; the winner's own flow
+ *   resolves its case, and staff can retry this one.
+ */
+async function autoVinLookupIfRequired(
+  store: CaseStore,
+  provider: GlassCatalogProvider,
+  caseId: string
+): Promise<void> {
+  const { caseRecord, vehicle, glassRequest } = await loadCaseContext(store, caseId);
+  if (caseRecord.current_state !== "VIN_LOOKUP_REQUIRED") return;
+  if (!VIN_ELIGIBLE.has(glassRequest.glass_type)) return;
+
+  if (!hasUsableVin(vehicle)) {
+    await store.appendEvent({
+      caseId,
+      eventType: "AUTO_VIN_LOOKUP_SKIPPED",
+      actor: SYSTEM,
+      nextState: "VIN_LOOKUP_REQUIRED",
+      payload: {
+        provider: provider.name,
+        reason:
+          "Auto VIN lookup skipped: the vehicle has no valid VIN on file. " +
+          "Add a valid VIN, then run the lookup from the case (staff action request_vin_lookup)."
+      }
+    });
+    return;
+  }
+
+  try {
+    await requestVinLookup(store, provider, caseId, SYSTEM);
+  } catch (error) {
+    if (error instanceof IdentificationError) {
+      await store.appendEvent({
+        caseId,
+        eventType: "AUTO_VIN_LOOKUP_DEFERRED",
+        actor: SYSTEM,
+        nextState: "VIN_LOOKUP_REQUIRED",
+        payload: { provider: provider.name, error: error.message }
+      });
+      return;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Paid VIN lookup — invoked automatically by identification for
+ * windshield / back glass (see autoVinLookupIfRequired) and still
+ * available as a staff action for retries / VIN-corrected cases.
+ * Guardrails (all backend-enforced):
  * - only from VIN_LOOKUP_REQUIRED,
  * - only for WINDSHIELD / BACK_GLASS (never Door/Quarter/Vent),
  * - the VIN passes the shared ISO 3779 gate (format + check digit),

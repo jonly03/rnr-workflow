@@ -484,9 +484,9 @@ describe("Sourcing + Pricing", () => {
     // interchange part numbers (<primary>-ALT1 / -ALT2).
     const created = await f.createCase({ model: "Ambiguous" }).expect(201);
     await act(f, created.body.id, "start_identification").expect(200);
-    await waitForState(f, created.body.id, ["VIN_LOOKUP_REQUIRED"]);
-
-    const res = await act(f, created.body.id, "request_vin_lookup").expect(200);
+    // The VIN lookup is the auto default for windshields (2026-11-23):
+    // no staff request_vin_lookup step.
+    const res = await waitForState(f, created.body.id, ["QUOTE_SENT"]);
     expect(res.body.current_state).toBe("QUOTE_SENT");
 
     // The identification persists the interchange list for sourcing.
@@ -578,21 +578,18 @@ describe("Sourcing + Pricing", () => {
       .set("Authorization", `Bearer ${token}`)
       .send({ action: "start_identification" })
       .expect(200);
+    let settledRes: request.Response | null = null;
     const altStart = Date.now();
     for (;;) {
       const r = await request(app)
         .get(`/api/v1/cases/${created.body.id}`)
         .set("Authorization", `Bearer ${token}`)
         .expect(200);
-      if (r.body.current_state === "VIN_LOOKUP_REQUIRED") break;
-      if (Date.now() - altStart > 15000) throw new Error("timed out waiting for VIN_LOOKUP_REQUIRED");
+      if (r.body.current_state === "QUOTE_SENT") { settledRes = r; break; }
+      if (Date.now() - altStart > 15000) throw new Error("timed out waiting for QUOTE_SENT");
       await new Promise(rr => setTimeout(rr, 100));
     }
-    const res = await request(app)
-      .post(`/api/v1/cases/${created.body.id}/actions`)
-      .set("Authorization", `Bearer ${token}`)
-      .send({ action: "request_vin_lookup" })
-      .expect(200);
+    const res = settledRes!;
 
     const offers = res.body.supplier_offers as any[];
     const selected = offers.find(o => o.selected);
@@ -627,8 +624,7 @@ describe("Sourcing + Pricing", () => {
     // interchange part numbers, so sourcing searches 3 part numbers.
     const created = await f.createCase({ model: "Ambiguous" }).expect(201);
     await act(f, created.body.id, "start_identification").expect(200);
-    await waitForState(f, created.body.id, ["VIN_LOOKUP_REQUIRED"]);
-    const res = await act(f, created.body.id, "request_vin_lookup").expect(200);
+    const res = await waitForState(f, created.body.id, ["QUOTE_SENT"]);
     expect(res.body.current_state).toBe("QUOTE_SENT");
     expect(f.sourcing.offerSearches).toBe(3);
     expect(maxInFlight).toBe(1);
@@ -646,9 +642,7 @@ describe("Sourcing + Pricing", () => {
     };
     const created = await f.createCase({ model: "Ambiguous" }).expect(201);
     await act(f, created.body.id, "start_identification").expect(200);
-    await waitForState(f, created.body.id, ["VIN_LOOKUP_REQUIRED"]);
-    // The VIN lookup succeeds but sourcing fails loudly.
-    await act(f, created.body.id, "request_vin_lookup").expect(200);
+    // The auto VIN lookup succeeds but sourcing fails loudly.
     const failed = await waitForState(f, created.body.id, ["SYSTEM_ATTENTION_REQUIRED"]);
     expect(failed.body.current_state).toBe("SYSTEM_ATTENTION_REQUIRED");
 
