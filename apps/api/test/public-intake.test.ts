@@ -217,9 +217,7 @@ describe("Public client intake (QR front door)", () => {
     const f = await fixture();
     await intake(f, { ...VALID, vin: "1HGCM82633A004353" }).expect(422);
     const list = await staffGet(f, "/api/v1/cases").expect(200);
-    // Every rejected shape above created nothing; the one success is
-    // the phone-less submission (phone is optional since 2026-11-23).
-    expect(list.body).toHaveLength(1);
+    expect(list.body).toHaveLength(0);
   });
 
   it("rejects missing name, missing/unusable email, bad glass type, and no vehicle info", async () => {
@@ -381,9 +379,7 @@ describe("Public client intake (QR front door)", () => {
     await tooMany.expect(400);
 
     const list = await staffGet(f, "/api/v1/cases").expect(200);
-    // Every rejected shape above created nothing; the one success is
-    // the phone-less submission (phone is optional since 2026-11-23).
-    expect(list.body).toHaveLength(1);
+    expect(list.body).toHaveLength(0);
   });
 
   it("rate-limits repeated submissions per IP", async () => {
