@@ -447,7 +447,9 @@ describe("Sourcing + Pricing", () => {
     const defaults = loadPricingConfig({});
     expect(defaults).toEqual({
       labor_cents: 12500,
-      target_profit_cents: 25000,
+      // $125 profit beyond labor: the $250 total profit target includes
+      // the $125 labor (owner policy, 2026-11-23).
+      target_profit_cents: 12500,
       tax_rate: 0.0625
     });
     const custom = loadPricingConfig({
@@ -460,6 +462,35 @@ describe("Sourcing + Pricing", () => {
       target_profit_cents: 22500,
       tax_rate: 0.07
     });
+  });
+
+  it("default Direct pricing: the $250 total profit includes the $125 labor", () => {
+    // Owner policy (2026-11-23): total = glass + $250 (labor $125 + $125
+    // profit beyond labor) + 6.25% tax on glass. The old additive formula
+    // (glass + $125 labor + $250 profit + tax) double-counted labor.
+    const config = loadPricingConfig({});
+    const priceFor = (glass_cost_cents: number) =>
+      calculatePrice({
+        glass_cost_cents,
+        labor_cents: config.labor_cents,
+        profit_cents: config.target_profit_cents,
+        tax_rate: config.tax_rate
+      });
+
+    // $38.70 glass: tax $2.42, total $291.12 (was $416.12 under the old rule).
+    const cheap = priceFor(3870);
+    expect(cheap.labor_cents).toBe(12500);
+    expect(cheap.profit_cents).toBe(12500);
+    expect(cheap.labor_cents + cheap.profit_cents).toBe(25000);
+    expect(cheap.tax_cents).toBe(242);
+    expect(cheap.sell_price_cents).toBe(29112);
+    expect(dollars(cheap.sell_price_cents)).toBe("$291.12");
+
+    // $296.04 glass: tax $18.50, total $564.54 (was $689.54 under the old rule).
+    const pricier = priceFor(29604);
+    expect(pricier.tax_cents).toBe(1850);
+    expect(pricier.sell_price_cents).toBe(56454);
+    expect(dollars(pricier.sell_price_cents)).toBe("$564.54");
   });
 
   it("rejects invalid pricing actions with clear errors", async () => {

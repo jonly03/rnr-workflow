@@ -6,8 +6,11 @@ import type { CaseRecord, PriceCalculation } from "./types.js";
  * sensible defaults); nothing client-facing is hard-coded.
  *
  * - labor_cents: flat labor charge per job ($125).
- * - target_profit_cents: target profit per job ($250, per owner policy —
- *   applies regardless of glass cost).
+ * - target_profit_cents: profit beyond labor per job. Owner policy
+ *   (2026-11-23): the $250 total profit target INCLUDES the $125 labor,
+ *   so this defaults to $125 ($250 total − $125 labor). The total markup
+ *   over glass cost is labor + target_profit = $250, and it applies
+ *   regardless of glass cost.
  * - tax_rate: sales tax rate applied to the glass cost (6.25%).
  */
 export interface PricingConfig {
@@ -37,7 +40,7 @@ export function loadPricingConfig(env: NodeJS.ProcessEnv = process.env): Pricing
   };
   return {
     labor_cents: int("PRICING_LABOR_CENTS", 12500),
-    target_profit_cents: int("PRICING_TARGET_PROFIT_CENTS", 25000),
+    target_profit_cents: int("PRICING_TARGET_PROFIT_CENTS", 12500),
     tax_rate: float("PRICING_TAX_RATE", 0.0625)
   };
 }
@@ -153,10 +156,11 @@ export function calculatePrice(inputs: PriceInputs): PriceResult {
 /**
  * Runs pricing. Automatic after GLASS_SELECTED.
  *
- * The price is always calculated from the configured labor ($125), target
- * profit ($250), and tax (6.25% of glass cost), then auto-approved. Per owner
- * policy, the $250 target profit applies regardless of glass cost — cheap
- * glass does not route to manual review.
+ * The price is always calculated from the configured labor ($125), profit
+ * beyond labor ($125 — the $250 total profit target includes labor, per
+ * owner policy 2026-11-23), and tax (6.25% of glass cost), then
+ * auto-approved. Per owner policy, the $250 total profit target applies
+ * regardless of glass cost — cheap glass does not route to manual review.
  */
 export async function runPricing(
   store: CaseStore,
@@ -196,8 +200,8 @@ export async function runPricing(
     tax_rate: config.tax_rate
   };
 
-  // Standard case: calculate and auto-approve. The $250 target profit
-  // applies regardless of glass cost (owner policy).
+  // Standard case: calculate and auto-approve. The $250 total profit
+  // target (labor included) applies regardless of glass cost (owner policy).
   const price = calculatePrice({
     glass_cost_cents: selected.price_cents,
     labor_cents: config.labor_cents,
