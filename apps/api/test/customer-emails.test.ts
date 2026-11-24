@@ -23,7 +23,7 @@ import type { GlassType } from "../src/types.js";
  * a reminder every 24h while a quote sits unsigned.
  */
 
-const TEST_AUTH_SECRET=<redacted>
+const TEST_AUTH_SECRET = "test-auth-secret-for-invoicing-tests-0123456789";
 const VIN_17 = "1HGCM82633A004352";
 const PRICING = { labor_cents: 12500, target_profit_cents: 25000, tax_rate: 0.0625 };
 const WEB_BASE = "https://app.example.test";
