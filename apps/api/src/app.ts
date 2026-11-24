@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import multer from "multer";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { signatureMethodOf, type CaseRecord, type Channel, type StaffUser } from "./types.js";
 import {
@@ -150,6 +150,12 @@ import {
   TrackingError
 } from "./tracking.js";
 import { createSmsSender, type SmsSender } from "./sms.js";
+import { createEmailSender, type EmailSender } from "./email.js";
+import {
+  dispatchInvoiceEmail,
+  dispatchQuoteEmail,
+  processQuoteReminders
+} from "./customer-emails.js";
 import { googleReviewUrl, JOB_COMPLETED_KIND } from "./notifications.js";
 import { createRateLimiter } from "./rate-limit.js";
 import {
@@ -391,6 +397,13 @@ export interface AppDeps {
    * driver, which records through the notifications table only.
    */
   smsSender?: SmsSender;
+  /**
+   * Email sender override (tests inject capturing/failing drivers).
+   * Defaults to the env-selected seam: EMAIL_PROVIDER=smtp with full
+   * SMTP_* configuration sends real email; anything else is the
+   * unconfigured sender, whose sends fail loud (see email.ts).
+   */
+  emailSender?: EmailSender;
 }
 
 export function createApp(
@@ -428,6 +441,7 @@ export function createApp(
   // the notifications table, sends nothing); Twilio only when fully
   // configured — see sms.ts.
   const smsSender = deps.smsSender ?? createSmsSender(process.env);
+  const emailSender = deps.emailSender ?? createEmailSender(process.env);
   const app = express();
 
   // Do not fingerprint the framework: Express sets X-Powered-By by default.
@@ -587,6 +601,29 @@ export function createApp(
   };
 
   /**
+   * Customer email dispatch (Nelly, 2026-11-23): after any flow that
+   * can generate a quote or an invoice, hand the customer-emails
+   * module the case. It records + sends at most one quote email per
+   * quote version and one invoice email per invoice version, and is a
+   * no-op when nothing new exists. Delivery outcomes live on the
+   * notification rows; a dispatch problem must never fail the action
+   * that produced the quote/invoice, so each call is guarded here as
+   * well as inside the module.
+   */
+  const dispatchCustomerEmails = async (caseId: string): Promise<void> => {
+    try {
+      await dispatchQuoteEmail(store, caseId, { sender: emailSender });
+    } catch (err) {
+      console.error(`quote email dispatch failed for case ${caseId}:`, err);
+    }
+    try {
+      await dispatchInvoiceEmail(store, caseId, { sender: emailSender });
+    } catch (err) {
+      console.error(`invoice email dispatch failed for case ${caseId}:`, err);
+    }
+  };
+
+  /**
    * NOTE (serverless safety): case creation used to kick off identification
    * as a fire-and-forget promise chain after returning the case shell. On
    * serverless platforms the runtime may freeze the moment the response is
@@ -620,7 +657,12 @@ export function createApp(
       // Which SMS driver is EFFECTIVE for the completion text: "mock"
       // until Twilio is fully configured (SMS_PROVIDER + TWILIO_*), so
       // a half-configured deploy reads as mock here, never as twilio.
-      sms_provider: smsSender.name
+      sms_provider: smsSender.name,
+      // Which email driver is EFFECTIVE for customer quote/invoice
+      // email: "smtp" only when EMAIL_PROVIDER=smtp is fully
+      // configured; otherwise "unconfigured" and every customer email
+      // records a loud EMAIL_NOT_CONFIGURED failure — never a fake send.
+      email_provider: emailSender.name
     });
   };
   app.get("/health", healthHandler);
@@ -1769,6 +1811,13 @@ export function createApp(
     if (!invoice) {
       invoice = await generateInvoice(store, c.id, { type: "SYSTEM", id: null });
     }
+    // The invoice email fires off this generation (Nelly, 2026-11-23):
+    // signing -> invoice -> email is one chain, never separate steps.
+    try {
+      await dispatchInvoiceEmail(store, c.id, { sender: emailSender });
+    } catch (err) {
+      console.error(`invoice email dispatch failed for case ${c.id}:`, err);
+    }
     // Hand the customer a long-lived, view-only tracking link.
     const tracking = await mintApprovalToken(store, {
       caseId: c.id,
@@ -2182,6 +2231,9 @@ export function createApp(
         );
         await advanceWorkflow(created.id);
         await autoQuoteIfPriced(created.id, { type: "SYSTEM", id: null });
+        // If the chain produced a quote, the customer gets it by
+        // email (their required contact since 2026-11-23).
+        await dispatchCustomerEmails(created.id);
       } catch (err) {
         console.error(`intake auto-start failed for case ${created.id}:`, err);
         try {
@@ -2602,6 +2654,41 @@ export function createApp(
   });
 
   /**
+   * Runs one unsigned-quote reminder pass (Nelly, 2026-11-23): every
+   * live, unsigned quote that has waited 24h since the quote (or the
+   * last reminder) gets its next reminder email — at most 4 per quote
+   * inside the 5-day validity window, stopping at signature/expiry.
+   * The 24h rule lives in customer-emails.ts; this endpoint is only
+   * the trigger, called hourly by the quote-reminders workflow.
+   * Access: a staff session, OR the shared cron secret
+   * (QUOTE_REMINDER_CRON_SECRET) in the x-cron-secret header — the
+   * scheduled workflow has no staff login.
+   */
+  const runQuoteReminders = async (
+    _req: express.Request,
+    res: express.Response
+  ) => {
+    const summary = await processQuoteReminders(store, { sender: emailSender });
+    return res.json({ ok: true, ...summary });
+  };
+  app.post(
+    "/api/v1/jobs/quote-reminders",
+    (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      const secret = process.env.QUOTE_REMINDER_CRON_SECRET;
+      const provided = req.header("x-cron-secret") ?? "";
+      if (
+        secret &&
+        provided.length === secret.length &&
+        timingSafeEqual(Buffer.from(provided), Buffer.from(secret))
+      ) {
+        return runQuoteReminders(req, res);
+      }
+      return auth(req, res, next);
+    },
+    runQuoteReminders
+  );
+
+  /**
    * Mints the customer's sign link for the case's current SENT quote.
    * The raw token is returned exactly once (only its hash is stored);
    * staff copy the link and send it by text/WhatsApp. The token dies at
@@ -2944,6 +3031,15 @@ export function createApp(
             },
             staffActor
           );
+          // Signing IS the invoice trigger (Nelly, 2026-11-23): the
+          // invoice is generated from this exact signed quote version,
+          // exactly as the public sign endpoint does. Before this, the
+          // staff sign path left invoice creation as a separate manual
+          // step — a signature could land and nothing happened
+          // downstream. Idempotent: an existing invoice is kept.
+          if (!(await store.getLatestInvoice(c.id))) {
+            await generateInvoice(store, c.id, staffActor);
+          }
           break;
         }
         case "decline_quote":
@@ -3023,6 +3119,11 @@ export function createApp(
     } catch (err) {
       console.error(`auto-quote failed for case ${c.id}:`, err);
     }
+
+    // Quote/invoice email for anything this action generated
+    // (generate_quote, requote, auto-quote, sign_quote's invoice,
+    // generate_invoice). Recorded + idempotent in customer-emails.ts.
+    await dispatchCustomerEmails(c.id);
 
     const updated = await store.getCase(c.id);
     return res.json(await detail(updated!));
