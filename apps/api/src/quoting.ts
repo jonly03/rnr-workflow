@@ -52,7 +52,7 @@ export const QUOTING_TRANSITIONS: Record<string, Record<string, string>> = {
 
 /**
  * Quoting configuration. Quote validity is configuration-driven
- * (QUOTE_EXPIRY_HOURS, default 72) — never hard-coded.
+ * (QUOTE_EXPIRY_HOURS, default 120 = 5 days, Nelly 2026-11-23) — never hard-coded.
  */
 export interface QuotingConfig {
   /** Hours a generated quote stays signable before expiring. */
@@ -61,7 +61,7 @@ export interface QuotingConfig {
 
 export function loadQuotingConfig(env: NodeJS.ProcessEnv = process.env): QuotingConfig {
   const raw = env["QUOTE_EXPIRY_HOURS"];
-  if (raw === undefined || raw.trim() === "") return { expiry_hours: 72 };
+  if (raw === undefined || raw.trim() === "") return { expiry_hours: 120 };
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new Error("Invalid QUOTE_EXPIRY_HOURS: must be a positive number.");

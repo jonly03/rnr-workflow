@@ -8,7 +8,7 @@ import { createApp } from "../src/app.js";
 import { hashPassword } from "../src/auth.js";
 import { MockGlassCatalogProvider } from "../src/glass-catalog.js";
 import { MockSourcingProvider } from "../src/sourcing.js";
-import { hashSignatureBytes, hashTypedSignature } from "../src/quoting.js";
+import { hashSignatureBytes, hashTypedSignature, loadQuotingConfig } from "../src/quoting.js";
 import { JsonCaseStore } from "../src/store.js";
 import type { GlassType } from "../src/types.js";
 
@@ -28,7 +28,7 @@ interface Fixture {
   createCase: () => request.Test;
 }
 
-async function fixture(quotingConfig = { expiry_hours: 72 }): Promise<Fixture> {
+async function fixture(quotingConfig = { expiry_hours: 120 }): Promise<Fixture> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rnr-quote-"));
   const store = new JsonCaseStore(path.join(dir, "cases.json"));
   await store.createStaffUser({
@@ -130,10 +130,10 @@ describe("Quote sign-off (signature = approval)", () => {
     expect(quote.version).toBe(1);
     expect(quote.status).toBe("SENT");
     expect(quote.signature).toBeNull();
-    // 72h default expiry.
+    // 5-day (120h) expiry — the standard quote validity (Nelly, 2026-11-23).
     const ttlMs = new Date(quote.expires_at).getTime() - Date.now();
-    expect(ttlMs).toBeGreaterThan(71 * 3600_000);
-    expect(ttlMs).toBeLessThanOrEqual(72 * 3600_000);
+    expect(ttlMs).toBeGreaterThan(119 * 3600_000);
+    expect(ttlMs).toBeLessThanOrEqual(120 * 3600_000);
     // Snapshot is an integer-cents copy of vehicle + glass + economics.
     expect(quote.snapshot.vehicle.vin).toBe(VIN_17);
     expect(quote.snapshot.vehicle.year).toBe(2020);
@@ -445,5 +445,21 @@ describe("Quote sign-off (signature = approval)", () => {
     await act(f, caseId, "decline_quote").expect(200);
     const res = await act(f, caseId, "sign_quote", signBody()).expect(409);
     expect(res.body.error.code).toBe("INVALID_TRANSITION");
+  });
+});
+
+describe("loadQuotingConfig (quote deadline, Nelly 2026-11-23)", () => {
+  it("defaults to 120 hours (5 days) when QUOTE_EXPIRY_HOURS is unset", () => {
+    expect(loadQuotingConfig({} as NodeJS.ProcessEnv).expiry_hours).toBe(120);
+    expect(loadQuotingConfig({ QUOTE_EXPIRY_HOURS: "  " } as NodeJS.ProcessEnv).expiry_hours).toBe(120);
+  });
+
+  it("honors an explicit QUOTE_EXPIRY_HOURS override", () => {
+    expect(loadQuotingConfig({ QUOTE_EXPIRY_HOURS: "48" } as NodeJS.ProcessEnv).expiry_hours).toBe(48);
+  });
+
+  it("rejects a non-positive or non-numeric QUOTE_EXPIRY_HOURS", () => {
+    expect(() => loadQuotingConfig({ QUOTE_EXPIRY_HOURS: "0" } as NodeJS.ProcessEnv)).toThrow();
+    expect(() => loadQuotingConfig({ QUOTE_EXPIRY_HOURS: "soon" } as NodeJS.ProcessEnv)).toThrow();
   });
 });

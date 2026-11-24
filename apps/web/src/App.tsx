@@ -3860,7 +3860,7 @@ function titleNoun(noun: string): string {
   return noun.charAt(0).toUpperCase() + noun.slice(1);
 }
 
-/** Staff SLA view of the 72h quote validity: a countdown, or "Expired". */
+/** Staff SLA view of the quote validity window (5 days): a countdown, or "Expired". */
 function quoteSlaLabel(expiresAt: string): string {
   const ms = new Date(expiresAt).getTime() - Date.now();
   if (ms <= 0) return "Expired";
@@ -3872,7 +3872,7 @@ function quoteSlaLabel(expiresAt: string): string {
 }
 
 /** Staff quote card: generate / re-quote, track signature (approval) and the
- *  72h SLA, open the client sign-off view. Full economics are staff-only. */
+ *  SLA, open the client sign-off view. Full economics are staff-only. */
 function QuoteCard({
   item,
   onRefresh,
