@@ -7,6 +7,7 @@ import { createApp } from "../src/app.js";
 import { hashPassword } from "../src/auth.js";
 import { MockGlassCatalogProvider } from "../src/glass-catalog.js";
 import { JsonCaseStore } from "../src/store.js";
+import { runIdentification } from "../src/glass-identification.js";
 import type { GlassType } from "../src/types.js";
 
 const TEST_AUTH_SECRET = "test-secret-for-glass-tests";
@@ -150,23 +151,21 @@ describe("Glass Identification", () => {
     const f = await fixture();
     // Ambiguous YMM, but no VIN on the vehicle: the auto lookup has
     // nothing to run, the skip is recorded, and the manual staff
-    // trigger remains available once a VIN is on file.
-    const res = await request(f.app)
-      .post("/api/v1/cases")
-      .set("Authorization", `Bearer ${f.token}`)
-      .send({
-        channel: "DIRECT",
-        vehicle: { year: 2020, make: "Honda", model: "Ambiguous" },
-        glass_request: { glass_type: "WINDSHIELD" }
-      })
-      .expect(201);
-    await act(f, res.body.id, "start_identification").expect(200);
+    // trigger remains available once a VIN is on file. (Built at the
+    // store level: the staff create endpoint enforces the VIN gate,
+    // while VIN-less cases arrive via the public intake.)
+    const { caseRecord } = await f.store.createCase({
+      channel: "DIRECT",
+      vehicle: { year: 2020, make: "Honda", model: "Ambiguous", vin: "" },
+      glass_type: "WINDSHIELD"
+    });
+    await runIdentification(f.store, f.provider, caseRecord.id);
 
-    const settled = await waitForState(f, res.body.id, ["VIN_LOOKUP_REQUIRED"]);
+    const settled = await waitForState(f, caseRecord.id, ["VIN_LOOKUP_REQUIRED"]);
     expect(settled.body.current_state).toBe("VIN_LOOKUP_REQUIRED");
     expect(f.provider.vinLookups).toBe(0);
     const events = await request(f.app)
-      .get(`/api/v1/cases/${res.body.id}/events`)
+      .get(`/api/v1/cases/${caseRecord.id}/events`)
       .set("Authorization", `Bearer ${f.token}`)
       .expect(200);
     const skipped = events.body.find(
@@ -294,20 +293,17 @@ describe("Glass Identification", () => {
     const f = await fixture();
     // No YMM coverage AND no VIN on the vehicle: nothing can identify
     // the glass (with a valid VIN the auto VIN lookup would run).
-    const res = await request(f.app)
-      .post("/api/v1/cases")
-      .set("Authorization", `Bearer ${f.token}`)
-      .send({
-        channel: "DIRECT",
-        vehicle: { year: 2020, make: "Unknown", model: "Accord" },
-        glass_request: { glass_type: "WINDSHIELD" }
-      })
-      .expect(201);
-    await act(f, res.body.id, "start_identification").expect(200);
-    await waitForState(f, res.body.id, ["GLASS_NOT_IDENTIFIED"]);
+    // Store-level creation, as in the no-VIN test above.
+    const { caseRecord } = await f.store.createCase({
+      channel: "DIRECT",
+      vehicle: { year: 2020, make: "Unknown", model: "Accord", vin: "" },
+      glass_type: "WINDSHIELD"
+    });
+    await runIdentification(f.store, f.provider, caseRecord.id);
+    await waitForState(f, caseRecord.id, ["GLASS_NOT_IDENTIFIED"]);
 
     // Retry re-runs identification (still nothing in the mock catalog).
-    const retried = await act(f, res.body.id, "retry_identification").expect(200);
+    const retried = await act(f, caseRecord.id, "retry_identification").expect(200);
     expect(retried.body.current_state).toBe("GLASS_NOT_IDENTIFIED");
     expect(f.provider.ymmSearches).toBe(2);
   });
