@@ -477,8 +477,11 @@ export interface QuoteSnapshot {
     model: string;
     vin: string;
   };
-  /** Descriptor frozen at quote time (see Vehicle.descriptor). */
-  vehicle_descriptor: string | null;
+  /**
+   * Descriptor frozen at quote time (see Vehicle.descriptor).
+   * Optional: snapshots stored before 2026-11-23 do not carry it.
+   */
+  vehicle_descriptor?: string | null;
   glass_type: string;
   part_number: string | null;
   supplier_name: string | null;
