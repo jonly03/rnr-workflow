@@ -12,7 +12,12 @@ import {
 import type { CaseStore, TechProfilePatch } from "./store.js";
 import type { GlassCatalogProvider } from "./glass-catalog.js";
 import { createGlassCatalogProvider } from "./mygrant.js";
-import { decodeVinNhtsa, VinDecodeError } from "./vin-decode.js";
+import {
+  composeGlassLineDescription,
+  composeVehicleDescriptor,
+  decodeVinNhtsa,
+  VinDecodeError
+} from "./vin-decode.js";
 import { isValidVin } from "./vin-validation.js";
 import { ocrVinFromImage, OcrError, type OcrVinResult } from "./vin-ocr.js";
 import {
@@ -165,6 +170,10 @@ const createCaseSchema = z.object({
     year: z.number().int().min(1886).max(2100),
     make: z.string().trim().min(1),
     model: z.string().trim().min(1),
+    // Customer-facing descriptor composed from the VIN decode the
+    // client just ran (see /vin/decode), stored on the vehicle for
+    // the quote/invoice part line (Nelly, 2026-11-23).
+    descriptor: z.string().trim().max(160).nullable().optional(),
     // Shared ISO 3779 gate (format + check digit): the same validation
     // applied to typed VINs at /vin/decode and to photographed VINs when
     // their OCR candidate is confirmed through /vin/decode.
@@ -207,6 +216,7 @@ const publicIntakeSchema = z.object({
   // (and projected for staff) so older clients in the field don't break.
   note: z.string().trim().max(1000).optional(),
   vin: z.string().trim().max(17).optional(),
+  vehicle_descriptor: z.string().trim().max(160).optional(),
   year: z.coerce.number().int().min(1950).max(MAX_VEHICLE_YEAR).optional(),
   make: z.string().trim().min(1).max(60).optional(),
   model: z.string().trim().min(1).max(60).optional()
@@ -1461,7 +1471,13 @@ export function createApp(
     const vin = typeof req.body?.vin === "string" ? req.body.vin : "";
     try {
       const decoded = await decodeVinNhtsa(vin);
-      res.json({ vin: decoded.vin, vehicle: decoded });
+      // The composed descriptor travels with the decode so intake /
+      // case creation can store it on the vehicle for the customer
+      // part line (Nelly, 2026-11-23) without re-decoding.
+      res.json({
+        vin: decoded.vin,
+        vehicle: { ...decoded, descriptor: composeVehicleDescriptor(decoded) }
+      });
     } catch (error) {
       if (error instanceof VinDecodeError) {
         return res.status(422).json({
@@ -1563,6 +1579,16 @@ export function createApp(
         model: quote.snapshot.vehicle.model
       },
       glass_type: quote.snapshot.glass_type,
+      // The customer part line (Nelly, 2026-11-23): mirrors the
+      // customer's vehicle back to them; composed server-side from
+      // the snapshot so the page renders it verbatim. Contains no
+      // VIN, part number, supplier, cost, or profit — the leak tests
+      // hold that line.
+      glass_line_description: composeGlassLineDescription({
+        glassType: quote.snapshot.glass_type,
+        vehicle: quote.snapshot.vehicle,
+        descriptor: quote.snapshot.vehicle_descriptor
+      }),
       labor_cents: quote.snapshot.labor_cents,
       tax_cents: quote.snapshot.tax_cents,
       total_cents: quote.snapshot.sell_price_cents,
@@ -2034,12 +2060,17 @@ export function createApp(
         vin = input.vin.trim().toUpperCase();
       }
       let { year, make, model } = input;
+      // Descriptor for the customer part line (Nelly, 2026-11-23):
+      // the server's own decode wins when it runs; otherwise a
+      // descriptor the client composed from its decode is accepted.
+      let vehicleDescriptor: string | null = input.vehicle_descriptor ?? null;
       if (vin && (year === undefined || !make || !model)) {
         try {
           const decoded = await decodeVinNhtsa(vin);
           year = year ?? decoded.year;
           make = make ?? decoded.make;
           model = model ?? decoded.model;
+          vehicleDescriptor = composeVehicleDescriptor(decoded) || vehicleDescriptor;
         } catch {
           return intakeValidationError(
             res,
@@ -2097,7 +2128,7 @@ export function createApp(
       const result = await store.createCase({
         channel: "DIRECT",
         customer_id: null,
-        vehicle: { year, make, model, vin: vin ?? "" },
+        vehicle: { year, make, model, vin: vin ?? "", descriptor: vehicleDescriptor },
         glass_type: input.glass_type,
         actor: customerActor
       });

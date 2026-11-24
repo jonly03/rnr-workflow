@@ -12,6 +12,13 @@ export interface Vehicle {
   make: string;
   model: string;
   vin: string;
+  /**
+   * Customer-facing descriptor composed from the VIN decode at
+   * intake (Nelly, 2026-11-23), e.g. "Electric SUV · AWD · 5-door ·
+   * built in Japan" — see composeVehicleDescriptor in vin-decode.ts.
+   * Null when no decode supplied pertinent attributes.
+   */
+  descriptor?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -470,6 +477,8 @@ export interface QuoteSnapshot {
     model: string;
     vin: string;
   };
+  /** Descriptor frozen at quote time (see Vehicle.descriptor). */
+  vehicle_descriptor: string | null;
   glass_type: string;
   part_number: string | null;
   supplier_name: string | null;

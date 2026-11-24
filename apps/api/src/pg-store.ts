@@ -89,6 +89,7 @@ function vehicleRow(row: any): Vehicle {
     make: row.make,
     model: row.model,
     vin: row.vin,
+    descriptor: row.descriptor ?? null,
     created_at: iso(row.created_at),
     updated_at: iso(row.updated_at)
   };
@@ -489,9 +490,9 @@ export class PgCaseStore implements CaseStore {
       }
 
       await client.query(
-        `insert into vehicles(id, year, make, model, vin, created_at, updated_at)
-         values ($1,$2,$3,$4,$5,$6,$6)`,
-        [vehicleId, input.vehicle.year, input.vehicle.make, input.vehicle.model, input.vehicle.vin, now]
+        `insert into vehicles(id, year, make, model, vin, descriptor, created_at, updated_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$7)`,
+        [vehicleId, input.vehicle.year, input.vehicle.make, input.vehicle.model, input.vehicle.vin, input.vehicle.descriptor ?? null, now]
       );
 
       await client.query(

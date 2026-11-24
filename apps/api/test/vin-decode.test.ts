@@ -118,3 +118,47 @@ describe("VIN decode (NHTSA vPIC)", () => {
       .expect(401);
   });
 });
+
+describe("vehicle descriptor + customer part line (Nelly, 2026-11-23)", () => {
+  it("composes the bZ4X descriptor exactly as specified", async () => {
+    const { composeVehicleDescriptor, composeGlassLineDescription } = await import(
+      "../src/vin-decode.js"
+    );
+    // A 2023 Toyota bZ4X as vPIC reports it.
+    const descriptor = composeVehicleDescriptor({
+      bodyClass: "Sport Utility Vehicle (SUV)/Multi-Purpose Vehicle (MPV)",
+      driveType: "AWD/All-Wheel Drive",
+      doors: "5",
+      fuelType: "Electric",
+      electrificationLevel: "BEV (Battery Electric Vehicle)",
+      plantCountry: "JAPAN"
+    });
+    expect(descriptor).toBe("Electric SUV · AWD · 5-door · built in Japan");
+    const line = composeGlassLineDescription({
+      glassType: "WINDSHIELD",
+      vehicle: { year: 2023, make: "Toyota", model: "bZ4X" },
+      descriptor
+    });
+    expect(line).toBe(
+      "Glass — windshield for your 2023 Toyota bZ4X · Electric SUV · AWD · 5-door · built in Japan"
+    );
+  });
+
+  it("omits attributes the decode does not report instead of guessing", async () => {
+    const { composeVehicleDescriptor, composeGlassLineDescription } = await import(
+      "../src/vin-decode.js"
+    );
+    expect(composeVehicleDescriptor({})).toBe("");
+    expect(
+      composeVehicleDescriptor({ bodyClass: "Sedan/Saloon", doors: "4" })
+    ).toBe("Sedan · 4-door");
+    // No descriptor captured: the line still mirrors year/make/model.
+    expect(
+      composeGlassLineDescription({
+        glassType: "DOOR_GLASS",
+        vehicle: { year: 2020, make: "Honda", model: "Accord" },
+        descriptor: null
+      })
+    ).toBe("Glass — door glass for your 2020 Honda Accord");
+  });
+});
